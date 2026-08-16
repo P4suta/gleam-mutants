@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+* text=auto
+*.gleam text eol=lf
+*.erl text eol=lf
+*.mjs text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+LICENSE-* text eol=lf

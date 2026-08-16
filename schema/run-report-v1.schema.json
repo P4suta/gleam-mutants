@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gleam-mutants.invalid/schema/run-report-v1.schema.json",
+  "title": "gleam-mutants run report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tool", "tool_version", "run_id", "started_ms", "duration_ms", "workspace_digest", "matrix", "score", "mutants", "rejected"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "tool": { "const": "gleam-mutants" },
+    "tool_version": { "type": "string" },
+    "run_id": { "type": "string" },
+    "started_ms": { "type": "integer", "minimum": 0 },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "workspace_digest": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+    "matrix": { "type": "boolean" },
+    "score": { "$ref": "#/$defs/score" },
+    "mutants": { "type": "array", "items": { "$ref": "#/$defs/result" } },
+    "rejected": { "type": "array", "items": { "$ref": "#/$defs/rejected" } }
+  },
+  "$defs": {
+    "score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "killed", "timed_out", "survived", "errors", "percent"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "killed": { "type": "integer", "minimum": 0 },
+        "timed_out": { "type": "integer", "minimum": 0 },
+        "survived": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "percent": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "mutant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "display_id", "path", "operator", "operator_version", "source_digest", "start_byte", "end_byte", "line", "column", "original_digest", "replacement_digest", "original", "replacement"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "display_id": { "type": "string", "minLength": 20 },
+        "path": { "type": "string" },
+        "operator": { "type": "string" },
+        "operator_version": { "type": "integer", "minimum": 1 },
+        "source_digest": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 0 },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "original_digest": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "replacement_digest": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "original": { "type": "string" },
+        "replacement": { "type": "string" }
+      }
+    },
+    "runtime_outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime", "outcome", "duration_ms", "cached", "output"],
+      "properties": {
+        "runtime": { "enum": ["erlang", "node", "deno", "bun"] },
+        "outcome": { "enum": ["killed", "survived", "timed-out", "test-error"] },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "cached": { "type": "boolean" },
+        "output": { "type": "string" }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutant", "aggregate", "outcomes"],
+      "properties": {
+        "mutant": { "$ref": "#/$defs/mutant" },
+        "aggregate": { "enum": ["killed", "survived", "timed-out", "test-error"] },
+        "outcomes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/runtime_outcome" } }
+      }
+    },
+    "rejected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutant", "reason", "diagnostic"],
+      "properties": {
+        "mutant": { "$ref": "#/$defs/mutant" },
+        "reason": { "type": "string" },
+        "diagnostic": { "type": "string" }
+      }
+    }
+  }
+}

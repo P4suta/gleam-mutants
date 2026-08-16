@@ -1,0 +1,109 @@
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[tools]
+gleam = "1.18.1"
+erlang = "29.0.5"
+node = "24.19.0"
+deno = "2.9.5"
+bun = "1.3.14"
+syft = "1.51.0"
+uv = "0.12.0"
+lefthook = "2.1.9"
+committed = "1.1.11"
+typos = "1.48.0"
+taplo = "0.10.0"
+actionlint = "1.7.12"
+gitleaks = "8.30.1"
+yamllint = "1.38.0"
+rumdl = "0.2.43"
+
+[tasks.bootstrap]
+description = "Install pinned tools, fetch dependencies, and install hooks"
+run = [
+  "mise install",
+  "gleam deps download",
+  "lefthook install",
+]
+
+[tasks.build]
+description = "Build both supported Gleam targets with warnings denied"
+run = [
+  "gleam build --target erlang --warnings-as-errors",
+  "gleam build --target javascript --warnings-as-errors",
+]
+
+[tasks.test]
+description = "Run unit tests on Erlang and Node"
+run = [
+  "gleam test --target erlang",
+  "gleam test --target javascript --runtime node",
+]
+
+[tasks.test-integration]
+description = "Run snapshot mutation-engine smoke tests"
+run = [
+  "gleam run -m engine_smoke --target erlang",
+  "gleam run -m engine_smoke --target javascript --runtime node",
+  "gleam run -m compiler_validation_smoke --target erlang",
+  "node scripts/snapshot-safety-smoke.mjs",
+  "node scripts/process-tree-smoke.mjs",
+  "node scripts/interrupt-exit-smoke.mjs",
+  "node scripts/interrupt-tree-smoke.mjs",
+]
+
+[tasks.test-matrix]
+description = "Run unit and end-to-end tests on Erlang, Node, Deno, and Bun"
+run = [
+  "gleam test --target erlang",
+  "gleam test --target javascript --runtime node",
+  "deno run --allow-read --allow-run --allow-env=GLEAM_MUTANTS_ACTIVE,GLEAM_MUTANTS_RUNTIME build/dev/javascript/gleam_mutants/gleam@@private_main_v1.18.1.mjs",
+  "gleam test --target javascript --runtime bun",
+  "gleam run -m engine_matrix_smoke --target erlang",
+  "gleam run -m framework_matrix_smoke --target erlang",
+]
+
+[tasks.fmt]
+description = "Check all Gleam source formatting"
+run = "gleam format --check src test fixtures"
+
+[tasks.docs]
+description = "Build package documentation and validate Markdown"
+run = [
+  "gleam docs build",
+  "rumdl check .",
+]
+
+[tasks.lint]
+description = "Run repository, licence, metadata, and security linters"
+run = [
+  "typos",
+  "taplo check gleam.toml mise.toml manifest.toml REUSE.toml .typos.toml",
+  "actionlint",
+  "yamllint .github lefthook.yml",
+  "gitleaks dir . --no-banner --redact --verbose",
+  "uvx --from \"reuse[charset-normalizer]==6.2.0\" reuse lint",
+  "node scripts/check-schema.mjs",
+]
+
+[tasks.check]
+description = "Run all local release-readiness checks"
+run = [
+  "mise run fmt",
+  "mise run build",
+  "mise run test",
+  "mise run docs",
+  "mise run lint",
+]
+
+[tasks.dogfood]
+description = "Mutation-test a deterministic pure-core unit-test subset"
+run = "gleam run -m gleam_mutants -- run --include src/gleam_mutants/core/score.gleam --strict --test-command gleam test"
+
+[tasks.package]
+description = "Build and smoke-test unpublished Hex, escript, and npm artifacts"
+run = "node scripts/verify-package.mjs"
+
+[tasks.hooks]
+description = "Install git hooks"
+run = "lefthook install"

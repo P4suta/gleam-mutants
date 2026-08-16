@@ -1,0 +1,16 @@
+---
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      run: mise run fmt
+    typos:
+      run: typos
+
+commit-msg:
+  commands:
+    committed:
+      run: committed --commit-file {1}
