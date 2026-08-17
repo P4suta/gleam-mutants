@@ -24,7 +24,10 @@ function fixture(target) {
   return result.stdout;
 }
 
-test("offline report renders score, source, and survivor drawer safely", async ({ browser }) => {
+test("offline report renders score, source, and survivor drawer safely", async ({
+  browser,
+  browserName,
+}) => {
   const erlang = fixture("erlang");
   const node = fixture("javascript");
   expect(node).toBe(erlang);
@@ -33,7 +36,13 @@ test("offline report renders score, source, and survivor drawer safely", async (
   const reportPath = path.join(temporary, "mutation.html");
   fs.writeFileSync(reportPath, erlang, "utf8");
   const reportUrl = pathToFileURL(reportPath).href;
-  const context = await browser.newContext({ offline: true });
+  // WebKit cannot combine file: navigation with an offline context on Windows.
+  // Block every network transport explicitly; the request assertion below also
+  // fails if the report attempts any external access.
+  const context = await browser.newContext({ offline: browserName !== "webkit" });
+  if (browserName === "webkit") {
+    await context.route(/^https?:/u, route => route.abort("internetdisconnected"));
+  }
   const page = await context.newPage();
   const externalRequests = [];
   const pageErrors = [];

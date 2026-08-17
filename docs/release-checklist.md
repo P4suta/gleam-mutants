@@ -18,7 +18,8 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 - [ ] Confirm the SBOM contains Mutation Testing Elements 3.9.0 and an
       application dependency edge
 - [ ] Confirm official Draft-07 schema validation, four-runtime report byte
-      parity, offline Chromium smoke, and vendored integrity/hash checks
+      parity, offline Chromium/Firefox/WebKit smokes, and vendored
+      integrity/hash checks
 - [ ] Confirm version and draft release notes
 - [ ] Confirm no publish token or registry upload step exists
 - [ ] Verify every Sigstore bundle and GitHub artifact attestation against the

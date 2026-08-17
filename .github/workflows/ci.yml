@@ -28,6 +28,7 @@ jobs:
           install: true
           cache: true
       - run: gleam deps download
+      - run: npm ci --ignore-scripts
       - run: mise run check
 
   platform-tests:
@@ -44,6 +45,11 @@ jobs:
           install: true
           cache: true
       - run: gleam deps download
+      - run: npm ci --ignore-scripts
+      - if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium firefox webkit
+      - if: runner.os != 'Linux'
+        run: npx playwright install chromium firefox webkit
       - run: mise run test-integration
 
   runtime-matrix:
@@ -68,6 +74,8 @@ jobs:
           install: true
           cache: true
       - run: gleam deps download
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
       - run: mise run package
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

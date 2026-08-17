@@ -7,10 +7,13 @@ export default defineConfig({
   testDir: "./playwright",
   fullyParallel: false,
   workers: 1,
+  timeout: 90_000,
   reporter: "line",
   outputDir: "build/playwright-results",
-  use: {
-    browserName: "chromium",
-    headless: true,
-  },
+  use: { headless: true },
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    { name: "firefox", use: { browserName: "firefox" } },
+    { name: "webkit", use: { browserName: "webkit" } },
+  ],
 });
