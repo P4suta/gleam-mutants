@@ -41,3 +41,21 @@ Matrix aggregation is intentionally conservative: any surviving runtime makes
 the mutant survived; only mutants killed in every runtime are killed. Timeouts
 remain a distinct detected outcome. A failed baseline in any selected runtime
 aborts without producing a quality score.
+
+The native `RunReport` remains the lossless source of truth, including runtime
+matrix and cache details. A pure deterministic projection emits report schema
+3.9.0 data with `schemaVersion: "1.0"`. Files and mutants are sorted, original
+source is preserved byte-for-byte, and byte spans are recalculated as 1-based,
+start-inclusive/end-exclusive UTF-16 locations. The projection deliberately
+omits coverage fields, project root, full configuration, and extensions.
+
+The offline renderer decodes a generated pure-Gleam Base64 module containing
+the official Mutation Testing Elements 3.9.0 IIFE. JSON is stored in a
+non-executable `application/json` script element with HTML-significant and line
+separator characters escaped. The official bundle and a fixed bootstrap are
+the only executable scripts and are authorized by CSP hashes.
+
+Project reports are staged beside their fixed targets and atomically renamed.
+The destination is validated before snapshotting and again before writing;
+existing targets must be regular files. The effective report directory is not
+copied or hashed, so a previous run cannot affect discovery or cache identity.

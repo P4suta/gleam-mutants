@@ -2,7 +2,15 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 [files]
-extend-exclude = ["build", "dist", "manifest.toml", "LICENSE-*"]
+extend-exclude = [
+  "build",
+  "dist",
+  "manifest.toml",
+  "LICENSE-*",
+  "reports/mutation",
+  "src/gleam_mutants/mte_asset.gleam",
+  "vendor",
+]
 
 [default.extend-words]
 gleeunit = "gleeunit"

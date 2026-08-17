@@ -3,6 +3,7 @@
 
 import gleam/option.{Some}
 import gleam_mutants/engine.{Options}
+import report_test_support
 
 pub fn main() {
   let options =
@@ -16,4 +17,5 @@ pub fn main() {
   let assert Ok(output) = engine.run("fixtures/unitest_project", options)
   assert output.report.score.total > 0
   assert output.report.score.errors == 0
+  report_test_support.cleanup("fixtures/unitest_project")
 }

@@ -5,6 +5,7 @@ import gleam/int
 import gleam/io
 import gleam/option.{Some}
 import gleam_mutants/engine.{Options}
+import report_test_support
 
 pub fn main() {
   let options =
@@ -21,4 +22,5 @@ pub fn main() {
   io.println(
     "matrix smoke: " <> int.to_string(output.report.score.total) <> " mutants",
   )
+  report_test_support.cleanup("fixtures/basic_project")
 }

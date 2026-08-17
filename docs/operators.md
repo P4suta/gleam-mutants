@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 # Mutation operators
 
-Version 0.1 provides these versioned operators:
+Version 1.0 provides these versioned operators:
 
 | Operator | Examples |
 | --- | --- |

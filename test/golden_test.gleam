@@ -5,7 +5,7 @@ import gleam/list
 import gleam_mutants/core/catalog
 import gleam_mutants/core/operator
 import gleam_mutants/core/outcome.{
-  Bun, Erlang, Killed, Node, RuntimeOutcome, Survived, TimedOut,
+  Bun, Erlang, Killed, Node, RuntimeOutcome, Survived, TestError, TimedOut,
 }
 import gleam_mutants/platform
 
@@ -22,6 +22,11 @@ pub fn every_v1_operator_has_a_golden_candidate_test() {
 }
 
 pub fn matrix_outcome_precedence_is_conservative_test() {
+  assert outcome.aggregate([
+      RuntimeOutcome(Erlang, Survived, 1, "", False),
+      RuntimeOutcome(Node, TestError("boom"), 1, "", False),
+    ])
+    == TestError("boom")
   assert outcome.aggregate([
       RuntimeOutcome(Erlang, Killed, 1, "", False),
       RuntimeOutcome(Node, Survived, 1, "", False),

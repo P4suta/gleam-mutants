@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+---
+
+name: Bug report
+description: Report a reproducible defect in gleam_mutants
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Thanks for reporting a bug. Mutation reports and diagnostics can contain
+        source code and local paths; remove private data before submitting.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed secrets and private source from the report.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: gleam_mutants version or commit
+      placeholder: 1.0.0 or a commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: engine-host
+    attributes:
+      label: Engine host
+      options:
+        - Erlang
+        - Node.js
+        - Deno
+        - Bun
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, architecture, Gleam, runtime, and OTP versions.
+      placeholder: Windows 11 x64; Gleam 1.18.1; OTP 29.0.5
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: >-
+        Provide commands and a minimal public project or source excerpt.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: >-
+        Include diagnostic codes and logs only after removing private data.
+      render: text

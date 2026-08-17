@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gleam-mutants.invalid/schema/list-v1.schema.json",
+  "title": "gleam-mutants list output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "mutants", "rejected"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "mutants": { "type": "array", "items": { "$ref": "#/$defs/mutant" } },
+    "rejected": { "type": "array", "items": { "$ref": "#/$defs/rejected" } }
+  },
+  "$defs": {
+    "mutant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "display_id", "path", "operator", "start_byte", "end_byte", "line", "column", "original", "replacement"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "display_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{20,64}$" },
+        "path": { "type": "string" },
+        "operator": { "type": "string" },
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 0 },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "original": { "type": "string" },
+        "replacement": { "type": "string" }
+      }
+    },
+    "rejected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "reason", "diagnostic"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "reason": { "type": "string" },
+        "diagnostic": { "type": "string" }
+      }
+    }
+  }
+}

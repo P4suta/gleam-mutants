@@ -4,8 +4,56 @@
 -module(gleam_mutants_platform_ffi).
 -include_lib("kernel/include/file.hrl").
 -export([arguments/0, env/1, current_directory/0, temporary_directory/0,
-         cache_directory/0, cpu_count/0, now_milliseconds/0, process_id/0,
+         cache_directory/0, cpu_count/0, now_milliseconds/0, monotonic_milliseconds/0,
+         resolve_path/1, architecture/0, environment/0, random_nonce/0,
+         delete_tree/1,
+         acquire_lock/4, release_lock/2, process_id/0,
          os_name/0, is_tty/0, is_reparse_point/1, exit/1, run_process/5, run_process_batch/2]).
+
+delete_tree(Path) -> delete_tree(unicode:characters_to_list(Path), 40).
+
+delete_tree(Path, Attempts) ->
+    case delete_tree_once(Path) of
+        ok -> <<>>;
+        {error, enoent} -> <<>>;
+        {error, _} when Attempts > 0 ->
+            timer:sleep(50),
+            delete_tree(Path, Attempts - 1);
+        {error, Reason} ->
+            unicode:characters_to_binary(io_lib:format("~tp", [Reason]))
+    end.
+
+delete_tree_once(Path) ->
+    case file:read_link_info(Path) of
+        {error, enoent} -> ok;
+        {error, Reason} -> {error, Reason};
+        {ok, Info} when Info#file_info.type =:= symlink ->
+            delete_symlink(Path);
+        {ok, Info} when Info#file_info.type =:= directory ->
+            case file:list_dir(Path) of
+                {ok, Names} ->
+                    case delete_children(Path, Names) of
+                        ok -> file:del_dir(Path);
+                        Error -> Error
+                    end;
+                {error, Reason} -> {error, Reason}
+            end;
+        {ok, _} -> file:delete(Path)
+    end.
+
+delete_symlink(Path) ->
+    case file:delete(Path) of
+        {error, eperm} -> file:del_dir(Path);
+        {error, eisdir} -> file:del_dir(Path);
+        Result -> Result
+    end.
+
+delete_children(_Path, []) -> ok;
+delete_children(Path, [Name | Rest]) ->
+    case delete_tree_once(filename:join(Path, Name)) of
+        ok -> delete_children(Path, Rest);
+        Error -> Error
+    end.
 
 arguments() ->
     Raw = init:get_plain_arguments(),
@@ -63,6 +111,96 @@ cpu_count() ->
     end.
 
 now_milliseconds() -> erlang:system_time(millisecond).
+monotonic_milliseconds() -> erlang:monotonic_time(millisecond).
+resolve_path(Path) -> unicode:characters_to_binary(filename:absname(unicode:characters_to_list(Path))).
+architecture() -> unicode:characters_to_binary(erlang:system_info(system_architecture)).
+environment() ->
+    Entries = lists:sort(os:getenv()),
+    unicode:characters_to_binary(lists:flatten([
+        integer_to_list(length(Entry)) ++ ":" ++ Entry || Entry <- Entries
+    ])).
+random_nonce() ->
+    Bytes = crypto:strong_rand_bytes(16),
+    unicode:characters_to_binary(binary:encode_hex(Bytes, lowercase)).
+
+acquire_lock(Path0, RunId, Started, WaitMs) ->
+    Path = unicode:characters_to_list(Path0),
+    ok = filelib:ensure_dir(Path),
+    Token = random_nonce(),
+    Deadline = erlang:monotonic_time(millisecond) + WaitMs,
+    acquire_lock_loop(Path, Token, RunId, Started, Deadline).
+
+acquire_lock_loop(Path, Token, RunId, Started, Deadline) ->
+    case file:open(Path, [write, exclusive, binary]) of
+        {ok, File} ->
+            Metadata = <<Token/binary, "\n", (integer_to_binary(process_id()))/binary,
+                         "\n", RunId/binary, "\n", (integer_to_binary(Started))/binary, "\n">>,
+            Result = case file:write(File, Metadata) of
+                ok -> file:sync(File);
+                Error -> Error
+            end,
+            ok = file:close(File),
+            case Result of
+                ok -> <<"ok:", Token/binary>>;
+                {error, Reason} ->
+                    _ = file:delete(Path),
+                    unicode:characters_to_binary(io_lib:format("error:could not write workspace lock: ~p", [Reason]))
+            end;
+        {error, eexist} ->
+            case read_lock(Path) of
+                {ok, _OldToken, Pid, _OldRunId, _OldStarted} ->
+                    case lock_process_alive(Pid) of
+                        false -> _ = file:delete(Path), acquire_lock_loop(Path, Token, RunId, Started, Deadline);
+                        true -> wait_for_lock(Path, Token, RunId, Started, Deadline)
+                    end;
+                error -> wait_for_lock(Path, Token, RunId, Started, Deadline)
+            end;
+        {error, Reason} ->
+            unicode:characters_to_binary(io_lib:format("error:could not create workspace lock: ~p", [Reason]))
+    end.
+
+wait_for_lock(Path, Token, RunId, Started, Deadline) ->
+    case erlang:monotonic_time(millisecond) >= Deadline of
+        true ->
+            case read_lock(Path) of
+                {ok, _, Pid, OldRunId, OldStarted} ->
+                    <<"error:workspace is locked by pid ", (integer_to_binary(Pid))/binary,
+                      ", run ", OldRunId/binary, ", started ", OldStarted/binary>>;
+                error -> <<"error:workspace lock is busy">>
+            end;
+        false -> timer:sleep(50), acquire_lock_loop(Path, Token, RunId, Started, Deadline)
+    end.
+
+read_lock(Path) ->
+    case file:read_file(Path) of
+        {ok, Data} ->
+            case binary:split(Data, <<"\n">>, [global]) of
+                [Token, Pid, RunId, Started | _] ->
+                    try {ok, Token, binary_to_integer(Pid), RunId, Started}
+                    catch _:_ -> error end;
+                _ -> error
+            end;
+        _ -> error
+    end.
+
+lock_process_alive(Pid) ->
+    Command = case os:type() of
+        {win32, _} -> "tasklist /FI \"PID eq " ++ integer_to_list(Pid) ++ "\" /NH";
+        _ -> "kill -0 " ++ integer_to_list(Pid) ++ " 2>/dev/null && echo alive"
+    end,
+    string:find(os:cmd(Command), case os:type() of {win32, _} -> integer_to_list(Pid); _ -> "alive" end) =/= nomatch.
+
+release_lock(Path0, Token) ->
+    Path = unicode:characters_to_list(Path0),
+    case read_lock(Path) of
+        {ok, Token, _, _, _} ->
+            case file:delete(Path) of
+                ok -> <<>>;
+                {error, Reason} -> unicode:characters_to_binary(io_lib:format("could not release workspace lock: ~p", [Reason]))
+            end;
+        {ok, _, _, _, _} -> <<"workspace lock ownership changed">>;
+        error -> <<"could not read workspace lock during release">>
+    end.
 process_id() -> list_to_integer(os:getpid()).
 
 os_name() ->
@@ -87,10 +225,10 @@ run_process(Executable0, Args0, WorkingDirectory, Environment, Timeout) ->
     Executable = resolve_executable(Executable0),
     Args = [unicode:characters_to_list(A) || A <- Args0],
     Env = [{unicode:characters_to_list(K), unicode:characters_to_list(V)} || {K, V} <- Environment],
-    Options = [binary, exit_status, use_stdio, stderr_to_stdout, hide,
+    Options = [binary, exit_status, eof, use_stdio, stderr_to_stdout, hide,
                {args, Args}, {cd, unicode:characters_to_list(WorkingDirectory)}, {env, Env}],
     Result = try erlang:open_port({spawn_executable, Executable}, Options) of
-        Port -> collect(Port, Timeout, erlang:monotonic_time(millisecond), <<>>, undefined)
+        Port -> collect(Port, Timeout, erlang:monotonic_time(millisecond), <<>>, undefined, false)
     catch
         Class:Reason -> {-2, <<>>, unicode:characters_to_binary(io_lib:format("~p:~p", [Class, Reason])), false}
     end,
@@ -125,12 +263,21 @@ resolve_executable(Name) ->
         _ -> case os:find_executable(NameList) of false -> NameList; Path -> Path end
     end.
 
-collect(Port, Timeout, Started, Output, Status) ->
+collect(Port, Timeout, Started, Output, Status, Eof) ->
     Elapsed = erlang:monotonic_time(millisecond) - Started,
-    Remaining = erlang:max(0, Timeout - Elapsed),
+    Remaining0 = erlang:max(0, Timeout - Elapsed),
+    Remaining = case Status of undefined -> Remaining0; _ -> erlang:min(Remaining0, 5000) end,
     receive
-        {Port, {data, Chunk}} -> collect(Port, Timeout, Started, <<Output/binary, Chunk/binary>>, Status);
-        {Port, {exit_status, Code}} -> {Code, Output, <<>>, false};
+        {Port, {data, Chunk}} ->
+            collect(Port, Timeout, Started, bounded_append(Output, Chunk), Status, Eof);
+        {Port, {exit_status, Code}} when Eof =:= true ->
+            {Code, Output, <<>>, false};
+        {Port, {exit_status, Code}} ->
+            collect(Port, Timeout, Started, Output, Code, Eof);
+        {Port, eof} when Status =/= undefined ->
+            {Status, Output, <<>>, false};
+        {Port, eof} ->
+            collect(Port, Timeout, Started, Output, Status, true);
         {'EXIT', Port, _} -> {status_or_default(Status), Output, <<>>, false}
     after Remaining ->
         case Status of
@@ -140,6 +287,18 @@ collect(Port, Timeout, Started, Output, Status) ->
                 {-1, Output, <<"process timed out">>, true};
             _ -> {Status, Output, <<>>, false}
         end
+    end.
+
+bounded_append(Output, Chunk) ->
+    Combined = <<Output/binary, Chunk/binary>>,
+    Limit = 131072,
+    Half = Limit div 2,
+    case byte_size(Combined) =< Limit of
+        true -> Combined;
+        false ->
+            Head = binary:part(Combined, 0, Half),
+            Tail = binary:part(Combined, byte_size(Combined) - Half, Half),
+            <<Head/binary, "\n... output truncated ...\n", Tail/binary>>
     end.
 
 status_or_default(undefined) -> -1;

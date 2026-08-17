@@ -7,7 +7,11 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam_mutants/cache
-import gleam_mutants/config.{type Config, Config}
+import gleam_mutants/config.{
+  type CacheMode, type Config, type DiagnosticsMode, CacheAuto, CacheOff,
+  CacheReadWrite, Config, DiagnosticsAll, DiagnosticsErrors, DiagnosticsNone,
+}
+import gleam_mutants/core/bytes
 import gleam_mutants/core/catalog.{type RejectedMutant, RejectedMutant}
 import gleam_mutants/core/exit_policy
 import gleam_mutants/core/interval_tree
@@ -21,16 +25,22 @@ import gleam_mutants/core/path
 import gleam_mutants/core/score
 import gleam_mutants/pipeline
 import gleam_mutants/platform
+import gleam_mutants/project_report
 import gleam_mutants/report.{
-  type MutantResult, type RunReport, MutantResult, RunReport,
+  type MutantResult, type RunReport, MutantResult, PolicySummary, RunReport,
+  SelectionSummary,
 }
 import gleam_mutants/runtime.{type RuntimeModule}
 import gleam_mutants/snapshot.{type Snapshot}
+import gleam_mutants/stryker_html
+import gleam_mutants/stryker_report.{SourceFile}
+import gleam_mutants/workspace_lock
 import simplifile
 import tomlet
 
 pub type Options {
   Options(
+    root: Option(String),
     matrix: Bool,
     changed: Option(String),
     includes: List(String),
@@ -39,21 +49,43 @@ pub type Options {
     jobs: Option(Int),
     timeout_ms: Option(Int),
     test_command: Option(List(String)),
+    mutant_prefix: Option(String),
+    report_formats: Option(List(String)),
     json: Bool,
     explain: Bool,
+    quiet: Bool,
+    verbosity: Int,
+    log_format: String,
+    help_requested: Bool,
+    version_requested: Bool,
   )
 }
 
 pub type RunOutput {
-  RunOutput(report: RunReport, report_path: String, exit_code: Int)
+  RunOutput(
+    report: RunReport,
+    report_path: String,
+    stryker_json_path: String,
+    html_report_path: String,
+    exit_code: Int,
+  )
 }
 
 pub type ListOutput {
   ListOutput(mutants: List(Mutant), rejected: List(RejectedMutant))
 }
 
+type ValidationError {
+  CandidateInvalid(String)
+  ValidationInfrastructure(String)
+}
+
 type SourceCatalog {
   SourceCatalog(path: String, source: String, mutants: List(Mutant))
+}
+
+type Preflight {
+  Preflight(files: List(String), catalogs: List(SourceCatalog), candidates: Int)
 }
 
 type ExecutionContext {
@@ -83,22 +115,136 @@ type Prepared {
 }
 
 pub fn default_options() -> Options {
-  Options(False, None, [], None, None, None, None, None, False, False)
+  Options(
+    None,
+    False,
+    None,
+    [],
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    False,
+    False,
+    False,
+    0,
+    "text",
+    False,
+    False,
+  )
 }
 
 pub fn run(workspace: String, options: Options) -> Result(RunOutput, String) {
+  use lock <- result.try(workspace_lock.acquire(workspace))
+  let run_result = run_locked(workspace, options, workspace_lock.run_id(lock))
+  case run_result, workspace_lock.release(lock) {
+    Ok(output), Ok(Nil) -> Ok(output)
+    Error(error), Ok(Nil) -> Error(error)
+    Ok(_), Error(error) ->
+      Error("GMU7003: workspace lock release failed: " <> error)
+    Error(error), Error(release_error) ->
+      Error(error <> "; workspace lock release failed: " <> release_error)
+  }
+}
+
+fn run_locked(
+  workspace: String,
+  options: Options,
+  run_id: String,
+) -> Result(RunOutput, String) {
   use source <- result.try(read_project_config(workspace))
   use decoded <- result.try(
     config.decode(source, platform.cpu_count())
     |> result.map_error(config.describe_error),
   )
   let configured = apply_options(decoded, options)
+  use _ <- result.try(validate_effective_config(configured))
+  use _ <- result.try(validate_report_configuration(workspace, configured))
   use changed_paths <- result.try(resolve_changed(workspace, options.changed))
-  use snapshot <- result.try(snapshot.create(workspace))
-  let result =
-    execute(snapshot, workspace, source, configured, options, changed_paths)
-  let _ = snapshot.dispose(snapshot)
-  result
+  use snapshot <- result.try(
+    snapshot.create_excluding(workspace, [
+      configured.report.directory,
+    ]),
+  )
+  let result = case preflight(snapshot, configured, changed_paths) {
+    Error(error) -> Error(error)
+    Ok(Preflight([], _, _)) ->
+      case changed_paths {
+        Some([]) ->
+          complete_empty(
+            snapshot,
+            workspace,
+            configured,
+            options,
+            run_id,
+            [],
+            True,
+            "no changed Gleam files",
+            0,
+          )
+        _ -> Error("GMU4001: selection did not match any Gleam source files")
+      }
+    Ok(Preflight(_, catalogs, 0)) ->
+      complete_empty(
+        snapshot,
+        workspace,
+        configured,
+        options,
+        run_id,
+        catalogs,
+        False,
+        "selected files contain no applicable mutation sites",
+        case configured.require_mutants {
+          True -> 1
+          False -> 0
+        },
+      )
+    Ok(_) ->
+      execute(
+        snapshot,
+        workspace,
+        source,
+        configured,
+        options,
+        run_id,
+        changed_paths,
+      )
+  }
+  case result, snapshot.dispose(snapshot) {
+    Ok(output), Ok(Nil) -> Ok(output)
+    Error(error), Ok(Nil) -> Error(error)
+    Ok(_), Error(error) -> Error("GMU7002: snapshot cleanup failed: " <> error)
+    Error(error), Error(cleanup_error) ->
+      Error(error <> "; snapshot cleanup failed: " <> cleanup_error)
+  }
+}
+
+fn preflight(
+  snapshot: Snapshot,
+  config: Config,
+  changed_paths: Option(List(String)),
+) -> Result(Preflight, String) {
+  let files = snapshot.source_files(snapshot, config.includes, config.excludes)
+  let files = case changed_paths {
+    None -> files
+    Some(changed) ->
+      list.filter(files, fn(file) { list.contains(changed, file) })
+  }
+  use catalogs <- result.try(discover_catalogs(
+    snapshot.root(snapshot),
+    files,
+    config.operators,
+  ))
+  Ok(Preflight(
+    files,
+    catalogs,
+    catalogs
+      |> list.flat_map(fn(catalog) { catalog.mutants })
+      |> list.length,
+  ))
 }
 
 pub fn list_mutants(
@@ -111,16 +257,27 @@ pub fn list_mutants(
     |> result.map_error(config.describe_error),
   )
   let configured = apply_options(decoded, options)
+  use _ <- result.try(validate_effective_config(configured))
+  use _ <- result.try(validate_report_configuration(workspace, configured))
   use changed_paths <- result.try(resolve_changed(workspace, options.changed))
-  use snapshot <- result.try(snapshot.create(workspace))
+  use snapshot <- result.try(
+    snapshot.create_excluding(workspace, [
+      configured.report.directory,
+    ]),
+  )
   let result = case
     prepare(snapshot, workspace, source, configured, options, changed_paths)
   {
     Error(error) -> Error(error)
     Ok(prepared) -> Ok(ListOutput(prepared.mutants, prepared.rejected))
   }
-  let _ = snapshot.dispose(snapshot)
-  result
+  case result, snapshot.dispose(snapshot) {
+    Ok(output), Ok(Nil) -> Ok(output)
+    Error(error), Ok(Nil) -> Error(error)
+    Ok(_), Error(error) -> Error("GMU7002: snapshot cleanup failed: " <> error)
+    Error(error), Error(cleanup_error) ->
+      Error(error <> "; snapshot cleanup failed: " <> cleanup_error)
+  }
 }
 
 fn execute(
@@ -129,9 +286,11 @@ fn execute(
   gleam_toml: String,
   config: Config,
   options: Options,
+  run_id: String,
   changed_paths: Option(List(String)),
 ) -> Result(RunOutput, String) {
   let started = platform.now_milliseconds()
+  let monotonic_started = platform.monotonic_milliseconds()
   use prepared <- result.try(prepare(
     snapshot,
     workspace,
@@ -143,21 +302,6 @@ fn execute(
   use results <- result.try(run_mutants(prepared))
   let aggregated = list.map(results, fn(item) { item.aggregate })
   let mutation_score = score.calculate(aggregated)
-  let run_report =
-    RunReport(
-      run_id: int.to_string(started)
-        <> "-"
-        <> string.slice(snapshot.digest(snapshot), 0, 12),
-      started_ms: started,
-      duration_ms: platform.now_milliseconds() - started,
-      workspace_digest: snapshot.digest(snapshot),
-      matrix: options.matrix,
-      results: results,
-      rejected: prepared.rejected,
-      score: mutation_score,
-    )
-  use report_path <- result.try(report.save(run_report))
-  report.emit_github(run_report)
   let policy =
     exit_policy.Context(
       ci: platform.is_ci(),
@@ -165,13 +309,200 @@ fn execute(
       strict: prepared.config.strict,
       minimum_score: prepared.config.minimum_score,
     )
+  let exit_code = exit_policy.code(mutation_score, policy)
+  let run_report =
+    RunReport(
+      run_id: run_id,
+      started_ms: started,
+      duration_ms: platform.monotonic_milliseconds() - monotonic_started,
+      workspace_digest: snapshot.digest(snapshot),
+      matrix: options.matrix,
+      selection: SelectionSummary(
+        mode: selection_mode(options),
+        files_selected: list.length(prepared.catalogs),
+        candidates: list.length(prepared.mutants)
+          + list.length(prepared.rejected),
+        executed: list.length(results),
+        compile_errors: list.length(prepared.rejected),
+        skipped: False,
+        reason: None,
+      ),
+      policy: PolicySummary(
+        strict: exit_policy.strict(policy),
+        minimum_score: prepared.config.minimum_score,
+        require_mutants: prepared.config.require_mutants,
+        failure: case exit_code {
+          1 -> Some("minimum-score")
+          _ -> None
+        },
+      ),
+      results: results,
+      rejected: prepared.rejected,
+      score: mutation_score,
+    )
+  let source_files =
+    list.map(prepared.catalogs, fn(catalog) {
+      SourceFile(catalog.path, catalog.source)
+    })
+  let formats = prepared.config.report.formats
+  use projection <- result.try(case formats {
+    [] -> Ok(#("", ""))
+    _ -> {
+      use stryker_json <- result.try(stryker_report.to_json(
+        run_report,
+        source_files,
+        prepared.config.report.high,
+        prepared.config.report.low,
+      ))
+      use html <- result.try(case list.contains(formats, "html") {
+        True -> stryker_html.render(stryker_json)
+        False -> Ok("")
+      })
+      Ok(#(stryker_json, html))
+    }
+  })
+  let json_report = case projection.0 {
+    "" -> ""
+    value -> value <> "\n"
+  }
+  use project_reports <- result.try(project_report.write_formats(
+    workspace,
+    prepared.config.report.directory,
+    formats,
+    json_report,
+    projection.1,
+  ))
+  use report_path <- result.try(case prepared.config.report.history {
+    True -> report.save(run_report, workspace)
+    False -> Ok("")
+  })
+  case options.json {
+    True -> Nil
+    False -> report.emit_github(run_report)
+  }
   let phase = pipeline.completed(prepared.phase)
   let _ = pipeline.state(phase)
   Ok(RunOutput(
     run_report,
     report_path,
-    exit_policy.code(mutation_score, policy),
+    project_reports.json_path,
+    project_reports.html_path,
+    exit_code,
   ))
+}
+
+fn complete_empty(
+  snapshot: Snapshot,
+  workspace: String,
+  config: Config,
+  options: Options,
+  run_id: String,
+  catalogs: List(SourceCatalog),
+  skipped: Bool,
+  reason: String,
+  exit_code: Int,
+) -> Result(RunOutput, String) {
+  let started = platform.now_milliseconds()
+  let policy =
+    exit_policy.Context(
+      ci: platform.is_ci(),
+      tty: platform.is_tty(),
+      strict: config.strict,
+      minimum_score: config.minimum_score,
+    )
+  let run_report =
+    RunReport(
+      run_id: run_id,
+      started_ms: started,
+      duration_ms: 0,
+      workspace_digest: snapshot.digest(snapshot),
+      matrix: options.matrix,
+      selection: SelectionSummary(
+        mode: selection_mode(options),
+        files_selected: list.length(catalogs),
+        candidates: 0,
+        executed: 0,
+        compile_errors: 0,
+        skipped: skipped,
+        reason: Some(reason),
+      ),
+      policy: PolicySummary(
+        strict: exit_policy.strict(policy),
+        minimum_score: config.minimum_score,
+        require_mutants: config.require_mutants,
+        failure: case exit_code {
+          1 -> Some("require-mutants")
+          _ -> None
+        },
+      ),
+      results: [],
+      rejected: [],
+      score: score.calculate([]),
+    )
+  let source_files =
+    list.map(catalogs, fn(catalog) { SourceFile(catalog.path, catalog.source) })
+  let formats = config.report.formats
+  use projection <- result.try(case formats {
+    [] -> Ok(#("", ""))
+    _ -> {
+      use stryker_json <- result.try(stryker_report.to_json(
+        run_report,
+        source_files,
+        config.report.high,
+        config.report.low,
+      ))
+      use html <- result.try(case list.contains(formats, "html") {
+        True -> stryker_html.render(stryker_json)
+        False -> Ok("")
+      })
+      Ok(#(stryker_json, html))
+    }
+  })
+  let json_report = case projection.0 {
+    "" -> ""
+    value -> value <> "\n"
+  }
+  use project_reports <- result.try(project_report.write_formats(
+    workspace,
+    config.report.directory,
+    formats,
+    json_report,
+    projection.1,
+  ))
+  use report_path <- result.try(case config.report.history {
+    True -> report.save(run_report, workspace)
+    False -> Ok("")
+  })
+  Ok(RunOutput(
+    run_report,
+    report_path,
+    project_reports.json_path,
+    project_reports.html_path,
+    exit_code,
+  ))
+}
+
+fn selection_mode(options: Options) -> String {
+  case options.mutant_prefix, options.changed {
+    Some(_), _ -> "mutant"
+    _, Some(_) -> "changed"
+    _, _ -> "all"
+  }
+}
+
+fn validate_report_configuration(
+  workspace: String,
+  config: Config,
+) -> Result(Nil, String) {
+  case config.report_overlaps_mutation_sources(config) {
+    True ->
+      Error(
+        "report.directory overlaps mutation target sources: "
+        <> config.report.directory,
+      )
+    False ->
+      project_report.validate_destination(workspace, config.report.directory)
+  }
 }
 
 fn prepare(
@@ -219,6 +550,24 @@ fn prepare(
     runtime_module,
   ))
   let #(valid, rejected) = validation
+  use _ <- result.try(case candidates != [] && valid == [] {
+    True -> {
+      let diagnostic =
+        rejected
+        |> list.first
+        |> result.map(fn(rejected) { truncate(rejected.diagnostic) })
+        |> result.unwrap("")
+      Error(
+        "GMU4003: all mutation candidates failed compiler validation; engine and compiler are incompatible"
+        <> case diagnostic {
+          "" -> ""
+          value -> ":\n" <> value
+        },
+      )
+    }
+    False -> Ok(Nil)
+  })
+  use valid <- result.try(select_mutants(valid, options.mutant_prefix))
   let phase3 = pipeline.validated(phase2, valid, rejected)
   use _ <- result.try(instrument(
     snapshot.root(snapshot),
@@ -247,6 +596,31 @@ fn prepare(
   ))
 }
 
+fn select_mutants(
+  mutants: List(Mutant),
+  prefix: Option(String),
+) -> Result(List(Mutant), String) {
+  case prefix {
+    None -> Ok(mutants)
+    Some(prefix) -> {
+      let matches =
+        list.filter(mutants, fn(mutant) {
+          string.starts_with(mutant.id, prefix)
+          || string.starts_with(mutant.display_id, prefix)
+        })
+      case matches {
+        [] ->
+          Error("GMU4004: no mutant matches prefix " <> string.inspect(prefix))
+        [mutant] -> Ok([mutant])
+        _ ->
+          Error(
+            "GMU4005: mutant prefix is ambiguous: " <> string.inspect(prefix),
+          )
+      }
+    }
+  }
+}
+
 fn read_project_config(workspace: String) -> Result(String, String) {
   simplifile.read(path.join(workspace, "gleam.toml"))
   |> result.map_error(fn(error) {
@@ -270,7 +644,7 @@ fn apply_options(config: Config, options: Options) -> Config {
       None -> config.strict
     },
     jobs: case options.jobs {
-      Some(value) -> int.max(1, int.min(value, 256))
+      Some(value) -> value
       None -> config.jobs
     },
     timeout_ms: case options.timeout_ms {
@@ -281,7 +655,29 @@ fn apply_options(config: Config, options: Options) -> Config {
       Some(value) -> value
       None -> config.test_command
     },
+    report: config.ReportConfig(
+      ..config.report,
+      formats: case options.report_formats {
+        Some(formats) -> formats
+        None -> config.report.formats
+      },
+    ),
   )
+}
+
+fn validate_effective_config(config: Config) -> Result(Nil, String) {
+  case
+    config.test_command != ["gleam", "test"]
+    && config.cache_mode != CacheAuto
+    && config.cache_mode != CacheOff
+    && config.cache_key == None
+  {
+    True ->
+      Error(
+        "GMU3004: cache.key is required when persistent cache is enabled for a custom test command",
+      )
+    False -> Ok(Nil)
+  }
 }
 
 fn resolve_changed(
@@ -291,37 +687,82 @@ fn resolve_changed(
   case reference {
     None -> Ok(None)
     Some(reference) -> {
-      let result =
-        platform.run_process(
-          "git",
-          ["diff", "--name-only", reference, "--"],
-          workspace,
-          [],
-          30_000,
-        )
-      case result.status {
-        0 ->
-          result.stdout
-          |> string.split("\n")
-          |> list.map(fn(path) {
-            path |> string.replace("\r", "") |> string.trim
+      case reference == "" || string.starts_with(reference, "-") {
+        True -> Error("GMU4006: --changed requires a non-option git reference")
+        False -> {
+          let merge_base =
+            platform.run_process(
+              "git",
+              ["merge-base", "HEAD", reference],
+              workspace,
+              [],
+              30_000,
+            )
+          use base <- result.try(case merge_base.status {
+            0 -> Ok(string.trim(merge_base.stdout))
+            _ ->
+              Error(
+                "GMU4007: git merge-base failed for "
+                <> reference
+                <> ": "
+                <> merge_base.stderr
+                <> merge_base.stdout,
+              )
           })
-          |> list.filter(fn(path) {
-            path != "" && string.ends_with(path, ".gleam")
+          use groups <- result.try(
+            list.try_map(
+              [
+                [
+                  "diff",
+                  "--name-only",
+                  "-z",
+                  "--diff-filter=ACMR",
+                  base,
+                  "HEAD",
+                  "--",
+                ],
+                [
+                  "diff",
+                  "--cached",
+                  "--name-only",
+                  "-z",
+                  "--diff-filter=ACMR",
+                  "--",
+                ],
+                ["diff", "--name-only", "-z", "--diff-filter=ACMR", "--"],
+                ["ls-files", "--others", "--exclude-standard", "-z"],
+              ],
+              fn(arguments) { git_changed_paths(workspace, arguments) },
+            ),
+          )
+          groups
+          |> list.flatten
+          |> list.filter(fn(changed_path) {
+            changed_path != "" && string.ends_with(changed_path, ".gleam")
           })
           |> list.map(mutant.normalize_path)
+          |> list.unique
           |> Some
           |> Ok
-        _ ->
-          Error(
-            "git diff failed for "
-            <> reference
-            <> ": "
-            <> result.stderr
-            <> result.stdout,
-          )
+        }
       }
     }
+  }
+}
+
+fn git_changed_paths(
+  workspace: String,
+  arguments: List(String),
+) -> Result(List(String), String) {
+  let process = platform.run_process("git", arguments, workspace, [], 30_000)
+  case process.status {
+    0 -> Ok(string.split(process.stdout, "\u{0}"))
+    _ ->
+      Error(
+        "GMU4008: git changed-file query failed: "
+        <> process.stderr
+        <> process.stdout,
+      )
   }
 }
 
@@ -394,10 +835,10 @@ fn run_baseline(
     runtimes
     |> list.flat_map(fn(runtime) { list.repeat(runtime, config.baseline_runs) })
     |> list.try_map(fn(runtime) {
-      let started = platform.now_milliseconds()
+      let started = platform.monotonic_milliseconds()
       let process_result =
         run_test(root, runtime, config.test_command, [], baseline_timeout)
-      let duration = platform.now_milliseconds() - started
+      let duration = platform.monotonic_milliseconds() - started
       case process_result.timed_out, process_result.status {
         True, _ ->
           Error("baseline timed out on " <> outcome.runtime_name(runtime))
@@ -423,7 +864,7 @@ fn run_baseline(
   }
   let timeout = case config.timeout_ms {
     Some(value) -> value
-    None -> int.max(10_000, average * 5)
+    None -> int.min(1_800_000, int.max(10_000, average * 5))
   }
   Ok(#(average, timeout))
 }
@@ -480,7 +921,8 @@ fn delta_validate(
         )
       {
         Ok(Nil) -> Ok(#(mutants, []))
-        Error(diagnostic) ->
+        Error(ValidationInfrastructure(error)) -> Error(error)
+        Error(CandidateInvalid(diagnostic)) ->
           case mutants {
             [mutant] ->
               Ok(#([], [RejectedMutant(mutant, "compile-invalid", diagnostic)]))
@@ -518,19 +960,35 @@ fn validate_batch(
   mutants: List(Mutant),
   runtimes: List(Runtime),
   runtime_module: String,
-) -> Result(Nil, String) {
-  use worker <- result.try(snapshot.create(snapshot.root(base)))
+) -> Result(Nil, ValidationError) {
+  use worker <- result.try(
+    snapshot.create(snapshot.root(base))
+    |> result.map_error(ValidationInfrastructure),
+  )
   let validation = {
-    use _ <- result.try(instrument(
-      snapshot.root(worker),
-      catalogs,
-      mutants,
-      runtime_module,
-    ))
+    use _ <- result.try(
+      instrument(snapshot.root(worker), catalogs, mutants, runtime_module)
+      |> result.map_error(CandidateInvalid),
+    )
     build_targets(snapshot.root(worker), runtimes)
+    |> result.map_error(CandidateInvalid)
   }
-  let _ = snapshot.dispose(worker)
-  validation
+  case validation, snapshot.dispose(worker) {
+    Ok(Nil), Ok(Nil) -> Ok(Nil)
+    Error(error), Ok(Nil) -> Error(error)
+    Ok(Nil), Error(error) ->
+      Error(ValidationInfrastructure(
+        "validation snapshot cleanup failed: " <> error,
+      ))
+    Error(CandidateInvalid(error)), Error(cleanup_error) ->
+      Error(ValidationInfrastructure(
+        error <> "; validation snapshot cleanup failed: " <> cleanup_error,
+      ))
+    Error(ValidationInfrastructure(error)), Error(cleanup_error) ->
+      Error(ValidationInfrastructure(
+        error <> "; validation snapshot cleanup failed: " <> cleanup_error,
+      ))
+  }
 }
 
 fn instrument(
@@ -631,13 +1089,17 @@ fn runtime_target(runtime: Runtime) -> String {
 fn run_mutants(prepared: Prepared) -> Result(List(MutantResult), String) {
   let worker_count =
     int.max(1, int.min(prepared.config.jobs, list.length(prepared.mutants)))
+  use cache_context <- result.try(cache_context(prepared))
   let fingerprint =
-    cache.fingerprint(
+    cache.fingerprint_v1(
       snapshot.digest(prepared.snapshot),
       prepared.runtimes,
       prepared.config.test_command,
       prepared.timeout_ms,
+      cache_context,
     )
+  let pipeline.State(workspace, _, _, _, _, _) = pipeline.state(prepared.phase)
+  let workspace_id = cache.workspace_id(workspace)
   use workers <- result.try(create_workers(prepared.snapshot, worker_count))
   let run_result =
     run_mutant_waves(
@@ -646,14 +1108,76 @@ fn run_mutants(prepared: Prepared) -> Result(List(MutantResult), String) {
       workers,
       worker_count,
       fingerprint,
+      workspace_id,
       [],
     )
-  let _ =
-    list.each(workers, fn(worker) {
-      let _ = snapshot.dispose(worker)
-      Nil
+  let cleanup_result = dispose_workers(workers)
+  case run_result, cleanup_result {
+    Ok(results), Ok(Nil) -> Ok(results)
+    Error(error), Ok(Nil) -> Error(error)
+    Ok(_), Error(error) -> Error("worker snapshot cleanup failed: " <> error)
+    Error(error), Error(cleanup_error) ->
+      Error(error <> "; worker snapshot cleanup failed: " <> cleanup_error)
+  }
+}
+
+fn effective_cache_mode(config: Config) -> CacheMode {
+  case config.cache_mode, config.test_command {
+    CacheAuto, ["gleam", "test"] -> CacheReadWrite
+    CacheAuto, _ -> CacheOff
+    mode, _ -> mode
+  }
+}
+
+fn cache_context(prepared: Prepared) -> Result(String, String) {
+  use file_inputs <- result.try(
+    list.try_map(prepared.config.cache_files, fn(relative) {
+      simplifile.read(path.join(snapshot.root(prepared.snapshot), relative))
+      |> result.map_error(fn(error) {
+        "could not read cache input "
+        <> relative
+        <> ": "
+        <> simplifile.describe_error(error)
+      })
+      |> result.map(fn(contents) { relative <> "\u{0}" <> contents })
+    }),
+  )
+  let env_inputs =
+    list.map(prepared.config.cache_env, fn(name) {
+      name <> "\u{0}" <> platform.env(name)
     })
-  run_result
+  let runtime_identities =
+    list.map(prepared.runtimes, fn(runtime) {
+      let executable = outcome.runtime_name(runtime)
+      let version =
+        platform.run_process(
+          executable,
+          ["--version"],
+          snapshot.root(prepared.snapshot),
+          [],
+          10_000,
+        )
+      executable
+      <> "\u{0}"
+      <> version.stdout
+      <> version.stderr
+      <> int.to_string(version.status)
+    })
+  Ok(
+    [
+      "gleam-mutants-cache-context-v1",
+      platform.os_name(),
+      platform.architecture(),
+      platform.environment(),
+      prepared.config.cache_key |> option.unwrap(""),
+      ..list.append(runtime_identities, list.append(file_inputs, env_inputs))
+    ]
+    |> list.map(fn(value) {
+      int.to_string(string.byte_size(value)) <> ":" <> value
+    })
+    |> string.concat
+    |> bytes.sha256,
+  )
 }
 
 fn run_mutant_waves(
@@ -662,6 +1186,7 @@ fn run_mutant_waves(
   workers: List(Snapshot),
   worker_count: Int,
   fingerprint: String,
+  workspace_id: String,
   completed: List(MutantResult),
 ) -> Result(List(MutantResult), String) {
   case remaining {
@@ -673,6 +1198,7 @@ fn run_mutant_waves(
         wave,
         list.take(workers, list.length(wave)),
         fingerprint,
+        workspace_id,
       ))
       run_mutant_waves(
         prepared,
@@ -680,6 +1206,7 @@ fn run_mutant_waves(
         workers,
         worker_count,
         fingerprint,
+        workspace_id,
         list.append(completed, results),
       )
     }
@@ -691,6 +1218,7 @@ fn run_mutant_wave(
   mutants: List(Mutant),
   workers: List(Snapshot),
   fingerprint: String,
+  workspace_id: String,
 ) -> Result(List(MutantResult), String) {
   use contexts <- result.try(pair_contexts(mutants, workers, []))
   use contexts <- result.try(run_runtime_phases(
@@ -699,6 +1227,7 @@ fn run_mutant_wave(
     prepared.config,
     prepared.timeout_ms,
     fingerprint,
+    workspace_id,
   ))
   contexts
   |> list.map(fn(context) {
@@ -733,6 +1262,7 @@ fn run_runtime_phases(
   config: Config,
   timeout_ms: Int,
   fingerprint: String,
+  workspace_id: String,
 ) -> Result(List(ExecutionContext), String) {
   case runtimes {
     [] -> Ok(contexts)
@@ -741,7 +1271,13 @@ fn run_runtime_phases(
         contexts
         |> list.map(fn(context) {
           case
-            cache.read(config.cache_mode, fingerprint, context.mutant, runtime)
+            cache.read(
+              effective_cache_mode(config),
+              workspace_id,
+              fingerprint,
+              context.mutant,
+              runtime,
+            )
           {
             Ok(cached) ->
               ExecutionContext(
@@ -783,45 +1319,62 @@ fn run_runtime_phases(
         |> list.map(fn(run) { run.request })
         |> platform.run_process_batch(config.jobs)
       use completed <- result.try(zip_completed(pending, results, []))
-      let contexts =
+      use contexts <- result.try(
         contexts
-        |> list.map(fn(context) {
+        |> list.try_map(fn(context) {
           case
             list.find(completed, fn(item) {
               item.0.mutant.id == context.mutant.id
             })
           {
-            Error(_) -> context
+            Error(_) -> Ok(context)
             Ok(#(run, timed)) -> {
               let process = timed.process
+              let raw_output = truncate(process.stdout <> process.stderr)
               let value: Outcome = case process.timed_out, process.status {
                 True, _ -> TimedOut
                 False, 0 -> Survived
-                False, -2 -> TestError(process.stderr)
-                False, _ -> Killed
+                False, -2 -> TestError(raw_output)
+                False, 1 -> Killed
+                False, _ -> TestError(raw_output)
               }
               let runtime_outcome =
                 RuntimeOutcome(
                   run.runtime,
                   value,
                   timed.duration_ms,
-                  truncate(process.stdout <> process.stderr),
+                  diagnostic_output(
+                    config.report.diagnostics,
+                    value,
+                    raw_output,
+                  ),
                   False,
                 )
-              cache.write(
-                config.cache_mode,
+              use _ <- result.try(cache.write(
+                effective_cache_mode(config),
+                workspace_id,
                 fingerprint,
                 run.mutant,
                 runtime_outcome,
-              )
-              ExecutionContext(
-                ..context,
-                outcomes: list.append(context.outcomes, [runtime_outcome]),
+              ))
+              Ok(
+                ExecutionContext(
+                  ..context,
+                  outcomes: list.append(context.outcomes, [runtime_outcome]),
+                ),
               )
             }
           }
-        })
-      run_runtime_phases(contexts, rest, config, timeout_ms, fingerprint)
+        }),
+      )
+      run_runtime_phases(
+        contexts,
+        rest,
+        config,
+        timeout_ms,
+        fingerprint,
+        workspace_id,
+      )
     }
   }
 }
@@ -854,9 +1407,31 @@ fn create_workers_loop(
   case remaining <= 0 {
     True -> Ok(list.reverse(workers))
     False -> {
-      use worker <- result.try(snapshot.create(snapshot.root(base)))
-      create_workers_loop(base, remaining - 1, [worker, ..workers])
+      case snapshot.create(snapshot.root(base)) {
+        Ok(worker) ->
+          create_workers_loop(base, remaining - 1, [worker, ..workers])
+        Error(error) ->
+          case dispose_workers(workers) {
+            Ok(Nil) -> Error(error)
+            Error(cleanup_error) ->
+              Error(
+                error <> "; partial worker cleanup failed: " <> cleanup_error,
+              )
+          }
+      }
     }
+  }
+}
+
+fn dispose_workers(workers: List(Snapshot)) -> Result(Nil, String) {
+  case workers {
+    [] -> Ok(Nil)
+    [worker, ..rest] ->
+      case snapshot.dispose(worker), dispose_workers(rest) {
+        Ok(Nil), result -> result
+        Error(error), Ok(Nil) -> Error(error)
+        Error(error), Error(rest_error) -> Error(error <> "; " <> rest_error)
+      }
   }
 }
 
@@ -947,8 +1522,34 @@ fn detect_javascript_runtime(gleam_toml: String) -> Runtime {
 }
 
 fn truncate(output: String) -> String {
-  case string.length(output) > 20_000 {
-    True -> string.slice(output, 0, 20_000) <> "\n[output truncated]"
+  let length = string.length(output)
+  case length > 65_536 {
+    True -> {
+      let head = string.slice(output, 0, 32_768)
+      let tail = string.drop_start(output, length - 32_768)
+      let omitted =
+        string.byte_size(output)
+        - string.byte_size(head)
+        - string.byte_size(tail)
+      head
+      <> "\n["
+      <> int.to_string(omitted)
+      <> " diagnostic bytes omitted]\n"
+      <> tail
+    }
     False -> output
+  }
+}
+
+fn diagnostic_output(
+  mode: DiagnosticsMode,
+  outcome: Outcome,
+  output: String,
+) -> String {
+  case mode, outcome {
+    DiagnosticsNone, _ -> ""
+    DiagnosticsAll, _ -> output
+    DiagnosticsErrors, TimedOut | DiagnosticsErrors, TestError(_) -> output
+    DiagnosticsErrors, Killed | DiagnosticsErrors, Survived -> ""
   }
 }

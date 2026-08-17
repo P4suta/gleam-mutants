@@ -22,6 +22,20 @@ pub fn main() {
       let assert Error(message) = snapshot.create(workspace)
       assert string.contains(message, "symlink or junction")
     }
+    "generated-links" -> {
+      let assert Ok(copy) = snapshot.create(workspace)
+      let built =
+        platform.run_process(
+          "gleam",
+          ["build", "--target", "erlang"],
+          snapshot.root(copy),
+          [],
+          30_000,
+        )
+      assert built.status == 0
+      let assert Ok(Nil) = snapshot.dispose(copy)
+      Nil
+    }
     _ -> panic as "unknown snapshot safety mode"
   }
 }

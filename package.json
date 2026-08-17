@@ -1,0 +1,24 @@
+{
+  "name": "gleam-mutants-development",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/P4suta/gleam-mutants.git"
+  },
+  "bugs": {
+    "url": "https://github.com/P4suta/gleam-mutants/issues"
+  },
+  "homepage": "https://github.com/P4suta/gleam-mutants#readme",
+  "scripts": {
+    "vendor:mte": "node scripts/vendor-mte.mjs",
+    "test:report-schema": "node scripts/check-schema.mjs",
+    "test:report-html": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "ajv": "8.20.0",
+    "mutation-testing-elements": "3.9.0",
+    "mutation-testing-report-schema": "3.9.0"
+  }
+}
