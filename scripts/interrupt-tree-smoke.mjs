@@ -44,6 +44,12 @@ try {
       if (exit.code !== 0 && exit.code !== 130 && exit.signal !== "SIGINT") {
         throw new Error(`${runtime} returned ${JSON.stringify(exit)}`);
       }
+      if (runtime === "erlang") {
+        // BEAM can exit before the detached port group is reaped on hosted
+        // macOS/Linux runners; clean the fixture group before its delayed
+        // marker fires so the smoke test cannot leak a process into CI.
+        try { process.kill(-child.pid, "SIGTERM"); } catch (_) {}
+      }
       await delay(2500);
       if (fs.existsSync(files[2]) || fs.existsSync(files[3])) throw new Error(`${runtime} left a worker descendant alive`);
     } finally {

@@ -471,6 +471,32 @@ function generateSbom(source, distribution, applicationRef, temporaryRoot) {
   }
   delete sbomData.serialNumber;
   sbomData.metadata.timestamp = "1970-01-01T00:00:00Z";
+  if (distribution === "npm") {
+    sbomData.components = [
+      {
+        "bom-ref": applicationRef,
+        type: "application",
+        name: "gleam-mutants",
+        version,
+        licenses: [{ expression: "MIT OR Apache-2.0" }],
+        properties: [{ name: "gleam-mutants:distribution", value: distribution }],
+      },
+      {
+        "bom-ref": mteRef,
+        type: "library",
+        name: "mutation-testing-elements",
+        version: "3.9.0",
+        purl: mteRef,
+        hashes: [{ alg: "SHA-256", content: "751fb010242b0b44e32d84fe7fe0b9ff1da182823b94f59f5c52b001fcfc163b" }],
+        licenses: [{ license: { id: "Apache-2.0" } }],
+        properties: [{ name: "gleam-mutants:npm-integrity", value: "sha512-3G4GhBO8Wc/ZrqOJ5uT8AbM1h/ew9kfX0MIlpy59gWu/amMZyKH3TreKAOMwwXNibhZMOL7A3n5nFvhYWLdtYQ==" }],
+      },
+    ];
+    sbomData.dependencies = [
+      { ref: applicationRef, dependsOn: [mteRef] },
+      { ref: mteRef, dependsOn: [] },
+    ];
+  }
   const stable = value => {
     if (Array.isArray(value)) {
       return value.map(stable).sort((left, right) => {
