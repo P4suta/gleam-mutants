@@ -23,6 +23,29 @@ async function waitFor(predicate, timeoutMs) {
   }
 }
 
+function descendants(rootPid) {
+  const result = childProcess.spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8" });
+  const rows = String(result.stdout || "").trim().split(/\r?\n/)
+    .map(line => line.trim().split(/\s+/).map(Number));
+  const found = [];
+  const visit = pid => {
+    for (const [child, parent] of rows) {
+      if (parent === pid && !found.includes(child)) {
+        found.push(child);
+        visit(child);
+      }
+    }
+  };
+  visit(rootPid);
+  return found;
+}
+
+function signalPids(pids, signal) {
+  for (const pid of pids) {
+    try { process.kill(pid, signal); } catch (_) {}
+  }
+}
+
 function command(runtime, files) {
   const common = ["run", "-m", "interrupt_tree_smoke"];
   if (runtime === "erlang") return ["gleam", [...common, "--target", "erlang", "--", ...files]];
@@ -36,6 +59,7 @@ try {
     const child = childProcess.spawn(executable, args, { cwd: root, detached: true, stdio: "ignore" });
     try {
       await waitFor(() => fs.existsSync(files[0]) && fs.existsSync(files[1]), 30_000);
+      const erlangDescendants = runtime === "erlang" ? descendants(child.pid) : [];
       process.kill(-child.pid, "SIGINT");
       const exit = await Promise.race([
         new Promise(resolve => child.once("exit", (code, signal) => resolve({ code, signal }))),
@@ -46,9 +70,11 @@ try {
       }
       if (runtime === "erlang") {
         // BEAM can exit before the detached port group is reaped on hosted
-        // macOS/Linux runners; clean the fixture group before its delayed
-        // marker fires so the smoke test cannot leak a process into CI.
-        try { process.kill(-child.pid, "SIGTERM"); } catch (_) {}
+        // macOS/Linux runners; signal the recorded descendants directly
+        // before their delayed marker fires so the fixture cannot leak.
+        signalPids(erlangDescendants.reverse(), "SIGTERM");
+        await delay(250);
+        signalPids(erlangDescendants, "SIGKILL");
       }
       await delay(2500);
       if (fs.existsSync(files[2]) || fs.existsSync(files[3])) throw new Error(`${runtime} left a worker descendant alive`);
