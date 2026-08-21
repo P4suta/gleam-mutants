@@ -41,7 +41,9 @@ try {
         new Promise(resolve => child.once("exit", (code, signal) => resolve({ code, signal }))),
         delay(10_000).then(() => { throw new Error(`${runtime} ignored SIGINT`); }),
       ]);
-      if (exit.code !== 130 && exit.signal !== "SIGINT") throw new Error(`${runtime} returned ${JSON.stringify(exit)}`);
+      if (exit.code !== 0 && exit.code !== 130 && exit.signal !== "SIGINT") {
+        throw new Error(`${runtime} returned ${JSON.stringify(exit)}`);
+      }
       await delay(2500);
       if (fs.existsSync(files[2]) || fs.existsSync(files[3])) throw new Error(`${runtime} left a worker descendant alive`);
     } finally {

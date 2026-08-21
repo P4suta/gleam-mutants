@@ -28,8 +28,20 @@ const fixedEnvironment = {
 
 function command(name, args) {
   if (name !== "npm") return [name, args];
-  const npmCli = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  return [process.execPath, [npmCli, ...args]];
+  const bundledNpm = path.join(
+    path.dirname(process.execPath),
+    "node_modules",
+    "npm",
+    "bin",
+    "npm-cli.js",
+  );
+  if (fs.existsSync(bundledNpm)) return [process.execPath, [bundledNpm, ...args]];
+
+  // Some hermetic Node distributions (including mise's Linux builds) do not
+  // bundle npm. In those environments npm is still available on PATH because
+  // the workflow uses it for `npm ci`; use that installation instead of
+  // assuming a Node-local npm tree.
+  return [process.platform === "win32" ? "npm.cmd" : "npm", args];
 }
 
 function run(name, args, cwd = root, options = {}) {
