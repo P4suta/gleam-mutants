@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 Mutation testing for Gleam without modifying or building the original workspace.
 The same mutation catalogue can be exercised on Erlang, Node.js, Deno, and Bun.
-Version 1.0.0 is an intentionally unpublished release candidate. It must not be
+Version 0.1.0 is an intentionally unpublished preview. It must not be
 described as production-ready until the immutable commit has the required
 GitHub-hosted evidence, signatures, SBOMs, benchmarks, and install smokes.
 
@@ -29,11 +29,11 @@ gleam run -m gleam_mutants -- run
 
 The escript and npm artifacts expose the same command tree as `gleam-mutants`.
 No Hex or npm package has been published. This repository contains an
-unpublished 1.0.0 release candidate; a Git tag and GitHub Release do not exist.
+unpublished 0.1.0 preview; a Git tag and GitHub Release do not exist.
 
 ## Supported environments
 
-The 1.0 support window is Gleam 1.17–1.18, Erlang/OTP 27–29, Node.js 22/24
+The 0.1 support window is Gleam 1.17–1.18, Erlang/OTP 27–29, Node.js 22/24
 (LTS lines only), Deno 2.9 LTS, and Bun 1.2–1.3. Tier 1 platforms are Linux,
 Windows 11/Server 2022, and macOS 13.5 or newer. x64 is supported on all three;
 arm64 is tested where a GitHub-hosted runner is available. Network filesystems

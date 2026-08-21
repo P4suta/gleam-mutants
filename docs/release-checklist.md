@@ -20,15 +20,17 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 - [ ] Confirm official Draft-07 schema validation, four-runtime report byte
       parity, offline Chromium/Firefox/WebKit smokes, and vendored
       integrity/hash checks
-- [ ] Confirm version and draft release notes
-- [ ] Confirm no publish token or registry upload step exists
+- [ ] Confirm `VERSION`, `gleam.toml`, CLI output, and `CHANGELOG.md` agree
+- [ ] Confirm release-please has generated the Release PR and all required CI
+      checks passed before merging it
 - [ ] Verify every Sigstore bundle and GitHub artifact attestation against the
       immutable workflow identity and commit
 - [ ] Confirm the immutable candidate commit is on protected `main`
 - [ ] Obtain explicit approval before tagging, creating a GitHub Release, or
       publishing to a registry
 
-Version 1.0.0 remains unpublished. Do not call it production-ready until an
+Version 0.1.0 preview remains unpublished. Do not call it
+production-ready until an
 immutable commit has passing GitHub-hosted evidence on all three operating
 systems plus verified signatures, attestations, SBOMs, benchmarks, and install
 smokes. Tagging, publishing, and creating a release require separate approval.

@@ -1,0 +1,184 @@
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+---
+
+name: Publish release
+
+"on":
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Existing vX.Y.Z tag for a retry; leave empty for a new release
+        required: false
+        type: string
+      publish_hex:
+        description: >-
+          Publish Hex on this run; disable if the tag is already on Hex
+        required: false
+        default: true
+        type: boolean
+      publish_npm:
+        description: >-
+          Publish npm on this run; disable if the tag is already on npm
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-publish-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Configure required reviewers for the `release` environment in repository
+    # settings.
+    environment:
+      name: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      # The environment approval happens before this step, so tagging and
+      # publishing cannot run without explicit human approval.
+      # googleapis/release-please-action v5.0.0
+      - id: release
+        if: inputs.tag == ''
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # yamllint disable-line rule:line-length
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          skip-github-release: false
+
+      - name: Require a release on a new publish run
+        if: inputs.tag == '' && steps.release.outputs.release_created != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "release-please did not create a release;" >&2
+          echo "merge the Release PR first" >&2
+          exit 1
+
+      - id: target
+        name: Resolve and validate release tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-${RELEASE_TAG}}"
+          tag_pattern='^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$'
+          if [[ ! "$tag" =~ $tag_pattern ]]; then
+            echo "invalid release tag: ${tag}" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the immutable release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.target.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify source version matches the release tag
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < VERSION)"
+          test "$version" = "$RELEASE_VERSION"
+          grep -q "version = \"$RELEASE_VERSION\"" gleam.toml
+          expected="pub const current = \"$RELEASE_VERSION\""
+          grep -q "$expected" src/gleam_mutants/version.gleam
+
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          install: true
+          cache: true
+      - run: gleam deps download
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium firefox webkit
+
+      # Keep the publish gate equivalent to the existing hosted candidate gate.
+      - run: mise run check
+      - run: mise run test-integration
+      - run: mise run test-matrix
+      - run: mise run test-property
+      - run: mise run test-faults
+      - run: mise run benchmark
+      - run: mise run dogfood
+      - run: mise run package
+      - run: mise run release-candidate
+
+      # sigstore/cosign-installer v4.1.2
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+      - name: Sign and verify distribution files
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow_path=".github/workflows/release-publish.yml"
+          identity="https://github.com/${GITHUB_REPOSITORY}/${workflow_path}"
+          identity_regexp="^${identity}@refs/"
+          identity_regexp+="(heads/main|tags/v[0-9]+\\.[0-9]+\\.[0-9]+.*)$"
+          find dist -type f ! -name '*.sigstore.json' \
+            -print0 > "$RUNNER_TEMP/release-files"
+          while IFS= read -r -d '' file; do
+            cosign sign-blob --yes --bundle "${file}.sigstore.json" "$file"
+            cosign verify-blob \
+              --bundle "${file}.sigstore.json" \
+              --certificate-oidc-issuer \
+              https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp "$identity_regexp" \
+              "$file"
+          done < "$RUNNER_TEMP/release-files"
+
+      - id: attest
+        # actions/attest v4.2.1
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Retain the GitHub attestation bundle
+        shell: bash
+        run: |
+          bundle="${{ steps.attest.outputs.bundle-path }}"
+          cp "$bundle" dist/github-attestation.sigstore.json
+
+      - name: Upload signed assets to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.target.outputs.tag }}
+        shell: bash
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber
+
+      - name: Publish the Hex package
+        if: inputs.publish_hex
+        env:
+          HEXPM_API_KEY: ${{ secrets.HEXPM_API_KEY }}
+        run: gleam publish --yes
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.19.0
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish the npm package with Trusted Publishing
+        if: inputs.publish_npm
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          set -euo pipefail
+          npm_tarball="dist/npm/gleam-mutants-${RELEASE_VERSION}.tgz"
+          test -f "$npm_tarball"
+          npm publish "$npm_tarball" --access public --provenance

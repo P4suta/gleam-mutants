@@ -4,16 +4,17 @@
 import childProcess from "node:child_process";
 import fs from "node:fs";
 
+const version = fs.readFileSync("VERSION", "utf8").trim();
+if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+  throw new Error(`VERSION is not a valid semantic version: ${version}`);
+}
 const gleamToml = fs.readFileSync("gleam.toml", "utf8");
 const match = gleamToml.match(/^version\s*=\s*"([^"]+)"/m);
 if (!match) throw new Error("gleam.toml package version is missing");
-const version = match[1];
+if (match[1] !== version) throw new Error(`gleam.toml version drift: expected ${version}`);
 
 const expectations = [
   ["src/gleam_mutants/version.gleam", `pub const current = "${version}"`],
-  ["CHANGELOG.md", `## ${version} - Unreleased`],
-  ["RELEASE_NOTES.md", `# ${version} release notes (draft)`],
-  [".github/workflows/ci.yml", `gleam-mutants-${version}-unpublished`],
 ];
 for (const [file, expected] of expectations) {
   if (!fs.readFileSync(file, "utf8").includes(expected)) {
@@ -30,4 +31,4 @@ if (cli.error) throw cli.error;
 if (cli.status !== 0 || cli.stdout.trim() !== `gleam-mutants ${version}`) {
   throw new Error(`CLI version drift: ${cli.stdout}${cli.stderr}`);
 }
-console.log(`Version ${version} matches CLI, source, artifacts, changelog, and release notes`);
+console.log(`Version ${version} matches VERSION, gleam.toml, source, and CLI output`);

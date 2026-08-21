@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 name = "gleam_mutants"
-version = "1.0.0"
+# x-release-please-start-version
+version = "0.1.0"
+# x-release-please-end
 description = "Mutation testing for Gleam across Erlang, Node, Deno, and Bun"
 licences = ["MIT", "Apache-2.0"]
 repository = { type = "github", user = "P4suta", repo = "gleam-mutants" }

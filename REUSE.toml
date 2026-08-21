@@ -7,6 +7,9 @@ version = 1
 path = [
   "LICENSE-APACHE",
   "LICENSE-MIT",
+  ".release-please-manifest.json",
+  "release-please-config.json",
+  "VERSION",
   "manifest.toml",
   "package.json",
   "package-lock.json",

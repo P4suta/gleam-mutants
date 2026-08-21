@@ -12,10 +12,14 @@ import Ajv from "ajv";
 
 const root = process.cwd();
 const dist = path.join(root, "dist");
+const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
+if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+  throw new Error(`VERSION is not a valid semantic version: ${version}`);
+}
 const gleamToml = fs.readFileSync(path.join(root, "gleam.toml"), "utf8");
 const versionMatch = gleamToml.match(/^version\s*=\s*"([^"]+)"/m);
 if (!versionMatch) throw new Error("gleam.toml package version is missing");
-const version = versionMatch[1];
+if (versionMatch[1] !== version) throw new Error("VERSION and gleam.toml package version differ");
 const strykerSchema = JSON.parse(fs.readFileSync(path.join(root, "schema", "mutation-testing-report-schema-3.9.0.json"), "utf8"));
 const validateStryker = new Ajv({ allErrors: true, strict: false, validateFormats: false }).compile(strykerSchema);
 const fixedEnvironment = {
@@ -67,7 +71,17 @@ function write(file, text, mode) {
 }
 
 function copyProject(destination) {
-  const ignored = new Set([".git", "build", "dist", ".gleam_mutants", "node_modules", "gleam_mutants"]);
+  const ignored = new Set([
+    ".git",
+    "build",
+    "dist",
+    ".gleam_mutants",
+    "node_modules",
+    "gleam_mutants",
+    "reports",
+    "test-results",
+    "playwright-report",
+  ]);
   fs.cpSync(root, destination, {
     recursive: true,
     preserveTimestamps: true,
@@ -177,6 +191,19 @@ function canonicalizeHexTarball(file) {
   fs.writeFileSync(file, renderTar(outer));
 }
 
+function assertNoReportArtifactsInHexTarball(file) {
+  const listing = run("tar", ["-tf", file], root, { capture: true });
+  const forbidden = /(^|\/)(reports|test-results|playwright-report)(\/|$)/i;
+  const entries = listing.split(/\r?\n/).map(entry => entry.trim()).filter(Boolean);
+  const leaked = entries.filter(entry => forbidden.test(entry));
+  if (leaked.length > 0) {
+    throw new Error(`Hex tarball contains report/test artifacts: ${leaked.join(", ")}`);
+  }
+  if (entries.some(entry => entry.startsWith("/") || /^[A-Za-z]:[\\/]/.test(entry))) {
+    throw new Error("Hex tarball contains an absolute local path");
+  }
+}
+
 function extractHexSource(artifact, destination) {
   const outer = tarEntries(fs.readFileSync(artifact));
   const contents = outer.find(entry => entry.name === "contents.tar.gz");
@@ -281,7 +308,7 @@ function buildHex(temporaryRoot) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.copyFileSync(artifact, target);
   canonicalizeHexTarball(target);
-  run("tar", ["-tf", target], root, { capture: true });
+  assertNoReportArtifactsInHexTarball(target);
   return { artifact: target, report: smokeHexArtifact(target, temporaryRoot) };
 }
 

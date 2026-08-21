@@ -79,7 +79,7 @@ jobs:
       - run: mise run package
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: gleam-mutants-1.0.0-unpublished
+          name: gleam-mutants-0.1.0-unpublished
           path: dist/
           if-no-files-found: error
           retention-days: 14
