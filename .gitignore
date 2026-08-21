@@ -10,3 +10,6 @@
 /gleam_mutants.cmd
 erl_crash.dump
 node_modules
+/reports/
+/test-results/
+/playwright-report/

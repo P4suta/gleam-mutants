@@ -11,7 +11,7 @@ pub type Context {
 pub fn strict(context: Context) -> Bool {
   case context.strict {
     Some(value) -> value
-    None -> context.ci || !context.tty
+    None -> False
   }
 }
 

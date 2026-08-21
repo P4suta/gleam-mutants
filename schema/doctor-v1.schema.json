@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gleam-mutants.invalid/schema/doctor-v1.schema.json",
+  "title": "gleam-mutants doctor output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "workspace", "config_ok", "workspace_writable", "cache_writable", "temporary_writable", "tools"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "workspace": { "type": "string" },
+    "config_ok": { "type": "boolean" },
+    "workspace_writable": { "type": "boolean" },
+    "cache_writable": { "type": "boolean" },
+    "temporary_writable": { "type": "boolean" },
+    "tools": { "type": "array", "items": { "$ref": "#/$defs/tool" } }
+  },
+  "$defs": {
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "ok", "executable", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "executable": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    }
+  }
+}

@@ -8,6 +8,7 @@ import gleam/result
 import gleam/string
 import gleam_mutants/core/bytes
 import gleam_mutants/core/glob
+import gleam_mutants/core/mutant
 import gleam_mutants/core/path
 import gleam_mutants/platform
 import simplifile
@@ -23,27 +24,130 @@ pub opaque type Snapshot {
 const tool_directory = ".gleam_mutants"
 
 pub fn create(source_root: String) -> Result(Snapshot, String) {
+  create_excluding(source_root, [])
+}
+
+pub fn create_excluding(
+  source_root: String,
+  excluded_directories: List(String),
+) -> Result(Snapshot, String) {
+  create_attempt(source_root, excluded_directories, 1)
+}
+
+fn create_attempt(
+  source_root: String,
+  excluded_directories: List(String),
+  retries: Int,
+) -> Result(Snapshot, String) {
   let destination =
     path.join(
       platform.temporary_directory(),
-      "gleam-mutants-"
-        <> int.to_string(platform.process_id())
-        <> "-"
-        <> int.to_string(platform.now_milliseconds()),
+      "gleam-mutants-" <> platform.random_nonce(),
     )
   use _ <- result.try(
-    simplifile.create_directory_all(destination)
+    simplifile.create_directory(destination)
     |> result.map_error(simplifile.describe_error),
   )
-  case copy_directory(source_root, destination, "", []) {
+  let exclusions = list.map(excluded_directories, mutant.normalize_path)
+  case copy_directory(source_root, destination, "", [], exclusions) {
     Ok(entries) -> {
       let sorted =
         list.sort(entries, fn(a, b) { string.compare(a.path, b.path) })
-      Ok(Snapshot(destination, sorted, manifest_digest(sorted)))
+      let copied_digest = manifest_digest(sorted)
+      case scan_directory(source_root, "", [], exclusions) {
+        Error(error) -> cleanup_failed_snapshot(destination, error)
+        Ok(current_entries) -> {
+          let current_digest =
+            current_entries
+            |> list.sort(fn(a, b) { string.compare(a.path, b.path) })
+            |> manifest_digest
+          case current_digest == copied_digest {
+            True -> Ok(Snapshot(destination, sorted, copied_digest))
+            False ->
+              case platform.delete_tree(destination), retries {
+                Ok(Nil), retries if retries > 0 ->
+                  create_attempt(source_root, excluded_directories, retries - 1)
+                Ok(Nil), _ ->
+                  Error("workspace changed while snapshot was being captured")
+                Error(cleanup_error), _ ->
+                  Error(
+                    "workspace changed while snapshot was being captured; cleanup failed: "
+                    <> cleanup_error,
+                  )
+              }
+          }
+        }
+      }
     }
-    Error(error) -> {
-      let _ = simplifile.delete(destination)
-      Error(error)
+    Error(error) -> cleanup_failed_snapshot(destination, error)
+  }
+}
+
+fn cleanup_failed_snapshot(
+  destination: String,
+  error: String,
+) -> Result(a, String) {
+  case platform.delete_tree(destination) {
+    Ok(Nil) -> Error(error)
+    Error(cleanup_error) ->
+      Error(error <> "; snapshot cleanup failed: " <> cleanup_error)
+  }
+}
+
+fn scan_directory(
+  source_root: String,
+  relative: String,
+  entries: List(ManifestEntry),
+  excluded_directories: List(String),
+) -> Result(List(ManifestEntry), String) {
+  let directory = path.join(source_root, relative)
+  use names <- result.try(
+    simplifile.read_directory(directory)
+    |> result.map_error(simplifile.describe_error),
+  )
+  use entries, name <- list.try_fold(
+    names |> list.sort(string.compare),
+    entries,
+  )
+  let child_relative = case relative {
+    "" -> name
+    _ -> path.join(relative, name)
+  }
+  case excluded(child_relative, excluded_directories) {
+    True -> Ok(entries)
+    False -> {
+      let source = path.join(source_root, child_relative)
+      use info <- result.try(
+        simplifile.link_info(source)
+        |> result.map_error(simplifile.describe_error),
+      )
+      case simplifile.file_info_type(info), platform.is_reparse_point(source) {
+        simplifile.Symlink, _ | _, True ->
+          Error("refusing symlink or junction in workspace: " <> child_relative)
+        simplifile.Other, _ ->
+          Error("refusing special file in workspace: " <> child_relative)
+        simplifile.Directory, _ ->
+          scan_directory(
+            source_root,
+            child_relative,
+            entries,
+            excluded_directories,
+          )
+        simplifile.File, _ -> {
+          use content <- result.try(
+            simplifile.read_bits(source)
+            |> result.map_error(simplifile.describe_error),
+          )
+          Ok([
+            ManifestEntry(
+              child_relative,
+              bytes.sha256_bits(content),
+              bit_array.byte_size(content),
+            ),
+            ..entries
+          ])
+        }
+      }
     }
   }
 }
@@ -53,6 +157,7 @@ fn copy_directory(
   destination_root: String,
   relative: String,
   entries: List(ManifestEntry),
+  excluded_directories: List(String),
 ) -> Result(List(ManifestEntry), String) {
   let source_directory = path.join(source_root, relative)
   use names <- result.try(
@@ -67,9 +172,16 @@ fn copy_directory(
     "" -> name
     _ -> path.join(relative, name)
   }
-  case excluded(child_relative) {
+  case excluded(child_relative, excluded_directories) {
     True -> Ok(entries)
-    False -> copy_entry(source_root, destination_root, child_relative, entries)
+    False ->
+      copy_entry(
+        source_root,
+        destination_root,
+        child_relative,
+        entries,
+        excluded_directories,
+      )
   }
 }
 
@@ -78,6 +190,7 @@ fn copy_entry(
   destination_root: String,
   relative: String,
   entries: List(ManifestEntry),
+  excluded_directories: List(String),
 ) -> Result(List(ManifestEntry), String) {
   let source = path.join(source_root, relative)
   let destination = path.join(destination_root, relative)
@@ -95,7 +208,21 @@ fn copy_entry(
         simplifile.create_directory_all(destination)
         |> result.map_error(simplifile.describe_error),
       )
-      copy_directory(source_root, destination_root, relative, entries)
+      use entries <- result.try(copy_directory(
+        source_root,
+        destination_root,
+        relative,
+        entries,
+        excluded_directories,
+      ))
+      use _ <- result.try(
+        simplifile.set_permissions_octal(
+          destination,
+          simplifile.file_info_permissions_octal(info),
+        )
+        |> result.map_error(simplifile.describe_error),
+      )
+      Ok(entries)
     }
     simplifile.File, _ -> {
       use content <- result.try(
@@ -106,11 +233,13 @@ fn copy_entry(
         simplifile.write_bits(content, to: destination)
         |> result.map_error(simplifile.describe_error),
       )
-      let _ =
+      use _ <- result.try(
         simplifile.set_permissions_octal(
           destination,
           simplifile.file_info_permissions_octal(info),
         )
+        |> result.map_error(simplifile.describe_error),
+      )
       Ok([
         ManifestEntry(
           relative,
@@ -123,12 +252,15 @@ fn copy_entry(
   }
 }
 
-fn excluded(relative: String) -> Bool {
+fn excluded(relative: String, excluded_directories: List(String)) -> Bool {
   let first = relative |> string.split("/") |> list.first |> result.unwrap("")
   list.contains(
     [".git", "build", tool_directory, ".mise", "node_modules"],
     first,
   )
+  || list.any(excluded_directories, fn(directory) {
+    relative == directory || string.starts_with(relative, directory <> "/")
+  })
 }
 
 fn manifest_digest(entries: List(ManifestEntry)) -> String {
@@ -173,6 +305,5 @@ pub fn source_files(
 }
 
 pub fn dispose(snapshot: Snapshot) -> Result(Nil, String) {
-  simplifile.delete(snapshot.root)
-  |> result.map_error(simplifile.describe_error)
+  platform.delete_tree(snapshot.root)
 }

@@ -59,6 +59,50 @@ pub fn cpu_count() -> Int
 @external(javascript, "./gleam_mutants_platform_ffi.mjs", "now_milliseconds")
 pub fn now_milliseconds() -> Int
 
+@external(erlang, "gleam_mutants_platform_ffi", "monotonic_milliseconds")
+@external(javascript, "./gleam_mutants_platform_ffi.mjs", "monotonic_milliseconds")
+pub fn monotonic_milliseconds() -> Int
+
+@external(erlang, "gleam_mutants_platform_ffi", "resolve_path")
+@external(javascript, "./gleam_mutants_platform_ffi.mjs", "resolve_path")
+pub fn resolve_path(path: String) -> String
+
+@external(erlang, "gleam_mutants_platform_ffi", "architecture")
+@external(javascript, "./gleam_mutants_platform_ffi.mjs", "architecture")
+pub fn architecture() -> String
+
+@external(erlang, "gleam_mutants_platform_ffi", "environment")
+@external(javascript, "./gleam_mutants_platform_ffi.mjs", "environment")
+pub fn environment() -> String
+
+@external(erlang, "gleam_mutants_platform_ffi", "random_nonce")
+@external(javascript, "./gleam_mutants_platform_ffi.mjs", "random_nonce")
+pub fn random_nonce() -> String
+
+@external(erlang, "gleam_mutants_platform_ffi", "delete_tree")
+@external(javascript, "./gleam_mutants_platform_ffi.mjs", "delete_tree")
+fn do_delete_tree(path: String) -> String
+
+pub fn delete_tree(path: String) -> Result(Nil, String) {
+  case do_delete_tree(path) {
+    "" -> Ok(Nil)
+    error -> Error(error)
+  }
+}
+
+@external(erlang, "gleam_mutants_platform_ffi", "acquire_lock")
+@external(javascript, "./gleam_mutants_platform_ffi.mjs", "acquire_lock")
+pub fn acquire_lock(
+  path: String,
+  run_id: String,
+  started_ms: Int,
+  wait_ms: Int,
+) -> String
+
+@external(erlang, "gleam_mutants_platform_ffi", "release_lock")
+@external(javascript, "./gleam_mutants_platform_ffi.mjs", "release_lock")
+pub fn release_lock(path: String, token: String) -> String
+
 @external(erlang, "gleam_mutants_platform_ffi", "process_id")
 @external(javascript, "./gleam_mutants_platform_ffi.mjs", "process_id")
 pub fn process_id() -> Int

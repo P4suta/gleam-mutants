@@ -37,22 +37,22 @@ pub fn runtime_name(runtime: Runtime) -> String {
 }
 
 pub fn aggregate(outcomes: List(RuntimeOutcome)) -> Outcome {
-  case list.any(outcomes, fn(item) { item.outcome == Survived }) {
-    True -> Survived
-    False ->
-      case list.any(outcomes, fn(item) { item.outcome == TimedOut }) {
-        True -> TimedOut
+  case
+    list.find(outcomes, fn(item) {
+      case item.outcome {
+        TestError(_) -> True
+        _ -> False
+      }
+    })
+  {
+    Ok(item) -> item.outcome
+    Error(_) ->
+      case list.any(outcomes, fn(item) { item.outcome == Survived }) {
+        True -> Survived
         False ->
-          case
-            list.find(outcomes, fn(item) {
-              case item.outcome {
-                TestError(_) -> True
-                _ -> False
-              }
-            })
-          {
-            Ok(item) -> item.outcome
-            Error(_) -> Killed
+          case list.any(outcomes, fn(item) { item.outcome == TimedOut }) {
+            True -> TimedOut
+            False -> Killed
           }
       }
   }

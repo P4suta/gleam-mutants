@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+---
+
+name: Release PR
+
+"on":
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # googleapis/release-please-action v5.0.0
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # yamllint disable-line rule:line-length
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Release creation is deliberately reserved for release-publish.yml.
+          skip-github-release: true

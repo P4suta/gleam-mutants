@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+---
+
+name: Nightly matrix and fuzz
+
+"on":
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  runtime-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        host: [erlang, node, deno, bun]
+        target: [erlang, node, deno, bun]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          install: true
+          cache: true
+      - run: gleam deps download
+      - run: >-
+          node scripts/runtime-cell.mjs
+          ${{ matrix.host }} ${{ matrix.target }}
+
+  property-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          install: true
+          cache: true
+      - run: gleam deps download
+      - run: node scripts/property-fuzz.mjs
+        env:
+          GLEAM_MUTANTS_FUZZ_SECONDS: "900"

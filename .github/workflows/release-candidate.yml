@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+---
+
+name: Unpublished preview evidence
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  immutable-evidence:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        host: [erlang, node, deno, bun]
+        target: [erlang, node, deno, bun]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+      - run: git rev-parse HEAD
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          install: true
+          cache: true
+      - run: gleam deps download
+      - run: >-
+          node scripts/runtime-cell.mjs
+          ${{ matrix.host }} ${{ matrix.target }}
+
+  candidate-artifacts:
+    needs: immutable-evidence
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          install: true
+          cache: true
+      - run: gleam deps download
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: mise run check
+      - run: mise run test-integration
+      - run: mise run test-matrix
+      - run: mise run test-property
+      - run: mise run test-faults
+      - run: mise run benchmark
+      - run: mise run dogfood
+      - run: mise run package
+      - run: mise run release-candidate
+      # sigstore/cosign-installer v4.1.2
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+      - name: Sign candidate files without publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}"
+          identity="${identity}/.github/workflows/release-candidate.yml"
+          find dist -type f ! -name '*.sigstore.json' \
+            -print0 > "$RUNNER_TEMP/files"
+          while IFS= read -r -d '' file; do
+            cosign sign-blob --yes --bundle "${file}.sigstore.json" "$file"
+            cosign verify-blob \
+              --bundle "${file}.sigstore.json" \
+              --certificate-oidc-issuer \
+              https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp \
+              "^${identity}@refs/.*$" \
+              "$file"
+          done < "$RUNNER_TEMP/files"
+      - id: attest
+        # actions/attest v4.2.1
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: Retain the GitHub attestation bundle
+        shell: bash
+        run: >-
+          cp '${{ steps.attest.outputs.bundle-path }}'
+          dist/github-attestation.sigstore.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gleam-mutants-0.1.0-signed-unpublished-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90

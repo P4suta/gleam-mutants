@@ -7,9 +7,61 @@ version = 1
 path = [
   "LICENSE-APACHE",
   "LICENSE-MIT",
+  ".release-please-manifest.json",
+  "release-please-config.json",
+  "VERSION",
   "manifest.toml",
-  "schema/*.json",
+  "package.json",
+  "package-lock.json",
+  "schema/doctor-v1.schema.json",
+  "schema/list-v1.schema.json",
+  "schema/run-report-v1.schema.json",
+  "priv/gleam_mutants/schema/doctor-v1.schema.json",
+  "priv/gleam_mutants/schema/list-v1.schema.json",
+  "priv/gleam_mutants/schema/run-report-v1.schema.json",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 gleam_mutants contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
+path = [
+  "reports/mutation/mutation.json",
+  "reports/mutation/mutation.html",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gleam_mutants contributors"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
+path = [
+  "schema/mutation-testing-report-schema-3.9.0.json",
+  "priv/gleam_mutants/schema/mutation-testing-report-schema-3.9.0.json",
+  "priv/gleam_mutants/vendor/mutation-testing-elements/3.9.0/LICENSE",
+  "vendor/mutation-testing-elements/3.9.0/LICENSE",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Stryker Mutator contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = [
+  "priv/gleam_mutants/THIRD_PARTY_NOTICES.md",
+  "priv/gleam_mutants/vendor/mutation-testing-elements/3.9.0/PROVENANCE.json",
+  "vendor/mutation-testing-elements/3.9.0/PROVENANCE.json",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gleam_mutants contributors"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
+path = "priv/gleam_mutants/LICENSE-MIT"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 gleam_mutants contributors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "priv/gleam_mutants/LICENSE-APACHE"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The Apache Software Foundation"
+SPDX-License-Identifier = "Apache-2.0"
