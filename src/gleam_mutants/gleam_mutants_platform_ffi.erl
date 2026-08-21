@@ -222,6 +222,9 @@ is_reparse_point(Path) ->
 exit(Code) -> erlang:halt(Code).
 
 run_process(Executable0, Args0, WorkingDirectory, Environment, Timeout) ->
+    preserve_interrupt(run_process_raw(Executable0, Args0, WorkingDirectory, Environment, Timeout)).
+
+run_process_raw(Executable0, Args0, WorkingDirectory, Environment, Timeout) ->
     Executable = resolve_executable(Executable0),
     Args = [unicode:characters_to_list(A) || A <- Args0],
     Env = [{unicode:characters_to_list(K), unicode:characters_to_list(V)} || {K, V} <- Environment],
@@ -248,14 +251,17 @@ run_process_batch(Requests, Jobs) ->
             Started = erlang:monotonic_time(millisecond),
             {Executable, Args, WorkingDirectory, Environment, Timeout} = Request,
             {Status, Stdout, Stderr, TimedOut} =
-                run_process(Executable, Args, WorkingDirectory, Environment, Timeout),
+                run_process_raw(Executable, Args, WorkingDirectory, Environment, Timeout),
             Duration = erlang:monotonic_time(millisecond) - Started,
             Parent ! {Ref, {Status, Stdout, Stderr, TimedOut, Duration}}
         end),
         Ref
     end || Request <- Batch],
     Results = [receive {Ref, Result} -> Result end || Ref <- Refs],
-    Results ++ run_process_batch(Rest, Jobs).
+    case lists:any(fun({130, _, _, _, _}) -> true; (_) -> false end, Results) of
+        true -> erlang:halt(130);
+        false -> Results ++ run_process_batch(Rest, Jobs)
+    end.
 resolve_executable(Name) ->
     NameList = unicode:characters_to_list(Name),
     case filename:pathtype(NameList) of

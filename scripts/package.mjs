@@ -471,8 +471,29 @@ function generateSbom(source, distribution, applicationRef, temporaryRoot) {
   }
   delete sbomData.serialNumber;
   sbomData.metadata.timestamp = "1970-01-01T00:00:00Z";
+  const stable = value => {
+    if (Array.isArray(value)) {
+      return value.map(stable).sort((left, right) => {
+        const a = JSON.stringify(left);
+        const b = JSON.stringify(right);
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+    }
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, item]) => [key, stable(item)]),
+      );
+    }
+    return value;
+  };
+  for (const component of sbomData.components) {
+    component.properties = (component.properties || []).filter(property => !property.name?.startsWith("syft:location:"));
+  }
+  const canonical = stable(sbomData);
   const sbom = path.join(dist, `gleam-mutants-${version}-${distribution}.cdx.json`);
-  fs.writeFileSync(sbom, JSON.stringify(sbomData) + "\n", "utf8");
+  fs.writeFileSync(sbom, JSON.stringify(canonical) + "\n", "utf8");
   return sbom;
 }
 
