@@ -159,7 +159,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ steps.target.outputs.tag }}
         shell: bash
-        run: gh release upload "$RELEASE_TAG" dist/* --clobber
+        run: |
+          set -euo pipefail
+          mapfile -d '' release_files < <(find dist -type f -print0)
+          if (( ${#release_files[@]} == 0 )); then
+            echo "no release files found under dist" >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${release_files[@]}" --clobber
 
       - name: Publish the Hex package
         if: inputs.publish_hex

@@ -12,8 +12,9 @@ import gleam_mutants/platform
 pub fn every_v1_operator_has_a_golden_candidate_test() {
   let source =
     "pub fn identity(value) { value }\n\npub fn exercise(flag: Bool, a: Int, b: Int, x: Float, y: Float) {\n  let _ = True\n  let _ = !flag\n  let _ = flag && False\n  let _ = a == b\n  let _ = a < b\n  let _ = a + b\n  let _ = x +. y\n  let _ = 1\n  let _ = 1.0\n  let _ = \"text\"\n  let _ = [1]\n  a |> identity\n}\n"
-  let assert Ok(mutants) =
+  let assert Ok(discovered_catalog) =
     catalog.discover("src/golden.gleam", source, operator.all())
+  let mutants = discovered_catalog.mutants
   let discovered = list.map(mutants, fn(mutant) { mutant.operator })
   operator.all()
   |> list.each(fn(expected) {

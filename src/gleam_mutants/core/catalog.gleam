@@ -12,7 +12,35 @@ import gleam_mutants/core/operator.{type Operator}
 import gleam_mutants/core/span
 
 pub type Catalog {
-  Catalog(mutants: List(Mutant), rejected: List(RejectedMutant))
+  Catalog(mutants: List(Mutant), rejected: List(RejectedCandidate))
+}
+
+/// Describes whether a rule is based only on syntax or on definite type evidence.
+pub type AnalysisMode {
+  SyntaxBased
+  Semantic
+}
+
+/// Evidence accepted by the semantic rule layer.
+pub type TypeEvidence {
+  BooleanLiteralEvidence
+  BooleanNegationEvidence
+  IntegerLiteralEvidence
+  FloatLiteralEvidence
+  StringLiteralEvidence
+  ListLiteralEvidence
+  BinaryOperatorEvidence(glance.BinaryOperator)
+  PipelineEvidence
+}
+
+/// The internal rule that connects an operator to its analysis evidence.
+pub type MutationRule {
+  MutationRule(operator: Operator, mode: AnalysisMode, evidence: TypeEvidence)
+}
+
+/// A candidate that was intentionally not emitted because its type evidence was insufficient.
+pub type RejectedCandidate {
+  RejectedCandidate(path: String, span: glance.Span, reason: String)
 }
 
 pub type RejectedMutant {
@@ -23,9 +51,9 @@ pub fn discover(
   path: String,
   source: String,
   enabled: List(Operator),
-) -> Result(List(Mutant), glance.Error) {
+) -> Result(Catalog, glance.Error) {
   use module_ <- result.map(glance.module(source))
-  let candidates =
+  let expressions =
     list.append(
       module_.functions
         |> list.flat_map(fn(definition) {
@@ -36,13 +64,61 @@ pub fn discover(
           expressions(definition.definition.value)
         }),
     )
+  let candidates =
+    expressions
     |> list.flat_map(expression_candidates(source, path, _))
     |> list.filter(fn(candidate) { list.contains(enabled, candidate.operator) })
+  let rejected =
+    expressions
+    |> list.flat_map(rejected_candidates(path, enabled, _))
 
   candidates
   |> list.map(mutant.from_candidate(source, _))
   |> deduplicate
   |> assign_display_ids
+  |> fn(mutants) { Catalog(mutants, rejected) }
+}
+
+fn semantic_rule(operator: Operator, evidence: TypeEvidence) -> MutationRule {
+  MutationRule(operator, Semantic, evidence)
+}
+
+fn syntax_rule(operator: Operator, evidence: TypeEvidence) -> MutationRule {
+  MutationRule(operator, SyntaxBased, evidence)
+}
+
+fn rule_operator(rule: MutationRule) -> Operator {
+  let MutationRule(operator, _, _) = rule
+  operator
+}
+
+fn rejected_candidates(
+  path: String,
+  enabled: List(Operator),
+  expression: glance.Expression,
+) -> List(RejectedCandidate) {
+  let own = case expression {
+    glance.Variable(location, name) ->
+      case name != "True" && name != "False" && needs_type_evidence(enabled) {
+        True -> [RejectedCandidate(path, location, "type-evidence-unavailable")]
+        False -> []
+      }
+    _ -> []
+  }
+  list.append(
+    own,
+    child_expressions(expression)
+      |> list.flat_map(rejected_candidates(path, enabled, _)),
+  )
+}
+
+fn needs_type_evidence(enabled: List(Operator)) -> Bool {
+  list.any(enabled, fn(kind) {
+    kind == operator.IntegerNeutral
+    || kind == operator.FloatNeutral
+    || kind == operator.StringNeutral
+    || kind == operator.ListNeutral
+  })
 }
 
 fn deduplicate(mutants: List(Mutant)) -> List(Mutant) {
@@ -79,16 +155,28 @@ fn expression_candidates(
 ) -> List(Candidate) {
   let own = case expression {
     glance.Variable(location, "True") -> [
-      make_candidate(source, path, operator.BooleanLiteral, location, "False"),
+      make_candidate(
+        source,
+        path,
+        semantic_rule(operator.BooleanLiteral, BooleanLiteralEvidence),
+        location,
+        "False",
+      ),
     ]
     glance.Variable(location, "False") -> [
-      make_candidate(source, path, operator.BooleanLiteral, location, "True"),
+      make_candidate(
+        source,
+        path,
+        semantic_rule(operator.BooleanLiteral, BooleanLiteralEvidence),
+        location,
+        "True",
+      ),
     ]
     glance.NegateBool(location, value) -> [
       make_candidate(
         source,
         path,
-        operator.BooleanNegation,
+        semantic_rule(operator.BooleanNegation, BooleanNegationEvidence),
         location,
         source_for(source, value.location),
       ),
@@ -97,7 +185,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        operator.IntegerNeutral,
+        semantic_rule(operator.IntegerNeutral, IntegerLiteralEvidence),
         location,
         case value == "0" {
           True -> "1"
@@ -109,7 +197,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        operator.FloatNeutral,
+        semantic_rule(operator.FloatNeutral, FloatLiteralEvidence),
         location,
         case value == "0.0" {
           True -> "1.0"
@@ -121,7 +209,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        operator.StringNeutral,
+        semantic_rule(operator.StringNeutral, StringLiteralEvidence),
         location,
         case value == "" {
           True -> "\"mutant\""
@@ -130,7 +218,13 @@ fn expression_candidates(
       ),
     ]
     glance.List(location, elements, rest) if elements != [] || rest != None -> [
-      make_candidate(source, path, operator.ListNeutral, location, "[]"),
+      make_candidate(
+        source,
+        path,
+        semantic_rule(operator.ListNeutral, ListLiteralEvidence),
+        location,
+        "[]",
+      ),
     ]
     glance.BinaryOperator(location, binary_operator, left, right) ->
       binary_candidates(source, path, location, binary_operator, left, right)
@@ -165,7 +259,7 @@ fn binary_candidates(
           make_candidate(
             source,
             path,
-            kind,
+            semantic_rule(kind, BinaryOperatorEvidence(binary_operator)),
             location,
             source_for(source, left.location)
               <> replacement_gap
@@ -181,7 +275,7 @@ fn binary_candidates(
           make_candidate(
             source,
             path,
-            operator.PipelineStageDeletion,
+            syntax_rule(operator.PipelineStageDeletion, PipelineEvidence),
             location,
             source_for(source, left.location),
           ),
@@ -262,7 +356,7 @@ fn replace_operator_lines(
 fn make_candidate(
   source: String,
   path: String,
-  kind: Operator,
+  rule: MutationRule,
   location: glance.Span,
   replacement: String,
 ) -> Candidate {
@@ -271,7 +365,7 @@ fn make_candidate(
   let candidate_span = span.unsafe_new(start, end)
   Candidate(
     path: path,
-    operator: kind,
+    operator: rule_operator(rule),
     span: candidate_span,
     original: bytes.unsafe_slice(source, start, end),
     replacement: replacement,

@@ -10,6 +10,14 @@ nested interval instrumentation, outcomes, scores, and exit policy. Effects are
 provided through concrete filesystem, compiler/process, clock, cache, and
 reporting capabilities.
 
+Catalogue discovery has a small internal rule layer. `MutationRule` records the
+operator, `AnalysisMode`, and `TypeEvidence`. The default discovery path remains
+syntax-based for compatibility, while semantic rules are created only from
+definite Glance evidence (literals and typed binary operators). Expressions
+without evidence are not guessed into a typed mutation; the internal Catalog
+retains a `type-evidence-unavailable` reason. Compiler-invalid candidates are
+retained as rejected entries for diagnostics.
+
 The opaque phase pipeline is:
 
 ```text

@@ -7,9 +7,10 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 ## Supported versions
 
-The 1.0.0 release candidate is not a production release. Security fixes are
-made on `main` until the first stable release. After GA, the latest 1.0 patch
-line will receive security fixes; older prerelease builds are unsupported.
+Version 0.1.0 is an unreleased development snapshot, not a production support
+line. Security fixes are made on `main` until the first stable release. After
+GA, the latest stable patch line will receive security fixes; development
+snapshots are unsupported.
 
 ## Reporting a vulnerability
 

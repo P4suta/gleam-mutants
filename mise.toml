@@ -92,6 +92,7 @@ run = [
   "uvx --from \"reuse[charset-normalizer]==6.2.0\" reuse lint",
   "node scripts/check-vendor.mjs",
   "node scripts/check-version.mjs",
+  "node scripts/check-package-information.mjs",
   "node scripts/check-schema.mjs",
 ]
 
@@ -110,7 +111,7 @@ description = "Mutation-test a deterministic pure-core unit-test subset"
 run = "gleam run -m gleam_mutants -- run --include src/gleam_mutants/core/score.gleam --strict --test-command gleam test"
 
 [tasks.package]
-description = "Build and smoke-test unpublished Hex, escript, and npm artifacts"
+description = "Build and smoke-test development snapshot Hex, escript, and npm artifacts"
 run = "node scripts/verify-package.mjs"
 
 [tasks.test-property]
@@ -130,7 +131,7 @@ description = "Run the 1,000-file, 10,000-mutant, 100MiB tested-envelope benchma
 run = "node scripts/benchmark.mjs"
 
 [tasks.release-candidate]
-description = "Verify already-built unpublished release artifacts without publishing"
+description = "Verify already-built development snapshot artifacts without publishing"
 run = [
   "node scripts/release-candidate.mjs --dry-run",
   "node scripts/scan-sboms.mjs",

@@ -3,7 +3,7 @@
 
 ---
 
-name: Unpublished preview evidence
+name: Development snapshot evidence
 
 "on":
   workflow_dispatch:
@@ -102,7 +102,8 @@ jobs:
           dist/github-attestation.sigstore.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: gleam-mutants-0.1.0-signed-unpublished-${{ github.sha }}
+          name: >-
+            gleam-mutants-0.1.0-development-snapshot-signed-${{ github.sha }}
           path: dist/
           if-no-files-found: error
           retention-days: 90

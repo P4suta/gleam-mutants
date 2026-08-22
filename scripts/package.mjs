@@ -290,9 +290,10 @@ function smokeHexArtifact(artifact, temporaryRoot) {
     }
   }
   makeMutationProject(consumer, "gleam_mutants = { path = \"vendor/gleam_mutants\" }\n");
-  write(path.join(consumer, "src", "hex_smoke.gleam"), "import gleam_mutants\npub fn main() { gleam_mutants.main() }\n");
   run("gleam", ["deps", "download"], consumer);
-  run("gleam", ["run", "-m", "hex_smoke", "--", "run", "--no-strict", "--jobs", "2"], consumer);
+  const output = run("gleam", ["run", "-m", "gleam_mutants", "--", "--version"], consumer, { capture: true });
+  if (!output.includes(`gleam-mutants ${version}`)) throw new Error(`Unexpected direct dependency CLI version: ${output}`);
+  run("gleam", ["run", "-m", "gleam_mutants", "--", "run", "--no-strict", "--jobs", "2"], consumer);
   return verifyReports(consumer, "Hex");
 }
 
@@ -547,7 +548,7 @@ try {
     .map(file => `${sha256(file)}  ${path.relative(dist, file).replaceAll(path.sep, "/")}`)
     .join("\n") + "\n";
   fs.writeFileSync(path.join(dist, "SHA256SUMS"), checksums, "utf8");
-  console.log(`Verified ${artifacts.length} unpublished artifacts, checksums, and ${sboms.length} CycloneDX SBOMs in ${dist}`);
+  console.log(`Verified ${artifacts.length} development snapshot artifacts, checksums, and ${sboms.length} CycloneDX SBOMs in ${dist}`);
 } finally {
 fs.rmSync(temporaryRoot, { recursive: true, force: true });
   for (const generated of ["gleam_mutants", "gleam_mutants.cmd"]) {

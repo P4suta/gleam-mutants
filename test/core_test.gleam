@@ -62,8 +62,9 @@ pub fn stable_id_is_path_separator_portable_and_content_sensitive_test() {
 pub fn catalog_preserves_unicode_comments_and_crlf_test() {
   let source =
     "// 日本語 && comment\r\npub fn classify(n: Int) {\r\n  n < 10 && True\r\n}\r\n"
-  let assert Ok(mutants) =
+  let assert Ok(discovered) =
     catalog.discover("src/example.gleam", source, operator.all())
+  let mutants = discovered.mutants
   assert list.any(mutants, fn(item) {
     item.operator == operator.ComparisonBoundary
   })
@@ -74,6 +75,9 @@ pub fn catalog_preserves_unicode_comments_and_crlf_test() {
   let assert Ok(forest) = interval_tree.build(source, mutants)
   let instrumented = interval_tree.render(source, forest, "internal/runtime")
   assert string.contains(instrumented, "// 日本語 && comment\r\n")
+  assert list.any(discovered.rejected, fn(item) {
+    item.reason == "type-evidence-unavailable"
+  })
   assert string.contains(instrumented, "internal/runtime.select")
   assert string.contains(instrumented, "\r\n")
 }
