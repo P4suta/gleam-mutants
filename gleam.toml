@@ -5,9 +5,27 @@ name = "gleam_mutants"
 # x-release-please-start-version
 version = "0.1.0"
 # x-release-please-end
+gleam = ">= 1.17.0 and < 2.0.0"
+internal_modules = ["gleam_mutants/*", "gleam_mutants/core/*"]
+
 description = "Mutation testing for Gleam across Erlang, Node, Deno, and Bun"
 licences = ["MIT", "Apache-2.0"]
 repository = { type = "github", user = "P4suta", repo = "gleam-mutants" }
+
+[[documentation.pages]]
+title = "Configuration"
+path = "configuration.html"
+source = "docs/configuration.md"
+
+[[documentation.pages]]
+title = "Mutation operators"
+path = "operators.html"
+source = "docs/operators.md"
+
+[[documentation.pages]]
+title = "Architecture"
+path = "architecture.html"
+source = "docs/architecture.md"
 
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"

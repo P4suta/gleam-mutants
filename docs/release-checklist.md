@@ -29,8 +29,8 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 - [ ] Obtain explicit approval before tagging, creating a GitHub Release, or
       publishing to a registry
 
-Version 0.1.0 preview remains unpublished. Do not call it
-production-ready until an
-immutable commit has passing GitHub-hosted evidence on all three operating
-systems plus verified signatures, attestations, SBOMs, benchmarks, and install
-smokes. Tagging, publishing, and creating a release require separate approval.
+Version 0.1.0 remains an unreleased development snapshot. Do not call it
+production-ready until an immutable commit has passing GitHub-hosted evidence
+on all three operating systems plus verified signatures, attestations, SBOMs,
+benchmarks, and install smokes. Tagging, publishing, and creating a release
+require separate approval.

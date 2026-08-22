@@ -15,6 +15,10 @@ if (match[1] !== version) throw new Error(`gleam.toml version drift: expected ${
 
 const expectations = [
   ["src/gleam_mutants/version.gleam", `pub const current = "${version}"`],
+  ["README.md", `The current package version is ${version}.`],
+  ["SECURITY.md", `Version ${version} is an unreleased development snapshot`],
+  [".github/workflows/ci.yml", `name: gleam-mutants-${version}-development-snapshot`],
+  [".github/workflows/release-candidate.yml", `gleam-mutants-${version}-development-snapshot-signed-`],
 ];
 for (const [file, expected] of expectations) {
   if (!fs.readFileSync(file, "utf8").includes(expected)) {

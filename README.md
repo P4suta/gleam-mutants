@@ -10,9 +10,7 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 Mutation testing for Gleam without modifying or building the original workspace.
 The same mutation catalogue can be exercised on Erlang, Node.js, Deno, and Bun.
-Version 0.1.0 is an intentionally unpublished preview. It must not be
-described as production-ready until the immutable commit has the required
-GitHub-hosted evidence, signatures, SBOMs, benchmarks, and install smokes.
+The current package version is 0.1.0.
 
 The engine and its lossless `RunReport` are Gleam-native. Every completed run
 also projects that report into the Stryker report ecosystem format pinned to
@@ -20,16 +18,45 @@ Mutation Testing Elements and report-schema 3.9.0.
 
 ## Install
 
-The future Hex route is:
+From a checked-out repository, add the tool as a path dependency:
+
+```toml
+[dev_dependencies]
+gleam_mutants = { path = "../gleam-mutants" }
+```
+
+Then run the dependency's public CLI module:
 
 ```sh
-gleam add --dev gleam_mutants
+gleam deps download
 gleam run -m gleam_mutants -- run
 ```
 
-The escript and npm artifacts expose the same command tree as `gleam-mutants`.
-No Hex or npm package has been published. This repository contains an
-unpublished 0.1.0 preview; a Git tag and GitHub Release do not exist.
+For a Git dependency, pin a commit in the consuming project's `gleam.toml`:
+
+```toml
+[dev_dependencies]
+gleam_mutants = {
+  git = "https://github.com/P4suta/gleam-mutants.git",
+  ref = "<commit-sha>"
+}
+```
+
+The escript and npm distributions expose the same command tree. Run an
+escript directly:
+
+```sh
+escript ./dist/escript/gleam-mutants.escript --version
+escript ./dist/escript/gleam-mutants.escript run
+```
+
+Install the npm tarball into a Node.js environment and use its binary:
+
+```sh
+npm install --global ./dist/npm/gleam-mutants-0.1.0.tgz
+gleam-mutants --version
+gleam-mutants run
+```
 
 ## Supported environments
 
@@ -114,7 +141,7 @@ mise run dogfood
 mise run package
 ```
 
-`mise run package` creates unpublished Hex, escript, and npm artifacts,
+`mise run package` creates Hex, escript, and npm artifacts,
 SHA-256 checksums, and CycloneDX SBOMs under `dist/`, then smoke-tests the
 installable command. It contains no publish or GitHub Release operation.
 The package gate mutation-tests clean projects through all three artifacts,

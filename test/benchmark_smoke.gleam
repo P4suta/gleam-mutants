@@ -30,7 +30,7 @@ pub fn main() {
         catalog.discover(relative, source, operator.all())
         |> result.map_error(string.inspect),
       )
-      Ok(list.length(mutants))
+      Ok(list.length(mutants.mutants))
     })
   let discovery_ms = platform.monotonic_milliseconds() - discovery_started
   let mutants = list.fold(counts, 0, fn(total, count) { total + count })

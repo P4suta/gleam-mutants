@@ -29,4 +29,4 @@ for (const file of sbomFiles) {
     throw new Error(`${file} is missing the application to MTE dependency edge`);
   }
 }
-console.log("release-candidate dry-run verified unpublished artifacts, checksums, and SBOMs; no publish/tag/release operation exists");
+console.log("release-candidate dry-run verified development snapshot artifacts, checksums, and SBOMs; no publish/tag/release operation exists");

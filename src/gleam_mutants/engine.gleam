@@ -12,7 +12,9 @@ import gleam_mutants/config.{
   CacheReadWrite, Config, DiagnosticsAll, DiagnosticsErrors, DiagnosticsNone,
 }
 import gleam_mutants/core/bytes
-import gleam_mutants/core/catalog.{type RejectedMutant, RejectedMutant}
+import gleam_mutants/core/catalog.{
+  type RejectedCandidate, type RejectedMutant, RejectedMutant,
+}
 import gleam_mutants/core/exit_policy
 import gleam_mutants/core/interval_tree
 import gleam_mutants/core/mutant.{type Mutant}
@@ -22,6 +24,7 @@ import gleam_mutants/core/outcome.{
   Node, RuntimeOutcome, Survived, TestError, TimedOut,
 }
 import gleam_mutants/core/path
+import gleam_mutants/core/plan
 import gleam_mutants/core/score
 import gleam_mutants/pipeline
 import gleam_mutants/platform
@@ -81,7 +84,12 @@ type ValidationError {
 }
 
 type SourceCatalog {
-  SourceCatalog(path: String, source: String, mutants: List(Mutant))
+  SourceCatalog(
+    path: String,
+    source: String,
+    mutants: List(Mutant),
+    rejected: List(RejectedCandidate),
+  )
 }
 
 type Preflight {
@@ -105,7 +113,7 @@ type Prepared {
     config: Config,
     snapshot: Snapshot,
     catalogs: List(SourceCatalog),
-    mutants: List(Mutant),
+    mutation_plan: plan.MutationPlan,
     rejected: List(RejectedMutant),
     runtimes: List(Runtime),
     runtime_module: RuntimeModule,
@@ -269,7 +277,8 @@ pub fn list_mutants(
     prepare(snapshot, workspace, source, configured, options, changed_paths)
   {
     Error(error) -> Error(error)
-    Ok(prepared) -> Ok(ListOutput(prepared.mutants, prepared.rejected))
+    Ok(prepared) ->
+      Ok(ListOutput(plan.mutants(prepared.mutation_plan), prepared.rejected))
   }
   case result, snapshot.dispose(snapshot) {
     Ok(output), Ok(Nil) -> Ok(output)
@@ -318,9 +327,9 @@ fn execute(
       workspace_digest: snapshot.digest(snapshot),
       matrix: options.matrix,
       selection: SelectionSummary(
-        mode: selection_mode(options),
+        mode: plan.mode(prepared.mutation_plan),
         files_selected: list.length(prepared.catalogs),
-        candidates: list.length(prepared.mutants)
+        candidates: list.length(plan.mutants(prepared.mutation_plan))
           + list.length(prepared.rejected),
         executed: list.length(results),
         compile_errors: list.length(prepared.rejected),
@@ -567,12 +576,21 @@ fn prepare(
     }
     False -> Ok(Nil)
   })
-  use valid <- result.try(select_mutants(valid, options.mutant_prefix))
-  let phase3 = pipeline.validated(phase2, valid, rejected)
+  let changed_selection = case options.changed {
+    Some(_) -> True
+    None -> False
+  }
+  use mutation_plan <- result.try(plan.build(
+    valid,
+    changed_selection,
+    options.mutant_prefix,
+  ))
+  let planned_mutants = plan.mutants(mutation_plan)
+  let phase3 = pipeline.validated(phase2, planned_mutants, rejected)
   use _ <- result.try(instrument(
     snapshot.root(snapshot),
     catalogs,
-    valid,
+    planned_mutants,
     runtime.name(runtime_module),
   ))
   use _ <- result.try(build_targets(snapshot.root(snapshot), runtimes))
@@ -587,38 +605,13 @@ fn prepare(
     config,
     snapshot,
     catalogs,
-    valid,
+    mutation_plan,
     rejected,
     runtimes,
     runtime_module,
     baseline.1,
     phase4,
   ))
-}
-
-fn select_mutants(
-  mutants: List(Mutant),
-  prefix: Option(String),
-) -> Result(List(Mutant), String) {
-  case prefix {
-    None -> Ok(mutants)
-    Some(prefix) -> {
-      let matches =
-        list.filter(mutants, fn(mutant) {
-          string.starts_with(mutant.id, prefix)
-          || string.starts_with(mutant.display_id, prefix)
-        })
-      case matches {
-        [] ->
-          Error("GMU4004: no mutant matches prefix " <> string.inspect(prefix))
-        [mutant] -> Ok([mutant])
-        _ ->
-          Error(
-            "GMU4005: mutant prefix is ambiguous: " <> string.inspect(prefix),
-          )
-      }
-    }
-  }
 }
 
 fn read_project_config(workspace: String) -> Result(String, String) {
@@ -776,13 +769,13 @@ fn discover_catalogs(
       simplifile.read(path.join(root, relative))
       |> result.map_error(simplifile.describe_error),
     )
-    use mutants <- result.try(
+    use discovered <- result.try(
       catalog.discover(relative, source, operators)
       |> result.map_error(fn(error) {
         "Glance could not parse " <> relative <> ": " <> string.inspect(error)
       }),
     )
-    Ok(SourceCatalog(relative, source, mutants))
+    Ok(SourceCatalog(relative, source, discovered.mutants, discovered.rejected))
   })
 }
 
@@ -1088,7 +1081,13 @@ fn runtime_target(runtime: Runtime) -> String {
 
 fn run_mutants(prepared: Prepared) -> Result(List(MutantResult), String) {
   let worker_count =
-    int.max(1, int.min(prepared.config.jobs, list.length(prepared.mutants)))
+    int.max(
+      1,
+      int.min(
+        prepared.config.jobs,
+        list.length(plan.mutants(prepared.mutation_plan)),
+      ),
+    )
   use cache_context <- result.try(cache_context(prepared))
   let fingerprint =
     cache.fingerprint_v1(
@@ -1104,7 +1103,7 @@ fn run_mutants(prepared: Prepared) -> Result(List(MutantResult), String) {
   let run_result =
     run_mutant_waves(
       prepared,
-      prepared.mutants,
+      plan.mutants(prepared.mutation_plan),
       workers,
       worker_count,
       fingerprint,
