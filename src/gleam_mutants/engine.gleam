@@ -87,7 +87,8 @@ type ValidationError {
   ValidationInfrastructure(String)
 }
 
-type SourceCatalog {
+/// A source file paired with the mutants and rejected candidates found in it.
+pub type SourceCatalog {
   SourceCatalog(
     path: String,
     source: String,
@@ -824,7 +825,9 @@ fn git_changed_paths(
   }
 }
 
-fn discover_catalogs(
+/// Reads each relative source file under `root` and discovers its mutants,
+/// assigning stable display ids across the whole selection.
+pub fn discover_catalogs(
   root: String,
   files: List(String),
   operators: List(Operator),
@@ -1119,7 +1122,9 @@ fn normalize_snapshot_location(
   }
 }
 
-fn instrument(
+/// Rewrites every catalogued source that owns a selected mutant so each
+/// mutation site is wrapped in a `runtime_module.select` call.
+pub fn instrument(
   root: String,
   catalogs: List(SourceCatalog),
   mutants: List(Mutant),
@@ -1189,7 +1194,27 @@ fn is_leading_comment_or_blank(line: String) -> Bool {
   trimmed == "" || string.starts_with(trimmed, "//")
 }
 
-fn build_targets(root: String, runtimes: List(Runtime)) -> Result(Nil, String) {
+/// Writes generated source files (path relative to root, content) into a
+/// snapshot, creating parent directories.
+pub fn write_generated_files(
+  root: String,
+  files: List(#(String, String)),
+) -> Result(Nil, String) {
+  use #(relative, contents) <- list.try_each(files)
+  let target = path.join(root, relative)
+  use _ <- result.try(
+    simplifile.create_directory_all(path.parent(target))
+    |> result.map_error(simplifile.describe_error),
+  )
+  simplifile.write(target, contents)
+  |> result.map_error(simplifile.describe_error)
+}
+
+/// Compiles the project at `root` once per distinct target of `runtimes`.
+pub fn build_targets(
+  root: String,
+  runtimes: List(Runtime),
+) -> Result(Nil, String) {
   let targets = runtimes |> list.map(runtime_target) |> list.unique
   use target <- list.try_each(targets)
   let process_result =
