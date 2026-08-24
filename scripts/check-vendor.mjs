@@ -6,6 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
+import { pbtModulePath, pbtSourcePath, renderPbtModule } from "./embed-pbt.mjs";
+
 const root = process.cwd();
 const version = "3.9.0";
 const vendor = path.join(root, "vendor", "mutation-testing-elements", version);
@@ -67,4 +69,12 @@ for (const [distribution, canonical] of distributionPairs) {
   }
 }
 
+const expectedPbtModule = renderPbtModule(root);
+const actualPbtModule = fs.readFileSync(pbtModulePath(root), "utf8");
+if (expectedPbtModule !== actualPbtModule) {
+  throw new Error(`${path.relative(root, pbtModulePath(root))} is stale; run \`npm run embed:pbt\``);
+}
+const pbtSha256 = crypto.createHash("sha256").update(fs.readFileSync(pbtSourcePath(root))).digest("hex");
+
 console.log(`Verified Mutation Testing Elements ${version}, npm integrity, bundle SHA-256 ${sha256}, schema, and LICENSE`);
+console.log(`Verified embedded pbt.gleam source, SHA-256 ${pbtSha256}`);
