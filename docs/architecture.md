@@ -30,9 +30,13 @@ assembled from byte slices of the original source rather than pretty-printing.
 This preserves comments, whitespace, Unicode, and CRLF. An interval forest
 allows nested mutations to coexist in one instrumented source.
 
-Each candidate is compiler-checked. A failing batch is split recursively until
-the invalid candidate and compiler diagnostic are isolated. Rejected candidates
-are absent from the normal catalogue and available through `--explain` and JSON.
+The fast `list` path stops after configuration, snapshotting, selection, and
+catalogue discovery. `list --validate` builds the unmutated snapshot once, then
+compiler-checks candidates without entering either baseline or test execution.
+The full phase pipeline remains mandatory for `run`. A failing validation
+batch is split recursively until the invalid candidate and a deterministic,
+workspace-independent compiler diagnostic are isolated. Rejected candidates
+are available through validated `--explain` and JSON output.
 
 The snapshot manifest is sorted and excludes `.git`, `build`, tool caches, and
 other generated data. Links and special files are rejected. A private runtime

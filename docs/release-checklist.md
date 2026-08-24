@@ -12,6 +12,9 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 - [ ] `mise run test-faults`
 - [ ] `mise run benchmark`
 - [ ] `mise run dogfood`
+- [ ] `mise run test-ecosystem` completes inside its 13-minute deadline
+- [ ] Inspect `test-results/ecosystem-summary.json`; confirm all five fixed
+      commits, golden counts/outcomes, zero errors/timeouts, and source hashes
 - [ ] `mise run package` in a clean checkout
 - [ ] Inspect Hex contents, escript, npm tarball, checksums, and CycloneDX SBOM
 - [ ] Confirm all three SBOM scans contain no known High/Critical vulnerability
@@ -26,6 +29,8 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 - [ ] Verify every Sigstore bundle and GitHub artifact attestation against the
       immutable workflow identity and commit
 - [ ] Confirm the immutable candidate commit is on protected `main`
+- [ ] Confirm the Sunday 03:41 UTC/manual Linux ecosystem workflow completed
+      inside its 15-minute cap and retained the normalized summary artifact
 - [ ] Obtain explicit approval before tagging, creating a GitHub Release, or
       publishing to a registry
 

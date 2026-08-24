@@ -59,6 +59,44 @@ pub fn stable_id_is_path_separator_portable_and_content_sensitive_test() {
   assert string.length(mutant.stable_id("source", candidate)) == 64
 }
 
+pub fn display_ids_are_unique_across_the_selected_catalogue_test() {
+  let first =
+    mutant.from_candidate(
+      "True",
+      mutant.Candidate(
+        "src/first.gleam",
+        operator.BooleanLiteral,
+        span.unsafe_new(0, 4),
+        "True",
+        "False",
+      ),
+    )
+  let second =
+    mutant.from_candidate(
+      "True",
+      mutant.Candidate(
+        "src/second.gleam",
+        operator.BooleanLiteral,
+        span.unsafe_new(0, 4),
+        "True",
+        "False",
+      ),
+    )
+  let first =
+    mutant.Mutant(
+      ..first,
+      id: "aaaaaaaaaaaaaaaaaaaa0bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+  let second =
+    mutant.Mutant(
+      ..second,
+      id: "aaaaaaaaaaaaaaaaaaaa1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+  let assert [first, second] = catalog.assign_display_ids([first, second])
+  assert first.display_id == "aaaaaaaaaaaaaaaaaaaa0"
+  assert second.display_id == "aaaaaaaaaaaaaaaaaaaa1"
+}
+
 pub fn catalog_preserves_unicode_comments_and_crlf_test() {
   let source =
     "// 日本語 && comment\r\npub fn classify(n: Int) {\r\n  n < 10 && True\r\n}\r\n"
@@ -196,11 +234,17 @@ pub fn score_timeout_and_exit_policy_test() {
   assert mutation_score.killed == 1
   assert mutation_score.timed_out == 1
   assert mutation_score.survived == 1
-  assert score.display(mutation_score) == "66.66666666666666% (2/3)"
+  assert score.display(mutation_score) == "66.67% (2/3)"
   let empty_score = score.calculate([])
   assert empty_score.percent == 0.0
   assert score.display(empty_score) == "N/A (0 valid mutants)"
-  assert score.display(score.Score(4, 1, 2, 1, 0, 75.0)) == "75.0% (3/4)"
+  assert score.display(score.Score(4, 1, 2, 1, 0, 75.0)) == "75% (3/4)"
+  assert score.display(score.Score(2, 1, 0, 1, 0, 75.5)) == "75.5% (1/2)"
+  assert score.display(score.Score(2, 1, 0, 1, 0, 75.05)) == "75.05% (1/2)"
+  assert score.display(score.Score(3, 1, 0, 2, 0, 33.33333333333333))
+    == "33.33% (1/3)"
+  assert score.display(score.Score(29, 26, 0, 3, 0, 89.65517241379311))
+    == "89.66% (26/29)"
   assert exit_policy.code(
       mutation_score,
       exit_policy.Context(False, True, None, 100.0),
@@ -231,13 +275,47 @@ pub fn score_timeout_and_exit_policy_test() {
 
 pub fn stable_cli_safety_defaults_test() {
   assert cli.parse([]) == Ok(cli.HelpCommand)
+  let assert Ok(cli.ListCommand(_, False)) = cli.parse(["list"])
+  let assert Ok(cli.ListCommand(_, True)) = cli.parse(["list", "--validate"])
+  assert cli.parse(["report", "latest"])
+    == cli.parse(["report", "latest", "--json"])
   assert cli.parse(["run", "--jobs", "1"])
     != Error("--jobs must be between 1 and 32")
   assert cli.parse(["run", "--jobs", "33"])
     == Error("--jobs must be between 1 and 32")
+  let assert Ok(cli.RunCommand(milliseconds)) =
+    cli.parse(["run", "--timeout", "30000ms"])
+  assert milliseconds.timeout_ms == Some(30_000)
+  let assert Ok(cli.RunCommand(seconds)) =
+    cli.parse(["run", "--timeout", "30s"])
+  assert seconds.timeout_ms == Some(30_000)
+  let assert Ok(cli.RunCommand(decimal_seconds)) =
+    cli.parse(["run", "--timeout", "1.5s"])
+  assert decimal_seconds.timeout_ms == Some(1500)
+  let assert Ok(cli.RunCommand(minutes)) = cli.parse(["run", "--timeout", "1m"])
+  assert minutes.timeout_ms == Some(60_000)
+  let assert Ok(cli.RunCommand(hours)) = cli.parse(["run", "--timeout", "1h"])
+  assert hours.timeout_ms == Some(3_600_000)
+  let assert Ok(cli.RunCommand(unitless_seconds)) =
+    cli.parse(["run", "--timeout", "30"])
+  assert unitless_seconds.timeout_ms == Some(30_000)
+  let assert Ok(cli.RunCommand(lower_boundary)) =
+    cli.parse(["run", "--timeout", "100ms"])
+  assert lower_boundary.timeout_ms == Some(100)
+  let assert Ok(cli.RunCommand(upper_boundary)) =
+    cli.parse(["run", "--timeout", "24h"])
+  assert upper_boundary.timeout_ms == Some(86_400_000)
+  assert cli.parse(["run", "--timeout", "99ms"])
+    == Error("--timeout must be between 100ms and 24h")
   assert cli.parse(["run", "--timeout", "0.05s"])
     == Error("--timeout must be between 100ms and 24h")
+  assert cli.parse(["run", "--timeout", "24.0001h"])
+    == Error("--timeout must be between 100ms and 24h")
   assert cli.parse(["run", "--timeout", "86401s"])
+    == Error("--timeout must be between 100ms and 24h")
+  assert cli.parse(["run", "--timeout", "1.5"])
+    == Error("--timeout must be between 100ms and 24h")
+  assert cli.parse(["run", "--timeout", "1d"])
     == Error("--timeout must be between 100ms and 24h")
   assert cli.parse(["run", "--timeout", "NaN"])
     == Error("--timeout must be between 100ms and 24h")

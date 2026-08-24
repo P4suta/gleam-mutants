@@ -75,7 +75,11 @@ pub type RunOutput {
 }
 
 pub type ListOutput {
-  ListOutput(mutants: List(Mutant), rejected: List(RejectedMutant))
+  ListOutput(
+    mutants: List(Mutant),
+    rejected: List(RejectedMutant),
+    validated: Bool,
+  )
 }
 
 type ValidationError {
@@ -258,6 +262,7 @@ fn preflight(
 pub fn list_mutants(
   workspace: String,
   options: Options,
+  validate: Bool,
 ) -> Result(ListOutput, String) {
   use source <- result.try(read_project_config(workspace))
   use decoded <- result.try(
@@ -273,19 +278,79 @@ pub fn list_mutants(
       configured.report.directory,
     ]),
   )
-  let result = case
-    prepare(snapshot, workspace, source, configured, options, changed_paths)
-  {
-    Error(error) -> Error(error)
-    Ok(prepared) ->
-      Ok(ListOutput(plan.mutants(prepared.mutation_plan), prepared.rejected))
-  }
+  let result =
+    list_snapshot(
+      snapshot,
+      source,
+      configured,
+      options,
+      changed_paths,
+      validate,
+    )
   case result, snapshot.dispose(snapshot) {
     Ok(output), Ok(Nil) -> Ok(output)
     Error(error), Ok(Nil) -> Error(error)
     Ok(_), Error(error) -> Error("GMU7002: snapshot cleanup failed: " <> error)
     Error(error), Error(cleanup_error) ->
       Error(error <> "; snapshot cleanup failed: " <> cleanup_error)
+  }
+}
+
+fn list_snapshot(
+  snapshot: Snapshot,
+  gleam_toml: String,
+  config: Config,
+  options: Options,
+  changed_paths: Option(List(String)),
+  validate: Bool,
+) -> Result(ListOutput, String) {
+  let files = snapshot.source_files(snapshot, config.includes, config.excludes)
+  let files = case changed_paths {
+    None -> files
+    Some(changed) ->
+      list.filter(files, fn(file) { list.contains(changed, file) })
+  }
+  use catalogs <- result.try(discover_catalogs(
+    snapshot.root(snapshot),
+    files,
+    config.operators,
+  ))
+  let candidates = catalogs |> list.flat_map(fn(catalog) { catalog.mutants })
+  let changed_selection = case options.changed {
+    Some(_) -> True
+    None -> False
+  }
+  case validate {
+    False -> {
+      use mutation_plan <- result.try(plan.build(
+        candidates,
+        changed_selection,
+        options.mutant_prefix,
+      ))
+      Ok(ListOutput(plan.mutants(mutation_plan), [], False))
+    }
+    True -> {
+      let runtimes = detect_runtimes(gleam_toml, config, options.matrix)
+      use runtime_module <- result.try(runtime.generate(
+        snapshot.root(snapshot),
+        snapshot.digest(snapshot),
+      ))
+      use _ <- result.try(build_targets(snapshot.root(snapshot), runtimes))
+      use validation <- result.try(delta_validate(
+        snapshot,
+        catalogs,
+        candidates,
+        runtimes,
+        runtime_module,
+      ))
+      let #(valid, rejected) = validation
+      use mutation_plan <- result.try(plan.build(
+        valid,
+        changed_selection,
+        options.mutant_prefix,
+      ))
+      Ok(ListOutput(plan.mutants(mutation_plan), rejected, True))
+    }
   }
 }
 
@@ -764,19 +829,40 @@ fn discover_catalogs(
   files: List(String),
   operators: List(Operator),
 ) -> Result(List(SourceCatalog), String) {
-  list.try_map(files, fn(relative) {
-    use source <- result.try(
-      simplifile.read(path.join(root, relative))
-      |> result.map_error(simplifile.describe_error),
-    )
-    use discovered <- result.try(
-      catalog.discover(relative, source, operators)
-      |> result.map_error(fn(error) {
-        "Glance could not parse " <> relative <> ": " <> string.inspect(error)
+  use catalogs <- result.try(
+    list.try_map(files, fn(relative) {
+      use source <- result.try(
+        simplifile.read(path.join(root, relative))
+        |> result.map_error(simplifile.describe_error),
+      )
+      use discovered <- result.try(
+        catalog.discover(relative, source, operators)
+        |> result.map_error(fn(error) {
+          "Glance could not parse " <> relative <> ": " <> string.inspect(error)
+        }),
+      )
+      Ok(SourceCatalog(
+        relative,
+        source,
+        discovered.mutants,
+        discovered.rejected,
+      ))
+    }),
+  )
+  let assigned =
+    catalogs
+    |> list.flat_map(fn(catalog) { catalog.mutants })
+    |> catalog.assign_display_ids
+  catalogs
+  |> list.map(fn(source_catalog) {
+    SourceCatalog(
+      ..source_catalog,
+      mutants: list.filter(assigned, fn(mutant) {
+        mutant.path == source_catalog.path
       }),
     )
-    Ok(SourceCatalog(relative, source, discovered.mutants, discovered.rejected))
   })
+  |> Ok
 }
 
 fn configure_deno_permissions(
@@ -966,21 +1052,43 @@ fn validate_batch(
     build_targets(snapshot.root(worker), runtimes)
     |> result.map_error(CandidateInvalid)
   }
+  let normalize = fn(error) {
+    normalize_validation_diagnostic(error, snapshot.root(worker))
+  }
   case validation, snapshot.dispose(worker) {
     Ok(Nil), Ok(Nil) -> Ok(Nil)
-    Error(error), Ok(Nil) -> Error(error)
+    Error(CandidateInvalid(error)), Ok(Nil) ->
+      Error(CandidateInvalid(normalize(error)))
+    Error(ValidationInfrastructure(error)), Ok(Nil) ->
+      Error(ValidationInfrastructure(error))
     Ok(Nil), Error(error) ->
       Error(ValidationInfrastructure(
         "validation snapshot cleanup failed: " <> error,
       ))
     Error(CandidateInvalid(error)), Error(cleanup_error) ->
       Error(ValidationInfrastructure(
-        error <> "; validation snapshot cleanup failed: " <> cleanup_error,
+        normalize(error)
+        <> "; validation snapshot cleanup failed: "
+        <> cleanup_error,
       ))
     Error(ValidationInfrastructure(error)), Error(cleanup_error) ->
       Error(ValidationInfrastructure(
         error <> "; validation snapshot cleanup failed: " <> cleanup_error,
       ))
+  }
+}
+
+fn normalize_validation_diagnostic(
+  output: String,
+  snapshot_root: String,
+) -> String {
+  let output =
+    output
+    |> string.replace(snapshot_root, "<snapshot>")
+    |> string.replace(string.replace(snapshot_root, "/", "\\"), "<snapshot>")
+  case string.split_once(output, "error:") {
+    Ok(#(_, diagnostic)) -> "error:" <> diagnostic
+    Error(_) -> output
   }
 }
 

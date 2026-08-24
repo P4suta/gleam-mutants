@@ -38,11 +38,24 @@ pub fn display(score: Score) -> String {
   case score.total {
     0 -> "N/A (0 valid mutants)"
     _ ->
-      float.to_string(score.percent)
+      display_percent(score.percent)
       <> "% ("
       <> int.to_string(score.killed + score.timed_out)
       <> "/"
       <> int.to_string(score.total)
       <> ")"
+  }
+}
+
+fn display_percent(percent: Float) -> String {
+  let hundredths = float.round(percent *. 100.0)
+  let whole = hundredths / 100
+  let remainder = hundredths % 100
+  case remainder {
+    0 -> int.to_string(whole)
+    value if value % 10 == 0 ->
+      int.to_string(whole) <> "." <> int.to_string(value / 10)
+    value if value < 10 -> int.to_string(whole) <> ".0" <> int.to_string(value)
+    value -> int.to_string(whole) <> "." <> int.to_string(value)
   }
 }

@@ -73,6 +73,8 @@ advance notice, and migration instructions.
 ```sh
 gleam run -m gleam_mutants -- doctor
 gleam run -m gleam_mutants -- init
+gleam run -m gleam_mutants -- list
+gleam run -m gleam_mutants -- list --validate
 gleam run -m gleam_mutants -- run
 gleam run -m gleam_mutants -- run --matrix
 gleam run -m gleam_mutants -- run --changed origin/main
@@ -82,6 +84,18 @@ With no arguments, help is shown; mutation starts only with `run`. The stable
 tree is `run`, `list`, `doctor`, `init`, `report list|latest|validate|clean`, and
 `cache status|clean`. All commands accept `--root`; without it, the nearest
 parent `gleam.toml` is selected. Run `--help` for all flags.
+
+`list` is the fast discovery path: it reads configuration, snapshots the
+workspace, and finds candidates without building, instrumenting, running a
+baseline, or invoking tests. Its rows and required List JSON v1 `validated`
+field identify those candidates as unvalidated. `list --validate` builds the
+unmutated snapshot once and compiler-validates candidates without running
+tests; it reports compiler-valid and rejected candidates and succeeds even when
+all candidates are rejected. `run` retains the full baseline, compiler
+validation, instrumentation, instrumented-baseline, and mutation-test gates.
+Display-ID prefixes are collision-checked across the complete selected file set
+for all three paths. `report latest` always emits native JSON; `--json` remains
+an accepted compatibility alias.
 
 Configuration lives in `[tools.gleam_mutants]` in `gleam.toml`; there is no
 separate configuration file. With no configuration the tool mutates
@@ -96,6 +110,8 @@ or tool failure; signals preserve exit 130/143.
 A timeout counts as detected in the score but is always displayed separately.
 Compile errors and runtime errors are excluded from the score denominator;
 runtime errors still make the tool exit 2.
+Human-readable mutation percentages are rounded to at most two decimal places;
+native and Stryker JSON retain their full numeric precision.
 
 Every completed run writes these deterministic reports inside the project:
 
@@ -138,6 +154,7 @@ mise run bootstrap
 mise run check
 mise run test-matrix
 mise run dogfood
+mise run test-ecosystem
 mise run package
 ```
 
@@ -147,6 +164,26 @@ installable command. It contains no publish or GitHub Release operation.
 The package gate mutation-tests clean projects through all three artifacts,
 validates Stryker JSON with Ajv 8.20.0, browser-smokes the offline HTML, and
 records the embedded MTE component and dependency edge in the SBOM.
+
+`mise run test-ecosystem` is a networked golden smoke with an internal
+13-minute deadline. It fetches only these fixed official-library commits, uses
+four workers, disables strict mode, history, project reports, and persistent
+cache, validates native report v1 and source hashes, and writes only a
+normalized `test-results/ecosystem-summary.json` summary:
+
+| Corpus | Scope | Runtime / timeout | Golden candidates / executed / rejected | Golden killed / survived |
+| --- | --- | --- | ---: | ---: |
+| `stdlib@55f9454` | `src/gleam/bool.gleam` | Erlang / 60s | 11 / 11 / 0 | 11 / 0 |
+| `json@9792d8a` | `src/gleam/json.gleam` | Erlang / 30s | 6 / 3 / 3 | 1 / 2 |
+| `http@da44e89` | `src/gleam/http/cookie.gleam` | Erlang / 30s | 34 / 29 / 5 | 26 / 3 |
+| `erlang@dfa7cd7` | `src/gleam/erlang/atom.gleam` | Erlang / 30s | 2 / 2 / 0 | 1 / 1 |
+| `javascript@b51b436` | `src/**/*.gleam` | Node / 30s | 6 / 2 / 4 | 1 / 1 |
+
+Expected survivors are golden compatibility evidence, not a minimum-score
+failure. The Linux workflow runs Sunday at 03:41 UTC or manually, has a
+15-minute hard cap, and retains the summary for 14 days. It is intentionally
+absent from ordinary PR CI and the daily nightly matrix, but is required by the
+manual release-candidate and publish gates.
 
 See [configuration](docs/configuration.md), [operators](docs/operators.md), and
 [architecture](docs/architecture.md) for details.
