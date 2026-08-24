@@ -417,7 +417,15 @@ function relativeFiles(directory) {
 
 function generateSbom(source, distribution, applicationRef, temporaryRoot) {
   const sbomTemporary = path.join(temporaryRoot, `${distribution}.cdx.json`);
-  run("syft", [source, "-o", `cyclonedx-json=${sbomTemporary}`]);
+  run("syft", [
+    source,
+    "--source-name",
+    `gleam-mutants-${distribution}`,
+    "--source-version",
+    version,
+    "-o",
+    `cyclonedx-json=${sbomTemporary}`,
+  ]);
   const sbomData = JSON.parse(fs.readFileSync(sbomTemporary, "utf8"));
   sbomData.components ??= [];
   sbomData.dependencies ??= [];

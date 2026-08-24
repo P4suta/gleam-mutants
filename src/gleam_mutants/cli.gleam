@@ -31,7 +31,7 @@ pub type Command {
   DoctorCommand(options: Options, json: Bool, all_runtimes: Bool)
   InitCommand(options: Options, dry_run: Bool, check: Bool, gitignore: Bool)
   ReportListCommand(Options)
-  ReportLatestCommand(options: Options, json: Bool)
+  ReportLatestCommand(Options)
   ReportValidateCommand(Options)
   ReportCleanCommand(Options)
   CacheStatusCommand(Options)
@@ -74,9 +74,8 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
     _, _, ["doctor", ..rest] -> parse_doctor(rest, options)
     _, _, ["init", ..rest] -> parse_init(rest, options, False, False, False)
     _, _, ["report", "list"] -> Ok(ReportListCommand(options))
-    _, _, ["report", "latest"] -> Ok(ReportLatestCommand(options, False))
-    _, _, ["report", "latest", "--json"] ->
-      Ok(ReportLatestCommand(options, True))
+    _, _, ["report", "latest"] -> Ok(ReportLatestCommand(options))
+    _, _, ["report", "latest", "--json"] -> Ok(ReportLatestCommand(options))
     _, _, ["report", "validate"] -> Ok(ReportValidateCommand(options))
     _, _, ["report", "clean"] -> Ok(ReportCleanCommand(options))
     _, _, ["cache", "status"] -> Ok(CacheStatusCommand(options))
@@ -327,8 +326,12 @@ fn parse_positive_int(flag: String, value: String) -> Result(Int, String) {
 }
 
 fn parse_timeout(value: String) -> Result(Int, String) {
-  let #(number_text, multiplier) = timeout_parts(value)
-  case float.parse(number_text) {
+  use parts <- result.try(
+    timeout_parts(value)
+    |> result.replace_error("--timeout must be between 100ms and 24h"),
+  )
+  let #(number_text, multiplier, decimal) = parts
+  case timeout_number(number_text, decimal) {
     Ok(number) -> {
       let milliseconds = number *. multiplier
       case milliseconds >=. 100.0 && milliseconds <=. 86_400_000.0 {
@@ -340,19 +343,34 @@ fn parse_timeout(value: String) -> Result(Int, String) {
   }
 }
 
-fn timeout_parts(value: String) -> #(String, Float) {
+fn timeout_number(value: String, decimal: Bool) -> Result(Float, Nil) {
+  case int.parse(value) {
+    Ok(number) -> Ok(int.to_float(number))
+    Error(_) ->
+      case decimal {
+        True -> float.parse(value) |> result.replace_error(Nil)
+        False -> Error(Nil)
+      }
+  }
+}
+
+fn timeout_parts(value: String) -> Result(#(String, Float, Bool), Nil) {
   case string.ends_with(value, "ms") {
-    True -> #(string.drop_end(value, 2), 1.0)
+    True -> Ok(#(string.drop_end(value, 2), 1.0, True))
     False ->
       case string.ends_with(value, "s") {
-        True -> #(string.drop_end(value, 1), 1000.0)
+        True -> Ok(#(string.drop_end(value, 1), 1000.0, True))
         False ->
           case string.ends_with(value, "m") {
-            True -> #(string.drop_end(value, 1), 60_000.0)
+            True -> Ok(#(string.drop_end(value, 1), 60_000.0, True))
             False ->
               case string.ends_with(value, "h") {
-                True -> #(string.drop_end(value, 1), 3_600_000.0)
-                False -> #(value, 1000.0)
+                True -> Ok(#(string.drop_end(value, 1), 3_600_000.0, True))
+                False ->
+                  case int.parse(value) {
+                    Ok(_) -> Ok(#(value, 1000.0, False))
+                    Error(_) -> Error(Nil)
+                  }
               }
           }
       }
@@ -378,7 +396,7 @@ fn execute(command: Command) -> Nil {
           Error(error) -> fail("GMU5001: could not list reports: " <> error)
         }
       })
-    ReportLatestCommand(options, _) ->
+    ReportLatestCommand(options) ->
       with_workspace(options, fn(workspace) {
         case report.latest(workspace) {
           Ok(text) -> io.print(text)
@@ -412,17 +430,23 @@ fn execute(command: Command) -> Nil {
           Error(error) -> fail("GMU6001: could not clean cache: " <> error)
         }
       })
-    ListCommand(options, _) ->
+    ListCommand(options, validate) ->
       with_workspace(options, fn(workspace) {
-        case engine.list_mutants(workspace, options) {
+        case engine.list_mutants(workspace, options, validate) {
           Error(error) -> fail(error)
           Ok(output) -> {
             case options.json {
-              True -> io.println(catalog_json(output.mutants, output.rejected))
+              True ->
+                io.println(catalog_json(
+                  output.mutants,
+                  output.rejected,
+                  output.validated,
+                ))
               False ->
                 io.print(render_list(
                   output.mutants,
                   output.rejected,
+                  output.validated,
                   options.explain,
                 ))
             }
@@ -882,12 +906,18 @@ fn writable_probe(directory: String) -> Bool {
 fn render_list(
   mutants: List(Mutant),
   rejected: List(RejectedMutant),
+  validated: Bool,
   explain: Bool,
 ) -> String {
+  let row_prefix = case validated {
+    True -> "compiler-valid "
+    False -> "unvalidated "
+  }
   let rows =
     mutants
     |> list.map(fn(mutant) {
-      mutant.path
+      row_prefix
+      <> mutant.path
       <> ":"
       <> int.to_string(mutant.line)
       <> ":"
@@ -908,7 +938,7 @@ fn render_list(
     True ->
       rejected
       |> list.map(fn(item) {
-        "rejected "
+        "compiler-rejected "
         <> item.mutant.path
         <> ":"
         <> int.to_string(item.mutant.line)
@@ -918,20 +948,27 @@ fn render_list(
       })
       |> string.concat
   }
-  rows
-  <> rejected_rows
-  <> int.to_string(list.length(mutants))
-  <> " valid mutants, "
-  <> int.to_string(list.length(rejected))
-  <> " rejected.\n"
+  let summary = case validated {
+    False ->
+      int.to_string(list.length(mutants))
+      <> " unvalidated mutation candidates.\n"
+    True ->
+      int.to_string(list.length(mutants))
+      <> " compiler-valid mutants, "
+      <> int.to_string(list.length(rejected))
+      <> " compiler-rejected.\n"
+  }
+  rows <> rejected_rows <> summary
 }
 
 fn catalog_json(
   mutants: List(Mutant),
   rejected: List(RejectedMutant),
+  validated: Bool,
 ) -> String {
   json.object([
     #("schema_version", json.int(1)),
+    #("validated", json.bool(validated)),
     #(
       "mutants",
       json.array(mutants, fn(mutant) {
@@ -982,7 +1019,12 @@ fn help_text() -> String {
       do: command("Show help. Mutation testing starts only with run."),
     )
     |> glint.add(at: ["run"], do: command("Run mutation testing."))
-    |> glint.add(at: ["list"], do: command("List compiler-valid mutants."))
+    |> glint.add(
+      at: ["list"],
+      do: command(
+        "List mutation candidates; optionally compiler-validate them.",
+      ),
+    )
     |> glint.add(
       at: ["doctor"],
       do: command("Check project configuration and runtimes."),

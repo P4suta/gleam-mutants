@@ -50,4 +50,4 @@ const holderStatus = await new Promise((resolve, reject) => {
 });
 if (holderStatus !== 0) throw new Error("workspace lock holder smoke failed");
 if (fs.existsSync(lockPath)) throw new Error("workspace lock was not released");
-console.log("workspace lock rejects concurrent runs within two seconds and releases cleanly");
+console.log("workspace lock rejects concurrent runs within three seconds and releases cleanly");

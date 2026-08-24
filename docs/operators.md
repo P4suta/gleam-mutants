@@ -22,16 +22,19 @@ Version 0.1 provides these versioned operators:
 | `list-neutral` | non-empty list literal to `[]` |
 | `pipeline-stage-deletion` | remove a Gleam pipeline stage |
 
-Syntactic duplicates and trivial equivalents are deduplicated. Every remaining
-candidate is validated by the Gleam compiler; there is no lossy sampling by
-default. Stable IDs hash a length-prefixed encoding of normalized path,
-operator name/version, source digest, byte span, and original/replacement
-digests. The UI starts with a collision-checked 20-character prefix while JSON
-retains the full SHA-256 value.
+Syntactic duplicates and trivial equivalents are deduplicated. `run` and
+`list --validate` validate every remaining candidate with the Gleam compiler;
+plain `list` intentionally returns unvalidated discovery candidates. There is
+no lossy sampling by default. Stable IDs hash a length-prefixed encoding of
+normalized path, operator name/version, source digest, byte span, and
+original/replacement digests. The UI starts with a 20-character prefix extended
+as needed to avoid collisions across the complete selected catalogue, while
+JSON retains the full SHA-256 value.
 
 Neutral operators are currently literal-focused. Semantic rules are emitted
 only where Glance provides definite evidence, such as a literal or a typed
 binary operator. An arbitrary expression is not treated as an integer, float,
 string, or list by guesswork. Candidates that are emitted but fail compiler
-validation remain visible as rejected candidates with their diagnostic; this
-does not change native report v1 or stable mutant IDs.
+validation remain visible as rejected candidates with a normalized diagnostic
+in validated list and run output; this does not change native report v1 or
+stable mutant IDs.

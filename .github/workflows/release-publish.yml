@@ -84,7 +84,7 @@ jobs:
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
       - name: Checkout the immutable release tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ steps.target.outputs.tag }}
           fetch-depth: 0
@@ -101,7 +101,7 @@ jobs:
           expected="pub const current = \"$RELEASE_VERSION\""
           grep -q "$expected" src/gleam_mutants/version.gleam
 
-      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518
         with:
           install: true
           cache: true
@@ -117,6 +117,7 @@ jobs:
       - run: mise run test-faults
       - run: mise run benchmark
       - run: mise run dogfood
+      - run: mise run test-ecosystem
       - run: mise run package
       - run: mise run release-candidate
 
@@ -144,7 +145,7 @@ jobs:
 
       - id: attest
         # actions/attest v4.2.1
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-checksums: dist/SHA256SUMS
 
@@ -174,7 +175,7 @@ jobs:
           HEXPM_API_KEY: ${{ secrets.HEXPM_API_KEY }}
         run: gleam publish --yes
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24.19.0
           registry-url: https://registry.npmjs.org

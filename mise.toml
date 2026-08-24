@@ -127,8 +127,12 @@ run = [
 ]
 
 [tasks.benchmark]
-description = "Run the 1,000-file, 10,000-mutant, 100MiB tested-envelope benchmark"
+description = "Run the 1,000-file, 100MiB, at-least-10,000-mutant tested-envelope benchmark"
 run = "node scripts/benchmark.mjs"
+
+[tasks.test-ecosystem]
+description = "Mutation-test five fixed official Gleam corpora with a 13-minute deadline"
+run = "node scripts/ecosystem-smoke.mjs"
 
 [tasks.release-candidate]
 description = "Verify already-built development snapshot artifacts without publishing"

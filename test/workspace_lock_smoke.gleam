@@ -13,10 +13,10 @@ pub fn main() {
       let process =
         platform.run_process(
           "node",
-          ["-e", "setTimeout(() => {}, 4000)"],
+          ["-e", "setTimeout(() => {}, 10000)"],
           workspace,
           [],
-          10_000,
+          15_000,
         )
       assert process.status == 0
       let assert Ok(Nil) = workspace_lock.release(lock)

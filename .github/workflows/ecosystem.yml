@@ -1,0 +1,37 @@
+---
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Weekly official ecosystem smoke
+
+"on":
+  schedule:
+    - cron: "41 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecosystem-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  ecosystem:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518
+        with:
+          install: true
+          cache: true
+      - run: gleam deps download
+      - run: npm ci --ignore-scripts
+      - run: mise run test-ecosystem
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ecosystem-summary-${{ github.sha }}
+          path: test-results/ecosystem-summary.json
+          if-no-files-found: error
+          retention-days: 14

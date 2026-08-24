@@ -4,9 +4,10 @@
   "title": "gleam-mutants list output v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "mutants", "rejected"],
+  "required": ["schema_version", "validated", "mutants", "rejected"],
   "properties": {
     "schema_version": { "const": 1 },
+    "validated": { "type": "boolean" },
     "mutants": { "type": "array", "items": { "$ref": "#/$defs/mutant" } },
     "rejected": { "type": "array", "items": { "$ref": "#/$defs/rejected" } }
   },

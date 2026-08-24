@@ -19,6 +19,7 @@ operators = ["boolean-literal", "integer-arithmetic"]
 
 [tools.gleam_mutants.test]
 target = "auto"            # auto, erlang, javascript
+runtime = "auto"           # auto, erlang, node, deno, bun
 timeout_ms = 15000
 baseline_runs = 1
 command = ["gleam", "test"]
@@ -51,9 +52,19 @@ the existing TOML through Tomlet, preserving comments and ordering, and is
 idempotent. `--test-command` consumes the remaining argv verbatim.
 
 `jobs` defaults to `min(logical CPU, 8)` and explicit values must be 1–32.
-Explicit timeouts must be 100ms–24h; the derived timeout is five times the
+Explicit timeouts must be 100ms–24h. CLI durations accept `30000ms`, `30s`,
+`1.5s`, `1m`, `1h`, and unitless integer seconds; unknown units, unitless
+decimals, NaN, and Infinity are rejected. The derived timeout is five times the
 baseline clamped to 10 seconds–30 minutes. Cache `auto` is read-write only for
 the exact `gleam test` command and is off for custom commands.
+
+`list` applies mutation selection configuration but deliberately does not build,
+instrument, run a baseline, invoke the configured test command, read/write the
+outcome cache, or create reports/history. Its List JSON v1 output has required
+`validated: false`. `list --validate` additionally builds the unmutated snapshot
+once and compiler-validates all candidates, returning `validated: true` plus
+compiler rejections; it still never invokes the test command. `run` alone uses
+the complete execution configuration and all safety gates.
 
 `report.directory` must be a safe relative subdirectory of the workspace. It
 cannot overlap mutation target sources and no existing component may be a

@@ -130,7 +130,7 @@ fn deduplicate(mutants: List(Mutant)) -> List(Mutant) {
   })
 }
 
-fn assign_display_ids(mutants: List(Mutant)) -> List(Mutant) {
+pub fn assign_display_ids(mutants: List(Mutant)) -> List(Mutant) {
   list.map(mutants, fn(item) {
     mutant.with_display_id(item, unique_prefix(item, mutants, 20))
   })

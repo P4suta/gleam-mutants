@@ -45,10 +45,10 @@ function fixture(module, target) {
   return result.stdout;
 }
 
-function cliFixture(command, target) {
+function cliFixture(command, target, root = "fixtures/basic_project") {
   const args = ["run", "-m", "gleam_mutants", "--target", target];
   if (target === "javascript") args.push("--runtime", "node");
-  args.push("--", "--root", "fixtures/basic_project", ...command);
+  args.push("--", "--root", root, ...command);
   const result = childProcess.spawnSync("gleam", args, {
     cwd: process.cwd(),
     encoding: "utf8",
@@ -73,12 +73,47 @@ if (!validateNative(nativeReport)) {
   throw new Error(`Native report schema validation failed:\n${nativeAjv.errorsText(validateNative.errors, { separator: "\n" })}`);
 }
 
-const listErlang = cliFixture(["list", "--json"], "erlang");
-const listNode = cliFixture(["list", "--json"], "javascript");
+const failingTestCommand = [
+  "list",
+  "--json",
+  "--test-command",
+  "node",
+  "-e",
+  "process.exit(91)",
+];
+const listErlang = cliFixture(failingTestCommand, "erlang");
+const listNode = cliFixture(failingTestCommand, "javascript");
 if (listErlang !== listNode) throw new Error("Erlang and Node list JSON differ byte-for-byte");
 const validateList = nativeAjv.compile(listSchema);
-if (!validateList(JSON.parse(listErlang))) {
+const listReport = JSON.parse(listErlang);
+if (!validateList(listReport)) {
   throw new Error(`List JSON schema validation failed:\n${nativeAjv.errorsText(validateList.errors, { separator: "\n" })}`);
+}
+if (listReport.validated !== false || listReport.mutants.length === 0 || listReport.rejected.length !== 0) {
+  throw new Error("Unvalidated list did not return discovered candidates without running the failing test command");
+}
+
+const invalidRoot = "fixtures/compile_invalid_project";
+const validatedErlang = cliFixture(["list", "--validate", "--json"], "erlang", invalidRoot);
+const validatedNode = cliFixture(["list", "--validate", "--json"], "javascript", invalidRoot);
+if (validatedErlang !== validatedNode) {
+  throw new Error(
+    "Erlang and Node validated-list JSON differ byte-for-byte"
+    + `\nErlang:\n${validatedErlang}`
+    + `\nNode:\n${validatedNode}`,
+  );
+}
+const validatedReport = JSON.parse(validatedErlang);
+if (!validateList(validatedReport)) {
+  throw new Error(`Validated-list JSON schema validation failed:\n${nativeAjv.errorsText(validateList.errors, { separator: "\n" })}`);
+}
+if (
+  validatedReport.validated !== true
+  || validatedReport.mutants.length !== 0
+  || validatedReport.rejected.length === 0
+  || validatedReport.rejected.some(mutant => mutant.reason !== "compile-invalid")
+) {
+  throw new Error("Validated list did not report an all-compile-invalid catalogue as 0 valid plus rejected");
 }
 
 const doctor = JSON.parse(cliFixture(["doctor", "--json"], "erlang"));
@@ -111,4 +146,4 @@ for (const mutant of file.mutants) {
     if (forbidden in mutant) throw new Error(`Unexpected ${forbidden} field`);
   }
 }
-console.log("Native, list, and doctor v1 fixtures validated against JSON Schema 2020-12; deterministic Stryker fixture validated against official Draft-07 schema with Ajv 8.20.0");
+console.log("Native, unvalidated-list, validated-list, and doctor v1 fixtures validated against JSON Schema 2020-12 with Erlang/Node byte parity; deterministic Stryker fixture validated against official Draft-07 schema with Ajv 8.20.0");
