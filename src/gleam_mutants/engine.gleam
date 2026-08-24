@@ -1082,8 +1082,13 @@ fn normalize_validation_diagnostic(
   output: String,
   snapshot_root: String,
 ) -> String {
+  // macOS exposes temporary directories through /var while some child
+  // processes report the same path through its /private/var real-path alias.
+  // Replace the longer alias first so it cannot become /private<snapshot>.
+  let private_snapshot_root = "/private" <> snapshot_root
   let output =
     output
+    |> string.replace(private_snapshot_root, "<snapshot>")
     |> string.replace(snapshot_root, "<snapshot>")
     |> string.replace(string.replace(snapshot_root, "/", "\\"), "<snapshot>")
   case string.split_once(output, "error:") {
