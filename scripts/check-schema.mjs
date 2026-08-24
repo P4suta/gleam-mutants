@@ -97,7 +97,11 @@ const invalidRoot = "fixtures/compile_invalid_project";
 const validatedErlang = cliFixture(["list", "--validate", "--json"], "erlang", invalidRoot);
 const validatedNode = cliFixture(["list", "--validate", "--json"], "javascript", invalidRoot);
 if (validatedErlang !== validatedNode) {
-  throw new Error("Erlang and Node validated-list JSON differ byte-for-byte");
+  throw new Error(
+    "Erlang and Node validated-list JSON differ byte-for-byte"
+    + `\nErlang:\n${validatedErlang}`
+    + `\nNode:\n${validatedNode}`,
+  );
 }
 const validatedReport = JSON.parse(validatedErlang);
 if (!validateList(validatedReport)) {
