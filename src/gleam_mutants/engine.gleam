@@ -1091,9 +1091,31 @@ fn normalize_validation_diagnostic(
     |> string.replace(private_snapshot_root, "<snapshot>")
     |> string.replace(snapshot_root, "<snapshot>")
     |> string.replace(string.replace(snapshot_root, "/", "\\"), "<snapshot>")
+    |> normalize_snapshot_location("/", "/gleam-mutants-")
+    |> normalize_snapshot_location("\\", "\\gleam-mutants-")
   case string.split_once(output, "error:") {
     Ok(#(_, diagnostic)) -> "error:" <> diagnostic
     Error(_) -> output
+  }
+}
+
+fn normalize_snapshot_location(
+  output: String,
+  separator: String,
+  snapshot_marker: String,
+) -> String {
+  case string.split_once(output, "  ┌─ ") {
+    Error(_) -> output
+    Ok(#(before, location)) ->
+      case string.split_once(location, snapshot_marker) {
+        Error(_) -> output
+        Ok(#(_, nonce_and_path)) ->
+          case string.split_once(nonce_and_path, separator) {
+            Error(_) -> output
+            Ok(#(_, relative)) ->
+              before <> "  ┌─ <snapshot>" <> separator <> relative
+          }
+      }
   }
 }
 
