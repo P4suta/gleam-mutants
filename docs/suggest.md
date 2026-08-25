@@ -119,7 +119,10 @@ Exit 0 means every mutant is dead; exit 1 means at least one is not; exit 2 is
 a tool failure. The verification run covers only the files those suggestions
 came from, so it writes no project report and stores nothing in the report
 history: `report latest`, `report list`, and a later `suggest --survivors` all
-still answer from your last real `run`.
+still answer from your last real `run`. It annotates nothing either: a run you
+ask for yourself warns GitHub Actions about each survivor and appends its score
+to the step summary, but a run `apply` makes on your behalf does not, so
+`--json` leaves one JSON value on stdout there as everywhere else.
 
 `run --suggest` appends the suggestions for that run's own survivors under the
 normal summary. It never changes the run's exit code, and it is refused

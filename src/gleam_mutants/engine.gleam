@@ -48,6 +48,11 @@ import tomlet
 /// replaces `report.history`, so a caller that only wants a verdict — `apply
 /// --verify` is the one in this package — can run without writing a project
 /// report or storing a run the reader never asked for.
+///
+/// `annotations` is that caller's other switch. A run started by the reader
+/// annotates its survivors for GitHub Actions; a run started by another
+/// command on the reader's behalf must not, whatever that command prints,
+/// because the annotations would be interleaved into output it owns.
 pub type Options {
   Options(
     root: Option(String),
@@ -62,6 +67,7 @@ pub type Options {
     mutant_prefix: Option(String),
     report_formats: Option(List(String)),
     report_history: Option(Bool),
+    annotations: Bool,
     json: Bool,
     explain: Bool,
     quiet: Bool,
@@ -150,6 +156,7 @@ pub fn default_options() -> Options {
     mutant_prefix: None,
     report_formats: None,
     report_history: None,
+    annotations: True,
     json: False,
     explain: False,
     quiet: False,
@@ -465,9 +472,9 @@ fn execute(
     True -> report.save(run_report, workspace)
     False -> Ok("")
   })
-  case options.json {
-    True -> Nil
-    False -> report.emit_github(run_report)
+  case options.annotations, options.json {
+    True, False -> report.emit_github(run_report)
+    _, _ -> Nil
   }
   let phase = pipeline.completed(prepared.phase)
   let _ = pipeline.state(phase)

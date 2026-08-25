@@ -1311,6 +1311,10 @@ fn outcome_name(value: outcome.Outcome) -> String {
 /// a later `suggest --survivors` answering from a narrowed run the reader
 /// never asked for. It writes no project report and no history entry: the
 /// last real mutation run stays the last one.
+///
+/// It annotates nothing either. `apply` owns what it prints — a `--json` run
+/// prints one JSON value — and on GitHub Actions the engine's own survivor
+/// annotations would go to the same stdout and leave that value unreadable.
 fn verification_options(
   options: Options,
   applied: List(render.Suggestion),
@@ -1327,6 +1331,7 @@ fn verification_options(
     mutant_prefix: None,
     report_formats: Some([]),
     report_history: Some(False),
+    annotations: False,
     json: False,
     explain: False,
     quiet: True,

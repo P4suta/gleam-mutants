@@ -599,9 +599,14 @@ fn named_functions(
 /// `--operator` overrides the workspace's own operator list the way it does
 /// for `run` and `list`, so that the mutants this run accounts for and the
 /// mutants it probes are chosen by one rule rather than two.
+///
+/// The engine is asked here on the reader's behalf rather than by the reader,
+/// so it annotates nothing for GitHub Actions: what `suggest` prints is
+/// `suggest`'s to print.
 fn selection_options(options: SuggestOptions) -> engine.Options {
   engine.Options(
     ..engine.default_options(),
+    annotations: False,
     changed: options.changed,
     includes: options.includes,
     operators: case options.operators {

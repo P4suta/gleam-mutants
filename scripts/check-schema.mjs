@@ -54,7 +54,7 @@ function fixture(module, target) {
   return result.stdout;
 }
 
-function cliFixture(command, target, root = "fixtures/basic_project") {
+function cliFixture(command, target, root = "fixtures/basic_project", environment = {}) {
   const args = ["run", "-m", "gleam_mutants", "--target", target];
   if (target === "javascript") args.push("--runtime", "node");
   args.push("--", "--root", root, ...command);
@@ -63,6 +63,7 @@ function cliFixture(command, target, root = "fixtures/basic_project") {
     encoding: "utf8",
     shell: false,
     maxBuffer: 16 * 1024 * 1024,
+    env: { ...process.env, ...environment },
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -255,18 +256,37 @@ if (
 // real. That happens in a throwaway copy of the fixture: `apply --yes` writes
 // into the workspace's own `test/` directory, and the fixture in the
 // repository is not the place for it.
+//
+// It is run as GitHub Actions runs it, whether or not this script is itself
+// running there. `--verify` runs the mutation engine twice on the reader's
+// behalf, and on Actions the engine annotates surviving mutants: `::warning`
+// lines on stdout, and a run summary appended to the file `GITHUB_STEP_SUMMARY`
+// names. Those runs are internal, so neither may happen — the `JSON.parse`
+// below is what a `::warning` line on stdout breaks, and the step summary is
+// checked to have been left as empty as it was found.
 const verifyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gleam-mutants-apply-"));
+const stepSummary = path.join(os.tmpdir(), `gleam-mutants-step-summary-${crypto.randomUUID()}.md`);
+fs.writeFileSync(stepSummary, "");
 let applied;
+let summaryAfterApply = "";
 try {
   fs.cpSync("fixtures/boundary_project", verifyRoot, { recursive: true });
-  applied = JSON.parse(cliFixture(["apply", "--yes", "--verify", "--json"], "erlang", verifyRoot));
+  applied = JSON.parse(cliFixture(["apply", "--yes", "--verify", "--json"], "erlang", verifyRoot, {
+    GITHUB_ACTIONS: "true",
+    GITHUB_STEP_SUMMARY: stepSummary,
+  }));
+  summaryAfterApply = fs.readFileSync(stepSummary, "utf8");
 } finally {
   fs.rmSync(verifyRoot, { recursive: true, force: true });
+  fs.rmSync(stepSummary, { force: true });
   // A run also stores its report history under the user's cache, keyed by the
   // workspace it ran in. That workspace is gone, so its entry is an orphan
   // nothing will ever read again: deleting the copy without it would leave one
   // behind per invocation of this script.
   fs.rmSync(workspaceCacheEntry(verifyRoot), { recursive: true, force: true });
+}
+if (summaryAfterApply !== "") {
+  throw new Error(`\`apply --yes --verify --json\` appended a mutation run to $GITHUB_STEP_SUMMARY:\n${summaryAfterApply}`);
 }
 if (!validateApply(applied)) {
   throw new Error(`Verified apply JSON schema validation failed:\n${nativeAjv.errorsText(validateApply.errors, { separator: "\n" })}`);

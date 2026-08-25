@@ -201,7 +201,9 @@ The native report history is scoped to the canonical workspace below the OS
 cache directory and can be managed with `report`. Reports may contain original
 source and diagnostics; treat CI artifacts accordingly. `run --json` writes one
 native JSON v1 value plus LF to stdout after a domain result exists, while early
-failures keep stdout empty. GitHub annotations are suppressed in JSON mode.
+failures keep stdout empty. GitHub annotations are suppressed in JSON mode, and
+runs the tool makes on your behalf — the two `apply --verify` takes — never
+annotate at all.
 
 ## Development
 

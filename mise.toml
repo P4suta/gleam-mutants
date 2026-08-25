@@ -66,7 +66,7 @@ description = "Run unit and end-to-end tests on Erlang, Node, Deno, and Bun"
 run = [
   "gleam test --target erlang",
   "gleam test --target javascript --runtime node",
-  "deno run --allow-read --allow-run --allow-env=GLEAM_MUTANTS_ACTIVE,GLEAM_MUTANTS_RUNTIME build/dev/javascript/gleam_mutants/gleam@@private_main_v1.18.1.mjs",
+  "deno run --allow-read --allow-write --allow-run --allow-env=GLEAM_MUTANTS_ACTIVE,GLEAM_MUTANTS_RUNTIME,TMPDIR,TEMP,TMP,HOME,USERPROFILE,XDG_CACHE_HOME,LOCALAPPDATA,GITHUB_ACTIONS,GITHUB_STEP_SUMMARY build/dev/javascript/gleam_mutants/gleam@@private_main_v1.18.1.mjs",
   "gleam test --target javascript --runtime bun",
   "gleam run -m engine_matrix_smoke --target erlang",
   "gleam run -m framework_matrix_smoke --target erlang",

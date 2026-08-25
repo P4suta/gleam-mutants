@@ -68,8 +68,12 @@ pub fn main() {
 
   let boundary_id = boundary_mutant_id(root)
 
+  let summary = summary_file()
   let applied =
-    run_cli(["apply", "--root", root, "--yes", "--verify", "--json"])
+    run_cli_with(["apply", "--root", root, "--yes", "--verify", "--json"], [
+      #("GITHUB_ACTIONS", "true"),
+      #("GITHUB_STEP_SUMMARY", summary),
+    ])
   let after = read(root, target)
   let tested = run_gleam_test(root)
 
@@ -87,6 +91,7 @@ pub fn main() {
       status_problems("apply (dry run)", dry),
       dry_run_problems(dry, before, after_dry),
       status_problems("apply --yes --verify --json", applied),
+      annotation_problems(applied, summary),
       case decoded {
         Error(reason) -> [reason]
         Ok(output) ->
@@ -104,6 +109,7 @@ pub fn main() {
     ])
 
   discard_workspace(root)
+  let _ = simplifile.delete(summary)
 
   let measured = measured_verification()
   let readers =
@@ -937,6 +943,14 @@ fn read(root: String, relative: String) -> String {
 // --- Running the command line ------------------------------------------------
 
 fn run_cli(arguments: List(String)) -> platform.ProcessResult {
+  run_cli_with(arguments, [])
+}
+
+/// The same command line, run with an environment of the caller's choosing.
+fn run_cli_with(
+  arguments: List(String),
+  environment: List(#(String, String)),
+) -> platform.ProcessResult {
   platform.run_process(
     "gleam",
     list.append(
@@ -944,9 +958,20 @@ fn run_cli(arguments: List(String)) -> platform.ProcessResult {
       arguments,
     ),
     ".",
-    [],
+    environment,
     900_000,
   )
+}
+
+/// A step-summary file GitHub Actions has not been told anything through yet.
+fn summary_file() -> String {
+  let file =
+    path.join(
+      platform.temporary_directory(),
+      "gleam-mutants-summary-" <> platform.random_nonce() <> ".md",
+    )
+  let assert Ok(Nil) = simplifile.write(file, "")
+  file
 }
 
 /// The applied workspace's own test suite, run the way its author would.
@@ -1072,6 +1097,39 @@ fn catalogue_decoder() -> decode.Decoder(List(Candidate)) {
       decode.success(Candidate(id: id, operator: operator, original: original))
     }),
   )
+}
+
+/// Nothing GitHub Actions reads as a workflow command.
+///
+/// The engine annotates surviving mutants wherever `GITHUB_ACTIONS` is set:
+/// `::warning` lines on stdout, and a run summary appended to the file
+/// `GITHUB_STEP_SUMMARY` names. `apply --verify` runs the engine twice on the
+/// reader's behalf, and those runs are internal — the annotations belong to
+/// whoever asked the engine for a run, not to a command printing JSON of its
+/// own, whose one value they would leave unparsable.
+///
+/// That last half is checked in `scripts/check-schema.mjs`, which parses the
+/// whole of a real stdout: `run_process` folds stderr into stdout, so what the
+/// checks here can say is that no annotation was printed at all and that the
+/// step summary was left as empty as it was found.
+fn annotation_problems(
+  run: platform.ProcessResult,
+  summary: String,
+) -> List(String) {
+  let commands =
+    string.split(run.stdout, "\n") |> list.filter(string.starts_with(_, "::"))
+  let appended = simplifile.read(summary) |> result.unwrap("")
+  list.flatten([
+    expect(
+      commands == [],
+      "apply --yes --verify --json emitted GitHub workflow commands:\n"
+        <> string.join(commands, "\n"),
+    ),
+    expect(
+      appended == "",
+      "apply --yes --verify --json wrote to $GITHUB_STEP_SUMMARY:\n" <> appended,
+    ),
+  ])
 }
 
 fn expect(holds: Bool, message: String) -> List(String) {
