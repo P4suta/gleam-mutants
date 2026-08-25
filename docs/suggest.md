@@ -20,7 +20,10 @@ function in the selected files, generates a module that calls the function
 twice on the same input: once with no mutant active, and once with each mutant
 of that function switched on. Both calls happen in one VM, one after the other,
 so the two answers are compared directly rather than inferred from whether a
-test suite went red.
+test suite went red. Each probe writes its verdicts to a `.jsonl` file inside
+the snapshot rather than printing them, so a module whose values run to
+kilobytes is reported in full however many mutants it has; its stdout carries
+nothing but a closing count.
 
 The inputs are derived from the function's own type annotations, generated
 pseudo-randomly from a fixed seed, so a rerun proposes the same tests. When an
@@ -404,8 +407,8 @@ All three commands share the `GMU8xxx` range. Every one of these exits 2.
 | `GMU8001` | the workspace's tests run on JavaScript, which these commands do not support |
 | `GMU8002` | a selected file is not a Gleam source covered by the mutation includes |
 | `GMU8003` | the snapshot did not compile, before or after instrumenting |
-| `GMU8004` | a probe timed out or exited non-zero |
-| `GMU8005` | a probe printed lines that are not results |
+| `GMU8004` | a probe timed out, exited non-zero, or wrote no results file |
+| `GMU8005` | a probe wrote lines that are not results |
 | `GMU8006` | two selected files would generate one probe module; probe them separately |
 | `GMU8007` | a probe would define one name twice; rename the function or type |
 | `GMU8008` | two types of one module would ask for one generator helper |

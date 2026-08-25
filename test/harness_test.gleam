@@ -119,12 +119,16 @@ fn probe_function(
   )
 }
 
+/// The file the spec under test has its probe append its results to.
+const results_path = "/tmp/gleam-mutants-ab12cd34ef56/probe_boundary.jsonl"
+
 fn spec_for(functions: List(harness.ProbeFunction)) -> harness.ProbeSpec {
   ProbeSpec(
     target_module: "boundary",
     probe_module: "gleam_mutants_probe_ab12cd34ef56_boundary",
     pbt_module: "gleam_mutants_pbt_ab12cd34ef56",
     ffi_module: "gleam_mutants_probe_ab12cd34ef56_ffi",
+    results_path: results_path,
     functions: functions,
     seed: 424_242,
     max_cases: 137,
@@ -383,9 +387,26 @@ pub fn rendered_probe_uses_the_probe_result_field_names_test() {
   assert missing(rendered, [
       "\"function\"", "\"mutant\"", "\"status\"", "\"inputs\"", "\"expected\"",
       "\"expected_inspect\"", "\"actual_inspect\"", "\"cases\"", "\"shrinks\"",
-      "\"reason\"", "\"distinguished\"", "\"indistinguishable\"", "io.println(",
+      "\"reason\"", "\"distinguished\"", "\"indistinguishable\"",
+      "append_result(",
     ])
     == []
+}
+
+pub fn rendered_probe_writes_its_results_to_the_baked_in_file_test() {
+  let rendered = harness.render_probe(full_spec())
+  assert missing(rendered, [
+      "const results_path = \"" <> results_path <> "\"",
+      "@external(erlang, \"gleam_mutants_probe_ab12cd34ef56_ffi\", \"append_result\")",
+      "fn append_result(path: String, line: String) -> Nil",
+      "append_result(\n    results_path,\n    json_object([",
+      "io.println(\"5 results written\")",
+    ])
+    == []
+
+  // A result line runs to kilobytes and a host reads a child's stdout through
+  // a bounded window: nothing but the closing count is printed.
+  assert occurrences(rendered, "io.println(") == 1
 }
 
 pub fn rendered_probe_reports_the_mutants_one_input_kills_test() {
@@ -417,9 +438,10 @@ pub fn rendered_probe_checks_the_original_for_nondeterminism_test() {
 pub fn rendered_ffi_isolates_the_call_in_a_spawned_process_test() {
   let rendered = harness.render_ffi(full_spec())
   assert missing(rendered, [
-      "-module(gleam_mutants_probe_ab12cd34ef56_ffi).", "-export([isolated/3]).",
-      "spawn_monitor", "gleam_mutants_active", "{value,", "{panic,", "timeout",
-      "'DOWN'", "make_ref()", "kill", "~p",
+      "-module(gleam_mutants_probe_ab12cd34ef56_ffi).",
+      "-export([isolated/3, append_result/2]).", "spawn_monitor",
+      "gleam_mutants_active", "{value,", "{panic,", "timeout", "'DOWN'",
+      "make_ref()", "kill", "~p",
     ])
     == []
 }
@@ -430,6 +452,14 @@ pub fn rendered_ffi_pins_the_active_mutant_in_the_child_test() {
   // stray persistent term or environment variable cannot select a mutant.
   assert missing(rendered, ["put(gleam_mutants_active, Mutant)"]) == []
   assert present(rendered, ["case Mutant of"]) == []
+}
+
+pub fn rendered_ffi_appends_one_result_line_to_the_file_test() {
+  let rendered = harness.render_ffi(full_spec())
+  assert missing(rendered, [
+      "append_result(Path, Line) ->", "file:write_file(Path,", "[append]",
+    ])
+    == []
 }
 
 pub fn rendered_ffi_is_named_after_the_spec_test() {
@@ -1772,7 +1802,14 @@ fn paths_target(rt: String) -> String {
 }
 
 @target(erlang)
+/// The file the probe of `module` reports through, inside the project.
+fn live_results(root: String, module: String) -> String {
+  path.join(root, module <> ".jsonl")
+}
+
+@target(erlang)
 fn live_spec(
+  root: String,
   module: String,
   source: String,
   pbt_module: String,
@@ -1783,6 +1820,7 @@ fn live_spec(
     probe_module: module <> "_probe",
     pbt_module: pbt_module,
     ffi_module: module <> "_probe_ffi",
+    results_path: live_results(root, module <> "_probe"),
     functions: list.map(functions, fn(entry) {
       ProbeFunction(
         plan: plan_in(source, entry.0),
@@ -1959,6 +1997,10 @@ fn printed_lines(run: ProbeRun) -> List(String) {
 // --- running the project ------------------------------------------------------
 
 @target(erlang)
+/// Runs one module and decodes whatever it wrote to its results file.
+///
+/// A module that reports nothing — the printer check, which prints its own
+/// lines instead — writes no file, and reads back as no results at all.
 fn run_probe(root: String, module: String) -> ProbeRun {
   let outcome =
     platform.run_process(
@@ -1968,7 +2010,8 @@ fn run_probe(root: String, module: String) -> ProbeRun {
       [],
       90_000,
     )
-  let #(results, failures) = probe_result.decode_output(outcome.stdout)
+  let written = result.unwrap(simplifile.read(live_results(root, module)), "")
+  let #(results, failures) = probe_result.decode_output(written)
   ProbeRun(
     module: module,
     status: outcome.status,
@@ -2034,6 +2077,7 @@ fn live_run(root: String) -> LiveRun {
   let probes = [
     LiveProbe(
       spec: live_spec(
+        root,
         "probe_shapes",
         shapes_source,
         pbt_module,
@@ -2042,19 +2086,25 @@ fn live_run(root: String) -> LiveRun {
       source: shapes_source,
     ),
     LiveProbe(
-      spec: live_spec("probe_return_only", return_only_source, pbt_module, [
-        #("make", ["m_make"]),
-      ]),
+      spec: live_spec(
+        root,
+        "probe_return_only",
+        return_only_source,
+        pbt_module,
+        [
+          #("make", ["m_make"]),
+        ],
+      ),
       source: return_only_source,
     ),
     LiveProbe(
-      spec: live_spec("probe_opaque", opaque_source, pbt_module, [
+      spec: live_spec(root, "probe_opaque", opaque_source, pbt_module, [
         #("hidden", ["m_hidden"]),
       ]),
       source: opaque_source,
     ),
     LiveProbe(
-      spec: live_spec("probe_mutual", mutual_source, pbt_module, [
+      spec: live_spec(root, "probe_mutual", mutual_source, pbt_module, [
         #("evaluate", ["m_eval"]),
         #("describe", ["m_describe"]),
         #("both", ["m_both"]),
@@ -2063,13 +2113,13 @@ fn live_run(root: String) -> LiveRun {
       source: mutual_source,
     ),
     LiveProbe(
-      spec: live_spec("probe_functional", functional_source, pbt_module, [
+      spec: live_spec(root, "probe_functional", functional_source, pbt_module, [
         #("make", ["m_capture", "m_scale"]),
       ]),
       source: functional_source,
     ),
     LiveProbe(
-      spec: live_spec("probe_paths", paths_source, pbt_module, [
+      spec: live_spec(root, "probe_paths", paths_source, pbt_module, [
         #("strip", ["m_strip"]),
         #("method", ["m_method"]),
       ]),
@@ -2427,7 +2477,7 @@ fn generic_live_run(root: String) -> GenericRun {
   let wrap_source = wrap_target(rt)
   let probes = [
     LiveProbe(
-      spec: live_spec("probe_generic", generic_source, pbt_module, [
+      spec: live_spec(root, "probe_generic", generic_source, pbt_module, [
         #("pairup", ["m_pair"]),
         #("total", ["m_total"]),
         #("nested", ["m_nest"]),
@@ -2438,7 +2488,7 @@ fn generic_live_run(root: String) -> GenericRun {
       source: generic_source,
     ),
     LiveProbe(
-      spec: live_spec("probe_wrap", wrap_source, pbt_module, [
+      spec: live_spec(root, "probe_wrap", wrap_source, pbt_module, [
         #("wrap", ["m_wrap"]),
       ]),
       source: wrap_source,

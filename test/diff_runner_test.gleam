@@ -361,6 +361,7 @@ fn planned(source: String) -> Result(Nil, String) {
       discovered.mutants,
       discovered.rejected,
     ),
+    "/snapshot",
     "t01",
     "gleam_mutants_pbt_t01",
   )
@@ -1063,4 +1064,72 @@ pub fn run_instruments_only_the_named_functions_mutants_test() {
   assert list.any(output.results, fn(probe) {
     probe.status == probe_result.Distinguished
   })
+}
+
+// --- results bigger than the host's stdout capture ----------------------------
+
+@target(erlang)
+/// A module whose every distinguished result carries kilobytes of value.
+///
+/// Each of the fifteen neutral zeroes is a mutant the probe tells apart, and
+/// every verdict about one states a four-thousand character string three
+/// times over — as the source a test would paste back in, and as the inspect
+/// of each side. Fifteen of those run past any bounded window a host could
+/// read a child's stdout through.
+const bulky_source = "import gleam/int
+import gleam/string
+
+pub fn big(n: Int) -> String {
+  string.repeat(\"x\", 4000)
+  <> int.to_string(
+    n + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0,
+  )
+}
+"
+
+@target(erlang)
+/// How many bytes the probe reported, as the lines it wrote them on.
+fn result_bytes(results: List(probe_result.ProbeResult)) -> Int {
+  list.fold(results, 0, fn(total, probe) {
+    total + string.length(probe_result.encode(probe)) + 1
+  })
+}
+
+@target(erlang)
+/// The size of a module's results is not a limit on the run.
+///
+/// The probe used to print one result line per mutant on stdout, and a host
+/// captures a child's output through a bounded window: a module whose values
+/// run to kilobytes filled it, the window kept a head and a tail with the
+/// middle dropped, and the severed line came back as GMU8005 rather than as
+/// the verdicts the probe had found. The results travel in a file inside the
+/// snapshot now, so every mutant is reported however large its values are.
+pub fn run_reports_every_mutant_when_the_results_outgrow_stdout_test() {
+  let root = workspace(stdlib_toml, [#("src/bulky.gleam", bulky_source)])
+  let outcome = diff_runner.run(quick(root, ["src/bulky.gleam"]))
+  discard(root)
+  discard_run(outcome)
+
+  let assert Ok(output) = outcome
+  let reported =
+    output.results
+    |> list.map(fn(probe) { probe.mutant })
+    |> list.sort(string.compare)
+  let discovered =
+    output.mutants
+    |> list.map(fn(item) { item.id })
+    |> list.sort(string.compare)
+
+  // Every mutant discovered has exactly one verdict: none of them was lost
+  // with the severed line, and none of them was reported twice.
+  assert discovered != []
+  assert reported == discovered
+  assert output.unassigned_mutants == 0
+  assert list.any(output.results, fn(probe) {
+    probe.status == probe_result.Distinguished
+  })
+
+  // The evidence that this run is the one the bounded window used to cut: the
+  // lines the probe wrote are larger than the 128 KiB a host captures.
+  assert result_bytes(output.results) > 131_072
 }

@@ -395,7 +395,7 @@ fn prepare(
   )
   use plans <- result.try(
     list.try_map(catalogs, fn(source_catalog) {
-      plan_module(request, source_catalog, tag, pbt_module)
+      plan_module(request, source_catalog, root, tag, pbt_module)
     }),
   )
   Ok(Prepared(catalogs: catalogs, plans: plans, pbt_module: pbt_module))
@@ -451,16 +451,18 @@ type ModulePlan {
 pub fn check_plan(
   request: Request,
   source_catalog: SourceCatalog,
+  root: String,
   tag: String,
   pbt_module: String,
 ) -> Result(Nil, String) {
-  plan_module(request, source_catalog, tag, pbt_module)
+  plan_module(request, source_catalog, root, tag, pbt_module)
   |> result.replace(Nil)
 }
 
 fn plan_module(
   request: Request,
   source_catalog: SourceCatalog,
+  root: String,
   tag: String,
   pbt_module: String,
 ) -> Result(ModulePlan, String) {
@@ -502,6 +504,7 @@ fn plan_module(
       // have app's `.erl` and app_ffi's probe both claim
       // `gleam_mutants_probe_<tag>_app_ffi` in the snapshot's `src/`.
       ffi_module: "gleam_mutants_ffi_" <> tag <> "_" <> flatten(module),
+      results_path: results_file(root, probe_module),
       functions: list.reverse(sorted.probes),
       seed: request.seed,
       max_cases: request.max_cases,
@@ -666,6 +669,18 @@ pub fn module_name(relative: String) -> String {
 /// A module path as one Gleam identifier: `app/util` is `app_util`.
 fn flatten(module: String) -> String {
   string.replace(module, "/", "_")
+}
+
+/// The file one module's probe appends its result lines to.
+///
+/// The probe used to print them, and a host reads a child's stdout through a
+/// bounded window: a module whose values run to kilobytes filled it, and the
+/// line that fell across the end of the window came back severed. The file is
+/// named after the probe module, so two probes of one run never share one, and
+/// it lives inside the snapshot, so the caller's cleanup takes it away with
+/// everything else the run generated.
+fn results_file(root: String, probe_module: String) -> String {
+  path.join(root, probe_module <> ".jsonl")
 }
 
 // --- Generating, building and running ----------------------------------------
@@ -868,17 +883,30 @@ fn run_probe(
         <> finished.stderr,
       )
     False, 0 ->
-      case probe_result.decode_output(finished.stdout) {
-        #(results, []) -> Ok(#(plan.probe_module, results))
-        #(_, failures) ->
+      case simplifile.read(plan.spec.results_path) {
+        Error(_) ->
           Error(
-            "GMU8005: the probe of `"
+            "GMU8004: the probe of `"
             <> plan.module
-            <> "` printed "
-            <> int.to_string(list.length(failures))
-            <> " lines that are not results:\n"
-            <> string.join(failures, "\n"),
+            <> "` wrote no results to "
+            <> plan.spec.results_path
+            <> ":\n"
+            <> finished.stdout
+            <> finished.stderr,
           )
+        Ok(written) ->
+          case probe_result.decode_output(written) {
+            #(results, []) -> Ok(#(plan.probe_module, results))
+            #(_, failures) ->
+              Error(
+                "GMU8005: the probe of `"
+                <> plan.module
+                <> "` wrote "
+                <> int.to_string(list.length(failures))
+                <> " lines that are not results:\n"
+                <> string.join(failures, "\n"),
+              )
+          }
       }
     False, status ->
       Error(
