@@ -41,6 +41,13 @@ import gleam_mutants/workspace_lock
 import simplifile
 import tomlet
 
+/// Everything one run of the engine was asked for.
+///
+/// Every `Option` field overrides the workspace's own configuration when it is
+/// `Some`: `report_formats` replaces `report.formats` and `report_history`
+/// replaces `report.history`, so a caller that only wants a verdict — `apply
+/// --verify` is the one in this package — can run without writing a project
+/// report or storing a run the reader never asked for.
 pub type Options {
   Options(
     root: Option(String),
@@ -54,6 +61,7 @@ pub type Options {
     test_command: Option(List(String)),
     mutant_prefix: Option(String),
     report_formats: Option(List(String)),
+    report_history: Option(Bool),
     json: Bool,
     explain: Bool,
     quiet: Bool,
@@ -61,6 +69,7 @@ pub type Options {
     log_format: String,
     help_requested: Bool,
     version_requested: Bool,
+    suggest: Bool,
   )
 }
 
@@ -129,24 +138,26 @@ type Prepared {
 
 pub fn default_options() -> Options {
   Options(
-    None,
-    False,
-    None,
-    [],
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    False,
-    False,
-    False,
-    0,
-    "text",
-    False,
-    False,
+    root: None,
+    matrix: False,
+    changed: None,
+    includes: [],
+    operators: None,
+    strict: None,
+    jobs: None,
+    timeout_ms: None,
+    test_command: None,
+    mutant_prefix: None,
+    report_formats: None,
+    report_history: None,
+    json: False,
+    explain: False,
+    quiet: False,
+    verbosity: 0,
+    log_format: "text",
+    help_requested: False,
+    version_requested: False,
+    suggest: False,
   )
 }
 
@@ -720,6 +731,10 @@ fn apply_options(config: Config, options: Options) -> Config {
         Some(formats) -> formats
         None -> config.report.formats
       },
+      history: case options.report_history {
+        Some(value) -> value
+        None -> config.report.history
+      },
     ),
   )
 }
@@ -739,6 +754,17 @@ fn validate_effective_config(config: Config) -> Result(Nil, String) {
   }
 }
 
+/// The workspace-relative `.gleam` paths that changed since a git reference.
+///
+/// `None` is answered for `None`: nothing was asked about, so nothing narrows
+/// the selection. Otherwise every added, copied, modified or renamed path
+/// between the merge base and `HEAD` is collected, together with the staged,
+/// unstaged and untracked changes on top of it, so that a working tree is
+/// judged as it stands rather than as it was committed.
+///
+/// Private: `--changed` reaches every caller through `run` and `list_mutants`,
+/// which own the selection this narrows, and `suggest` asks them for it rather
+/// than resolving a git reference of its own.
 fn resolve_changed(
   workspace: String,
   reference: Option(String),

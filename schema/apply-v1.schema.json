@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gleam-mutants.invalid/schema/apply-v1.schema.json",
+  "title": "gleam-mutants apply output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "plans", "verification"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "plans": {
+      "description": "One entry per test module the run touched, or would touch without `--yes`, sorted by file.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/plan" }
+    },
+    "verification": {
+      "description": "What the mutation run `--verify` asked for found, or null when it was not asked for. Every mutant the generated tests in those modules claim to kill is named exactly once, kill sets included.",
+      "type": ["array", "null"],
+      "items": { "$ref": "#/$defs/verified" }
+    }
+  },
+  "$defs": {
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "create", "imports_added", "tests_added", "tests_skipped"],
+      "properties": {
+        "file": {
+          "description": "The workspace-relative test module, always under `test/`.",
+          "type": "string", "minLength": 1
+        },
+        "create": { "type": "boolean" },
+        "imports_added": {
+          "description": "The import lines the module gained, written the way `gleam format` leaves them. A module the file already imports is grown on the line it has rather than imported twice.",
+          "type": "array", "items": { "type": "string", "minLength": 1 }
+        },
+        "tests_added": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "tests_skipped": {
+          "description": "The generated tests the module already defined. A suggestion applied twice is written once.",
+          "type": "array", "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "verified": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutant_id", "display_id", "outcome", "killed"],
+      "properties": {
+        "mutant_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "display_id": {
+          "description": "Empty for a mutant the verification run never discovered, which is reported as `missing` and counts as alive.",
+          "type": "string", "pattern": "^([0-9A-Fa-f]{20,64})?$"
+        },
+        "outcome": {
+          "description": "What became of the mutant under the generated tests.",
+          "enum": ["killed", "timed-out", "survived", "test-error", "missing"]
+        },
+        "killed": {
+          "description": "Whether the mutant counts as dead. A timeout does, exactly as the mutation score counts it; the command exits 1 when any entry is false.",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

@@ -23,6 +23,11 @@ path = "operators.html"
 source = "docs/operators.md"
 
 [[documentation.pages]]
+title = "Suggesting tests"
+path = "suggest.html"
+source = "docs/suggest.md"
+
+[[documentation.pages]]
 title = "Architecture"
 path = "architecture.html"
 source = "docs/architecture.md"

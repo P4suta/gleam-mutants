@@ -97,6 +97,7 @@ pub fn defaults_carry_the_standard_budgets_test() {
       call_timeout_ms: 1000,
       probe_timeout_ms: 120_000,
       nondeterminism_checks: 3,
+      exclude_functions: [],
     )
 }
 
@@ -227,6 +228,29 @@ pub fn filter_targets_keeps_only_the_named_function_test() {
 pub fn filter_targets_drops_every_function_when_the_name_is_unknown_test() {
   assert diff_runner.filter_targets(Some("missing"), targets(two_functions))
     == []
+}
+
+// --- split_excluded ---------------------------------------------------------
+
+pub fn split_excluded_probes_every_target_when_nothing_is_named_test() {
+  let #(probed, left_alone) =
+    diff_runner.split_excluded([], targets(two_functions))
+  assert probed_names(probed) == ["add", "multiply"]
+  assert left_alone == []
+}
+
+pub fn split_excluded_takes_the_named_function_out_of_the_probe_test() {
+  let #(probed, left_alone) =
+    diff_runner.split_excluded(["multiply"], targets(two_functions))
+  assert probed_names(probed) == ["add"]
+  assert probed_names(left_alone) == ["multiply"]
+}
+
+pub fn split_excluded_ignores_a_name_the_module_does_not_have_test() {
+  let #(probed, left_alone) =
+    diff_runner.split_excluded(["missing"], targets(two_functions))
+  assert probed_names(probed) == ["add", "multiply"]
+  assert left_alone == []
 }
 
 // --- classify ---------------------------------------------------------------
@@ -677,4 +701,143 @@ pub fn run_hands_back_the_snapshot_that_did_not_compile_test() {
     diff_runner.describe(error),
     "\nthe snapshot was left at " <> named,
   )
+}
+
+@target(erlang)
+/// A module whose first function records on disk that it was called.
+///
+/// `file:write_file/2` is reached directly rather than through simplifile, so
+/// the throwaway workspace needs no dependency beyond the one a generated
+/// probe already imports. `add` is there to give the run something to do once
+/// `shout` has been taken away from it.
+fn shouting_source(witness: String) -> String {
+  "@external(erlang, \"file\", \"write_file\")
+fn write_file(path: String, data: String) -> Nil
+
+pub fn shout(value: Int) -> Int {
+  let _ = write_file(\"" <> witness <> "\", \"called\")
+  value + 1
+}
+
+pub fn add(a: Int, b: Int) -> Int {
+  a + b
+}
+"
+}
+
+@target(erlang)
+/// A file nothing has written yet, beside the throwaway workspaces.
+fn witness_path() -> String {
+  path.join(
+    platform.temporary_directory(),
+    "gleam-mutants-probe-called-" <> platform.random_nonce(),
+  )
+  |> string.replace("\\", "/")
+}
+
+@target(erlang)
+/// The probe really does call the functions it is given, which is what makes
+/// the silence of the excluded run below evidence rather than an empty
+/// reading.
+pub fn run_calls_a_function_no_exclusion_names_test() {
+  let witness = witness_path()
+  let root =
+    workspace(stdlib_toml, [#("src/shout.gleam", shouting_source(witness))])
+  let outcome = diff_runner.run(quick(root, ["src/shout.gleam"]))
+  let called = simplifile.is_file(witness) == Ok(True)
+  discard(root)
+  discard_run(outcome)
+  let _ = simplifile.delete(witness)
+
+  let assert Ok(output) = outcome
+  assert called
+  assert list.any(output.results, fn(probe) { probe.function == "shout" })
+  assert output.skipped == []
+}
+
+@target(erlang)
+/// An excluded function is never compiled into the probe, never called and
+/// never timed — and its mutants still reach the caller.
+///
+/// The point of excluding a function is that calling it is unsafe or slow, so
+/// a run that calls it anyway and only relabels the verdict afterwards buys
+/// the reader nothing. The witness file is the proof: it exists only if the
+/// probe called `shout`.
+pub fn run_never_calls_a_function_the_request_excludes_test() {
+  let witness = witness_path()
+  let root =
+    workspace(stdlib_toml, [#("src/shout.gleam", shouting_source(witness))])
+  let outcome =
+    diff_runner.run(
+      diff_runner.Request(
+        ..quick(root, ["src/shout.gleam"]),
+        exclude_functions: [
+          "shout",
+        ],
+      ),
+    )
+  let called = simplifile.is_file(witness) == Ok(True)
+  discard(root)
+  discard_run(outcome)
+  let _ = simplifile.delete(witness)
+
+  let assert Ok(output) = outcome
+  assert called == False
+  assert list.map(output.skipped, fn(entry) { #(entry.function, entry.reason) })
+    == [#("shout", diff_runner.excluded_reason)]
+  let left_alone =
+    list.filter(output.results, fn(probe) { probe.function == "shout" })
+  assert left_alone != []
+  assert list.all(left_alone, fn(probe) {
+    probe.status == probe_result.Unsupported
+    && probe.reason == diff_runner.excluded_reason
+  })
+  assert list.any(output.results, fn(probe) {
+    probe.function == "add" && probe.status == probe_result.Distinguished
+  })
+}
+
+@target(erlang)
+/// A module with nothing left to probe is never compiled at all.
+///
+/// `snapshot.create` leaves `build` behind when it copies, so a `build`
+/// directory inside the snapshot exists only if the runner compiled there.
+/// That is the other half of what excluding a function buys: a workspace whose
+/// probeable functions are all excluded costs a copy and nothing else, and its
+/// mutants still come back.
+pub fn run_excluding_every_function_compiles_nothing_test() {
+  let witness = witness_path()
+  let root =
+    workspace(stdlib_toml, [#("src/shout.gleam", shouting_source(witness))])
+  let outcome =
+    diff_runner.run(
+      diff_runner.Request(
+        ..quick(root, ["src/shout.gleam"]),
+        exclude_functions: [
+          "shout",
+          "add",
+        ],
+      ),
+    )
+  let called = simplifile.is_file(witness) == Ok(True)
+  let compiled = case outcome {
+    Ok(output) ->
+      simplifile.is_directory(path.join(output.snapshot_root, "build"))
+      == Ok(True)
+    Error(_) -> False
+  }
+  discard(root)
+  discard_run(outcome)
+  let _ = simplifile.delete(witness)
+
+  let assert Ok(output) = outcome
+  assert called == False
+  assert compiled == False
+  assert output.results != []
+  assert list.all(output.results, fn(probe) {
+    probe.status == probe_result.Unsupported
+    && probe.reason == diff_runner.excluded_reason
+  })
+  assert list.map(output.skipped, fn(entry) { entry.function })
+    == ["shout", "add"]
 }

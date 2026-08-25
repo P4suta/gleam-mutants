@@ -47,6 +47,8 @@ run = [
   "gleam run -m engine_smoke --target erlang",
   "gleam run -m engine_smoke --target javascript --runtime node",
   "gleam run -m suggest_smoke --target erlang",
+  "gleam run -m suggest_cli_smoke --target erlang",
+  "gleam run -m apply_smoke --target erlang",
   "gleam run -m compiler_validation_smoke --target erlang",
   "node scripts/snapshot-safety-smoke.mjs",
   "node scripts/report-storage-smoke.mjs",

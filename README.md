@@ -78,12 +78,36 @@ gleam run -m gleam_mutants -- list --validate
 gleam run -m gleam_mutants -- run
 gleam run -m gleam_mutants -- run --matrix
 gleam run -m gleam_mutants -- run --changed origin/main
+gleam run -m gleam_mutants -- suggest --survivors
+gleam run -m gleam_mutants -- explain <mutant-id-prefix>
+gleam run -m gleam_mutants -- run --suggest
+gleam run -m gleam_mutants -- apply --verify
 ```
 
 With no arguments, help is shown; mutation starts only with `run`. The stable
-tree is `run`, `list`, `doctor`, `init`, `report list|latest|validate|clean`, and
-`cache status|clean`. All commands accept `--root`; without it, the nearest
-parent `gleam.toml` is selected. Run `--help` for all flags.
+tree is `run`, `list`, `doctor`, `init`, `suggest`, `explain`, `apply`,
+`report list|latest|validate|clean`, and `cache status|clean`. All commands
+accept `--root`; without it, the nearest parent `gleam.toml` is selected. Run
+`--help` for all flags.
+
+`suggest` proposes the tests that kill surviving mutants and `explain` shows one
+mutant with the input that separates it; both probe the workspace differentially
+and run on the Erlang target only.
+
+`apply` writes those tests into your own test modules, one flat file per module
+under test: `src/app/util.gleam` is tested by `test/app_util_test.gleam`.
+Without `--yes` it is a dry run that only prints the files and tests it would
+add; with `--yes` it appends the missing tests and imports, skipping any test
+name it has written before, calling every module by the name your own file
+already binds it under, and running `gleam format` over what it touched.
+`--verify` implies `--yes` and then re-runs the mutation engine over those
+source files, exiting 1 if any mutant the new tests claim to kill is still
+alive; that run stores no
+report of its own, so `report latest` still answers from your last `run`.
+`run --suggest` prints the suggestions for that run's own survivors under the
+normal summary and never changes its exit code; it is refused with `--json`,
+which prints exactly one JSON value. A generated test pins the behaviour the
+code has today, so read them before committing them — see [suggesting tests](docs/suggest.md).
 
 `list` is the fast discovery path: it reads configuration, snapshots the
 workspace, and finds candidates without building, instrumenting, running a
@@ -130,7 +154,8 @@ native history. Fixed project filenames remain `mutation.json` and
 ## Safety model
 
 The original source files are read only: the only normal project writes are the
-two report files above. `gleam_mutants` creates a sorted disposable snapshot,
+two report files above, plus the test modules `apply --yes` is explicitly asked
+to write. `gleam_mutants` creates a sorted disposable snapshot,
 excludes the effective report directory from its manifest and cache fingerprint,
 rejects symlinks, junctions and special files, and performs all build and test
 work there. A bounded parallel worker pool uses independent snapshots,
@@ -185,8 +210,9 @@ failure. The Linux workflow runs Sunday at 03:41 UTC or manually, has a
 absent from ordinary PR CI and the daily nightly matrix, but is required by the
 manual release-candidate and publish gates.
 
-See [configuration](docs/configuration.md), [operators](docs/operators.md), and
-[architecture](docs/architecture.md) for details.
+See [configuration](docs/configuration.md), [operators](docs/operators.md),
+[suggesting tests](docs/suggest.md), and [architecture](docs/architecture.md)
+for details.
 
 ## Licence
 

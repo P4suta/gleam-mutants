@@ -57,7 +57,7 @@ const distributionPairs = [
   [path.join(distributionRoot, "vendor", "mutation-testing-elements", version, "LICENSE"), path.join(vendor, "LICENSE")],
   [path.join(distributionRoot, "vendor", "mutation-testing-elements", version, "PROVENANCE.json"), path.join(vendor, "PROVENANCE.json")],
 ];
-for (const name of ["run-report-v1.schema.json", "list-v1.schema.json", "doctor-v1.schema.json"]) {
+for (const name of ["run-report-v1.schema.json", "list-v1.schema.json", "doctor-v1.schema.json", "suggest-v1.schema.json", "explain-v1.schema.json", "apply-v1.schema.json"]) {
   distributionPairs.push([
     path.join(distributionRoot, "schema", name),
     path.join(root, "schema", name),

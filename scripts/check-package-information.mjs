@@ -27,10 +27,10 @@ try {
     }
   };
   assertEqual(metadata.gleam, ">= 1.17.0 and < 2.0.0", "minimum Gleam version");
-  assertEqual(metadata.internal_modules, ["gleam_mutants/*", "gleam_mutants/core/*"], "internal modules");
+  assertEqual(metadata.internal_modules, ["gleam_mutants/*", "gleam_mutants/core/*", "gleam_mutants/suggest/*"], "internal modules");
   assertEqual(
     (metadata.documentation?.pages || []).map(page => page.path),
-    ["configuration.html", "operators.html", "architecture.html"],
+    ["configuration.html", "operators.html", "suggest.html", "architecture.html"],
     "documentation pages",
   );
   console.log("package-information matches the compiler, internal-module, and documentation contracts");

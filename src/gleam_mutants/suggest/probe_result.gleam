@@ -22,13 +22,30 @@ pub type Status {
   Unsupported
 }
 
+/// How one call ended.
+///
+/// A call that did not return has no value to state, which is the difference
+/// between a test that can be generated and one that cannot.
+pub type Outcome {
+  /// The call returned, and the matching `_inspect` field holds its value.
+  Returned
+  /// The call panicked, so there is no value at all.
+  Panicked
+  /// The call ran past its timeout.
+  TimedOut
+}
+
 /// One probe outcome for a single mutant of a single function.
 ///
 /// `inputs` holds the rendered Gleam source of each argument and `expected`
 /// the rendered source of the original's result when it can be printed as
-/// source; the two `_inspect` fields carry `string.inspect`-style renderings
-/// for explain output. `reason` is non-empty for `Unsupported` and
-/// `Nondeterministic` results.
+/// source; the two `_inspect` fields carry the `string.inspect` rendering of
+/// the value each side answered with — the value itself, never the wrapper the
+/// probe carried it home in — and are empty unless the matching `_outcome` is
+/// `Returned`. `reason` is non-empty for `Unsupported` and `Nondeterministic`
+/// results. `kills` names every mutant of the same function that `inputs`
+/// separates from the original, its own mutant included, in the order the
+/// probe was given them; it is empty unless the status is `Distinguished`.
 pub type ProbeResult {
   ProbeResult(
     function: String,
@@ -37,10 +54,13 @@ pub type ProbeResult {
     inputs: List(String),
     expected: Option(String),
     expected_inspect: String,
+    expected_outcome: Outcome,
     actual_inspect: String,
+    actual_outcome: Outcome,
     cases: Int,
     shrinks: Int,
     reason: String,
+    kills: List(String),
   )
 }
 
@@ -86,12 +106,24 @@ pub fn encode(result: ProbeResult) -> String {
     #("inputs", json.array(result.inputs, json.string)),
     #("expected", json.nullable(result.expected, json.string)),
     #("expected_inspect", json.string(result.expected_inspect)),
+    #("expected_outcome", json.string(outcome_name(result.expected_outcome))),
     #("actual_inspect", json.string(result.actual_inspect)),
+    #("actual_outcome", json.string(outcome_name(result.actual_outcome))),
     #("cases", json.int(result.cases)),
     #("shrinks", json.int(result.shrinks)),
     #("reason", json.string(result.reason)),
+    #("kills", json.array(result.kills, json.string)),
   ])
   |> json.to_string
+}
+
+/// The stable lowercase wire name of an outcome.
+pub fn outcome_name(outcome: Outcome) -> String {
+  case outcome {
+    Returned -> "returned"
+    Panicked -> "panicked"
+    TimedOut -> "timed_out"
+  }
 }
 
 /// The stable lowercase wire name of a status.
@@ -119,14 +151,25 @@ fn decoder() -> decode.Decoder(ProbeResult) {
     "",
     decode.string,
   )
+  use expected_outcome <- decode.optional_field(
+    "expected_outcome",
+    Returned,
+    outcome_decoder(),
+  )
   use actual_inspect <- decode.optional_field(
     "actual_inspect",
     "",
     decode.string,
   )
+  use actual_outcome <- decode.optional_field(
+    "actual_outcome",
+    Returned,
+    outcome_decoder(),
+  )
   use cases <- decode.optional_field("cases", 0, decode.int)
   use shrinks <- decode.optional_field("shrinks", 0, decode.int)
   use reason <- decode.optional_field("reason", "", decode.string)
+  use kills <- decode.optional_field("kills", [], decode.list(decode.string))
   decode.success(ProbeResult(
     function: function,
     mutant: mutant,
@@ -134,11 +177,24 @@ fn decoder() -> decode.Decoder(ProbeResult) {
     inputs: inputs,
     expected: expected,
     expected_inspect: expected_inspect,
+    expected_outcome: expected_outcome,
     actual_inspect: actual_inspect,
+    actual_outcome: actual_outcome,
     cases: cases,
     shrinks: shrinks,
     reason: reason,
+    kills: kills,
   ))
+}
+
+fn outcome_decoder() -> decode.Decoder(Outcome) {
+  use name <- decode.then(decode.string)
+  case name {
+    "returned" -> decode.success(Returned)
+    "panicked" -> decode.success(Panicked)
+    "timed_out" -> decode.success(TimedOut)
+    _ -> decode.failure(Returned, "Outcome")
+  }
 }
 
 fn status_decoder() -> decode.Decoder(Status) {

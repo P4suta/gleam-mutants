@@ -45,6 +45,16 @@ history = true
 diagnostics = "errors"
 high = 80
 low = 60
+
+# Read by the `suggest` and `explain` commands.
+[tools.gleam_mutants.suggest]
+seed = 1
+max_cases = 200
+max_shrinks = 500
+call_timeout_ms = 1000
+probe_timeout_ms = 120000
+assert_style = "assert"      # assert, should
+# exclude_functions = ["main"]
 ```
 
 Precedence is built-in defaults, then `gleam.toml`, then CLI flags. `init` edits
@@ -71,6 +81,26 @@ cannot overlap mutation target sources and no existing component may be a
 symlink, junction, special file, or non-directory. Thresholds are integers and
 must satisfy `0 <= low <= high <= 100`; they only control Mutation Testing
 Elements colours and are independent of `policy.minimum_score`.
+
+`suggest` configures the differential probe that the `suggest` and `explain`
+commands run; `run`, `list`, and reporting ignore it. `seed` fixes the input
+search, so that a rerun proposes the same tests. `max_cases` (1–100000) bounds
+the inputs tried per mutant and `max_shrinks` (0–100000) the shrinking steps
+taken once an input separates one. `call_timeout_ms` (10ms–10m) bounds a
+single call into the module under test and `probe_timeout_ms` (100ms–24h, the
+range `--budget` takes) one probe process, of which there is one per module
+under test. `assert_style` picks the form of
+the generated tests: `assert` writes `assert f(x) == y`, `should` writes
+`f(x) |> should.equal(y)`. `exclude_functions` names functions the probe
+leaves alone: they are never compiled into a probe, never called and never
+timed, so a function that is unsafe or slow to call costs the run nothing. Each
+one is reported as skipped and each of its mutants as unsupported, so nothing
+the run selected goes unaccounted for. `--seed`,
+`--max-cases`, `--max-shrinks`, `--budget` and `--style` override the matching
+keys for one run. `init` never writes this section; the defaults above apply
+until you add it yourself. See [suggesting tests](suggest.md) for what the
+probe does with these values, which statuses it reports, and what `apply`
+writes.
 
 Enabled project formats atomically replace fixed `mutation.json` and
 `mutation.html` targets in that directory. `formats = []` or `--report none`

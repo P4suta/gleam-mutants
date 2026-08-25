@@ -9,18 +9,24 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import gleam_mutants/cache
 import gleam_mutants/config
 import gleam_mutants/core/catalog.{type RejectedMutant}
 import gleam_mutants/core/mutant.{type Mutant}
 import gleam_mutants/core/operator
+import gleam_mutants/core/outcome
 import gleam_mutants/core/path
 import gleam_mutants/core/span
 import gleam_mutants/engine.{type Options, Options}
 import gleam_mutants/platform
 import gleam_mutants/project_report
 import gleam_mutants/report
+import gleam_mutants/suggest/apply
+import gleam_mutants/suggest/command as suggest_command
+import gleam_mutants/suggest/probe_result
+import gleam_mutants/suggest/render
 import gleam_mutants/version
 import glint
 import simplifile
@@ -36,6 +42,24 @@ pub type Command {
   ReportCleanCommand(Options)
   CacheStatusCommand(Options)
   CacheCleanCommand(Options)
+  SuggestCommand(
+    options: Options,
+    suggest: suggest_command.SuggestOptions,
+    json: Bool,
+  )
+  ExplainCommand(
+    options: Options,
+    display_id: String,
+    suggest: suggest_command.SuggestOptions,
+    json: Bool,
+  )
+  ApplyCommand(
+    options: Options,
+    suggest: suggest_command.SuggestOptions,
+    yes: Bool,
+    verify: Bool,
+    json: Bool,
+  )
   HelpCommand
   VersionCommand
 }
@@ -68,11 +92,13 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
     _, _, [] -> Ok(HelpCommand)
     _, _, ["help", ..] -> Ok(HelpCommand)
     _, _, ["version"] -> Ok(VersionCommand)
-    _, _, ["run", ..rest] ->
-      parse_options(rest, options) |> result.map(RunCommand)
+    _, _, ["run", ..rest] -> parse_run(rest, options)
     _, _, ["list", ..rest] -> parse_list(rest, options)
     _, _, ["doctor", ..rest] -> parse_doctor(rest, options)
     _, _, ["init", ..rest] -> parse_init(rest, options, False, False, False)
+    _, _, ["suggest", ..rest] -> parse_suggest(rest, options)
+    _, _, ["explain", ..rest] -> parse_explain(rest, options)
+    _, _, ["apply", ..rest] -> parse_apply(rest, options)
     _, _, ["report", "list"] -> Ok(ReportListCommand(options))
     _, _, ["report", "latest"] -> Ok(ReportLatestCommand(options))
     _, _, ["report", "latest", "--json"] -> Ok(ReportLatestCommand(options))
@@ -195,6 +221,291 @@ fn parse_init(
     ["--gitignore", ..rest] -> parse_init(rest, options, dry_run, check, True)
     [argument, ..] ->
       Error("GMU1002: unknown init option " <> string.inspect(argument))
+  }
+}
+
+/// `suggest [selection] [budget] [--style ...] [--json]`.
+fn parse_suggest(
+  arguments: List(String),
+  options: Options,
+) -> Result(Command, String) {
+  use parsed <- result.map(parse_suggest_options(
+    arguments,
+    "suggest",
+    suggest_command.default_options(),
+    False,
+  ))
+  SuggestCommand(options, parsed.0, parsed.1)
+}
+
+/// `explain <id-prefix>` and then exactly the flags `suggest` takes.
+///
+/// The id is positional and comes first: an `explain` whose first argument
+/// looks like a flag has named no mutant, and guessing which one was meant
+/// would probe the whole workspace to answer a question nobody asked.
+fn parse_explain(
+  arguments: List(String),
+  options: Options,
+) -> Result(Command, String) {
+  case arguments {
+    [display_id, ..rest] ->
+      case string.starts_with(display_id, "-") {
+        False -> {
+          use parsed <- result.try(parse_suggest_options(
+            rest,
+            "explain",
+            suggest_command.default_options(),
+            False,
+          ))
+          // `explain` narrows the run to the mutant its argument names, so a
+          // `--mutant` beside it either repeats that argument or contradicts
+          // it. Either way the flag has no effect, and taking it silently
+          // answers a question nobody asked.
+          case parsed.0.mutant_prefix {
+            Some(_) -> Error(explain_owns_its_mutant)
+            None -> Ok(ExplainCommand(options, display_id, parsed.0, parsed.1))
+          }
+        }
+        True -> Error(explain_needs_an_id)
+      }
+    [] -> Error(explain_needs_an_id)
+  }
+}
+
+/// `run [the flags list takes] [--suggest]`.
+///
+/// `--suggest` is taken out before the shared option parser sees it, so that
+/// `list --suggest` stays the unknown option it is.
+fn parse_run(
+  arguments: List(String),
+  options: Options,
+) -> Result(Command, String) {
+  let #(rest, suggest) = extract_suggest(arguments, [], False)
+  use parsed <- result.try(parse_options(
+    rest,
+    Options(..options, suggest: suggest),
+  ))
+  case parsed.suggest && parsed.json {
+    True -> Error(suggest_needs_text)
+    False -> Ok(RunCommand(parsed))
+  }
+}
+
+fn extract_suggest(
+  arguments: List(String),
+  kept: List(String),
+  suggest: Bool,
+) -> #(List(String), Bool) {
+  case arguments {
+    [] -> #(list.reverse(kept), suggest)
+    // Everything after these belongs to the test command, verbatim.
+    ["--", ..] | ["--test-command", ..] -> #(
+      list.append(list.reverse(kept), arguments),
+      suggest,
+    )
+    ["--suggest", ..rest] -> extract_suggest(rest, kept, True)
+    [argument, ..rest] -> extract_suggest(rest, [argument, ..kept], suggest)
+  }
+}
+
+/// `apply [the flags suggest takes] [--yes] [--verify] [--json]`.
+///
+/// `--verify` writes and then checks what it wrote, so it implies `--yes`:
+/// there is nothing to verify about a run that changed no file.
+fn parse_apply(
+  arguments: List(String),
+  options: Options,
+) -> Result(Command, String) {
+  let #(rest, yes, verify) = extract_apply(arguments, [], False, False)
+  use parsed <- result.map(parse_suggest_options(
+    rest,
+    "apply",
+    suggest_command.default_options(),
+    False,
+  ))
+  ApplyCommand(options, parsed.0, yes || verify, verify, parsed.1)
+}
+
+fn extract_apply(
+  arguments: List(String),
+  kept: List(String),
+  yes: Bool,
+  verify: Bool,
+) -> #(List(String), Bool, Bool) {
+  case arguments {
+    [] -> #(list.reverse(kept), yes, verify)
+    ["--yes", ..rest] -> extract_apply(rest, kept, True, verify)
+    ["--verify", ..rest] -> extract_apply(rest, kept, yes, True)
+    [argument, ..rest] -> extract_apply(rest, [argument, ..kept], yes, verify)
+  }
+}
+
+const suggest_needs_text = "GMU1002: --suggest cannot be combined with --json; run `suggest --survivors` instead"
+
+const explain_needs_an_id = "GMU1002: explain requires a mutant id prefix"
+
+const explain_owns_its_mutant = "GMU1002: explain takes its mutant id as an argument, not with --mutant"
+
+/// The flags that take a value, so that a missing one is named as missing
+/// rather than reported as an option nobody has heard of.
+const suggest_value_flags = [
+  "--changed", "--include", "--function", "--mutant", "--seed", "--max-cases",
+  "--max-shrinks", "--budget", "--style",
+]
+
+/// Parses the flags `suggest` and `explain` share, with the request so far.
+///
+/// `command` names the command in the unknown-option message, which is the
+/// only difference between the two.
+fn parse_suggest_options(
+  arguments: List(String),
+  command: String,
+  suggest: suggest_command.SuggestOptions,
+  json: Bool,
+) -> Result(#(suggest_command.SuggestOptions, Bool), String) {
+  case arguments {
+    [] -> Ok(#(suggest, json))
+    ["--json", ..rest] -> parse_suggest_options(rest, command, suggest, True)
+    ["--survivors", ..rest] ->
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(..suggest, survivors_only: True),
+        json,
+      )
+    ["--changed", value, ..rest] ->
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(..suggest, changed: Some(value)),
+        json,
+      )
+    ["--include", value, ..rest] ->
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(
+          ..suggest,
+          includes: list.append(suggest.includes, [value]),
+        ),
+        json,
+      )
+    ["--function", value, ..rest] ->
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(..suggest, function: Some(value)),
+        json,
+      )
+    ["--mutant", value, ..rest] ->
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(..suggest, mutant_prefix: Some(value)),
+        json,
+      )
+    ["--seed", value, ..rest] -> {
+      use seed <- result.try(parse_seed(value))
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(..suggest, seed: Some(seed)),
+        json,
+      )
+    }
+    ["--max-cases", value, ..rest] -> {
+      use cases <- result.try(parse_bounded_int("--max-cases", value, 1))
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(..suggest, max_cases: Some(cases)),
+        json,
+      )
+    }
+    ["--max-shrinks", value, ..rest] -> {
+      use shrinks <- result.try(parse_bounded_int("--max-shrinks", value, 0))
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(..suggest, max_shrinks: Some(shrinks)),
+        json,
+      )
+    }
+    ["--budget", value, ..rest] -> {
+      use budget <- result.try(parse_duration("--budget", value))
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(..suggest, budget_ms: Some(budget)),
+        json,
+      )
+    }
+    ["--style", value, ..rest] -> {
+      use style <- result.try(parse_assert_style(value))
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(..suggest, style: Some(style)),
+        json,
+      )
+    }
+    [argument, ..rest] ->
+      case split_option(argument) {
+        // `--name=value` is the same request written the other way round.
+        Ok(#(name, value)) ->
+          parse_suggest_options(
+            ["--" <> name, value, ..rest],
+            command,
+            suggest,
+            json,
+          )
+        Error(Nil) ->
+          case list.contains(suggest_value_flags, argument) {
+            True -> Error("GMU1002: " <> argument <> " requires a value")
+            False ->
+              Error(
+                "GMU1002: unknown "
+                <> command
+                <> " option "
+                <> string.inspect(argument),
+              )
+          }
+      }
+  }
+}
+
+fn parse_seed(value: String) -> Result(Int, String) {
+  case int.parse(value) {
+    Ok(seed) -> Ok(seed)
+    Error(Nil) -> Error("GMU1002: --seed must be an integer")
+  }
+}
+
+/// A search budget between `least` and the hundred thousand the configuration
+/// accepts, so that a flag can never ask for what `gleam.toml` would refuse.
+fn parse_bounded_int(
+  flag: String,
+  value: String,
+  least: Int,
+) -> Result(Int, String) {
+  case int.parse(value) {
+    Ok(number) if number >= least && number <= 100_000 -> Ok(number)
+    _ ->
+      Error(
+        "GMU1002: "
+        <> flag
+        <> " must be between "
+        <> int.to_string(least)
+        <> " and 100000",
+      )
+  }
+}
+
+fn parse_assert_style(value: String) -> Result(render.AssertStyle, String) {
+  case value {
+    "assert" -> Ok(render.AssertKeyword)
+    "should" -> Ok(render.ShouldEqual)
+    _ -> Error("GMU1002: --style must be assert or should")
   }
 }
 
@@ -326,20 +637,27 @@ fn parse_positive_int(flag: String, value: String) -> Result(Int, String) {
 }
 
 fn parse_timeout(value: String) -> Result(Int, String) {
-  use parts <- result.try(
-    timeout_parts(value)
-    |> result.replace_error("--timeout must be between 100ms and 24h"),
-  )
+  parse_duration("--timeout", value)
+}
+
+/// A duration between 100ms and 24h, written for whichever flag asked.
+///
+/// `--timeout` and `--budget` accept exactly the same durations and refuse
+/// them with exactly the same sentence, so the flag is a parameter rather
+/// than two copies of one parser.
+fn parse_duration(flag: String, value: String) -> Result(Int, String) {
+  let refuse = flag <> " must be between 100ms and 24h"
+  use parts <- result.try(timeout_parts(value) |> result.replace_error(refuse))
   let #(number_text, multiplier, decimal) = parts
   case timeout_number(number_text, decimal) {
     Ok(number) -> {
       let milliseconds = number *. multiplier
       case milliseconds >=. 100.0 && milliseconds <=. 86_400_000.0 {
         True -> Ok(float.round(milliseconds))
-        False -> Error("--timeout must be between 100ms and 24h")
+        False -> Error(refuse)
       }
     }
-    Error(_) -> Error("--timeout must be between 100ms and 24h")
+    Error(_) -> Error(refuse)
   }
 }
 
@@ -379,6 +697,34 @@ fn timeout_parts(value: String) -> Result(#(String, Float, Bool), Nil) {
 
 fn execute(command: Command) -> Nil {
   case command {
+    SuggestCommand(options, suggest, json) ->
+      with_workspace(options, fn(workspace) {
+        case suggest_command.suggest(workspace, suggest) {
+          Error(error) -> fail(error)
+          Ok(report) -> {
+            warn_unmatched_function(options, report)
+            case json {
+              True -> io.println(suggest_json(report))
+              False -> io.print(render_suggestions(report))
+            }
+          }
+        }
+      })
+    ExplainCommand(options, display_id, suggest, json) ->
+      with_workspace(options, fn(workspace) {
+        case suggest_command.explain(workspace, display_id, suggest) {
+          Error(error) -> fail(error)
+          Ok(explanation) ->
+            case json {
+              True -> io.println(explain_json(explanation))
+              False -> io.print(render_explanation(explanation))
+            }
+        }
+      })
+    ApplyCommand(options, suggest, yes, verify, json) ->
+      with_workspace(options, fn(workspace) {
+        apply_suggestions(workspace, options, suggest, yes, verify, json)
+      })
     HelpCommand -> io.println(help_text())
     VersionCommand -> io.println("gleam-mutants " <> version.current)
     DoctorCommand(options, json, all_runtimes) ->
@@ -507,12 +853,415 @@ fn execute(command: Command) -> Nil {
                     }
                   }
                 }
+                suggest_after_run(workspace, options, output.report)
               }
             }
             platform.exit(output.exit_code)
           }
         }
       })
+  }
+}
+
+// --- apply and run --suggest -------------------------------------------------
+
+/// One mutant a verification run looked for, and what became of it.
+///
+/// `outcome` is the name the rest of the tool gives that outcome and `killed`
+/// says whether it counts as dead. A mutant that hangs the suite is as dead as
+/// one a failing assertion caught, which is how the mutation score counts it
+/// too, so a timeout is reported as detected under its own name.
+type Verified {
+  Verified(mutant_id: String, display_id: String, outcome: String, killed: Bool)
+}
+
+/// Plans the generated tests, writes them when asked, and checks what it wrote.
+///
+/// Without `--yes` nothing is written: the plans are printed and the command
+/// succeeds. With `--verify` the mutation engine is run again over the files
+/// the applied suggestions came from, and a mutant that is still alive is a
+/// quality failure — exit 1 — rather than a tool failure.
+fn apply_suggestions(
+  workspace: String,
+  options: Options,
+  suggest: suggest_command.SuggestOptions,
+  yes: Bool,
+  verify: Bool,
+  json: Bool,
+) -> Nil {
+  case suggest_command.suggest(workspace, suggest) {
+    Error(error) -> fail(error)
+    Ok(found) -> {
+      warn_unmatched_function(options, found)
+      case apply.plan(workspace, found.suggestions, found.style) {
+        Error(error) -> fail(error)
+        Ok(plans) ->
+          case yes {
+            False -> emit_apply(plans, None, json, False)
+            True ->
+              case
+                apply.write(workspace, plans, found.suggestions, found.style)
+              {
+                Error(error) -> fail(error)
+                Ok(written) ->
+                  case verify {
+                    False -> emit_apply(written, None, json, True)
+                    True ->
+                      case
+                        verify_applied(
+                          workspace,
+                          options,
+                          found.suggestions,
+                          written,
+                        )
+                      {
+                        Error(error) -> fail(error)
+                        Ok(checked) -> {
+                          emit_apply(written, Some(checked), json, True)
+                          case list.all(checked, fn(entry) { entry.killed }) {
+                            True -> Nil
+                            False -> platform.exit(1)
+                          }
+                        }
+                      }
+                  }
+              }
+          }
+      }
+    }
+  }
+}
+
+/// Runs the mutation engine over the files the applied suggestions came from.
+///
+/// Every mutant an applied suggestion claims to kill is looked up in that
+/// run, its own and everything in its kill set alike: a suggestion that only
+/// killed the mutant it was found from has not done what it said it would.
+/// The run reports nothing and stores no project report — the reader asked to
+/// have their tests checked, not to have a second report written.
+///
+/// A test this run skipped because the module already defined it is checked
+/// alongside the ones it wrote. `--verify` is then a standing gate rather than
+/// a one-off: run twice over the same workspace it re-checks the generated
+/// tests instead of reporting that it had nothing to do.
+fn verify_applied(
+  workspace: String,
+  options: Options,
+  suggestions: List(render.Suggestion),
+  plans: List(apply.Plan),
+) -> Result(List(Verified), String) {
+  let written =
+    set.from_list(
+      list.flat_map(plans, fn(plan) {
+        list.append(plan.tests_added, plan.tests_skipped)
+      }),
+    )
+  let applied =
+    list.filter(suggestions, fn(suggestion) {
+      set.contains(written, render.test_name(suggestion))
+    })
+  case applied {
+    [] -> Ok([])
+    _ -> {
+      use output <- result.map(engine.run(
+        workspace,
+        verification_options(options, applied),
+      ))
+      let outcomes =
+        list.map(output.report.results, fn(result_) {
+          #(
+            result_.mutant.id,
+            #(result_.mutant.display_id, verified_outcome(result_.aggregate)),
+          )
+        })
+      applied
+      |> list.flat_map(fn(suggestion) {
+        [suggestion.mutant_id, ..suggestion.kills]
+      })
+      |> list.unique
+      |> list.map(fn(id) {
+        case list.key_find(outcomes, id) {
+          Ok(#(display_id, #(name, killed))) ->
+            Verified(id, display_id, name, killed)
+          // A mutant the verification run never discovered cannot be called
+          // dead: the source it came from was selected, so its absence is a
+          // finding rather than a pass.
+          Error(Nil) -> Verified(id, "", "missing", False)
+        }
+      })
+    }
+  }
+}
+
+/// What one outcome is called, and whether it counts the mutant as dead.
+///
+/// The verdict is `outcome.detected`, the same predicate the mutation score
+/// counts by: a timeout is a mutant the suite noticed, so `--verify` cannot
+/// call the same workspace a failure over one.
+fn verified_outcome(value: outcome.Outcome) -> #(String, Bool) {
+  #(outcome_name(value), outcome.detected(value))
+}
+
+fn outcome_name(value: outcome.Outcome) -> String {
+  case value {
+    outcome.Killed -> "killed"
+    outcome.TimedOut -> "timed-out"
+    outcome.Survived -> "survived"
+    outcome.TestError(_) -> "test-error"
+  }
+}
+
+/// The mutation run `--verify` asks for: those files, quietly, reporting
+/// nothing and storing nothing.
+///
+/// A verification run covers the files one set of suggestions came from and
+/// nothing else, so storing it would leave `report latest`, `report list` and
+/// a later `suggest --survivors` answering from a narrowed run the reader
+/// never asked for. It writes no project report and no history entry: the
+/// last real mutation run stays the last one.
+fn verification_options(
+  options: Options,
+  applied: List(render.Suggestion),
+) -> Options {
+  Options(
+    ..options,
+    matrix: False,
+    changed: None,
+    includes: list.unique(
+      list.map(applied, fn(suggestion) { source_path(suggestion.location) }),
+    ),
+    operators: None,
+    strict: Some(False),
+    mutant_prefix: None,
+    report_formats: Some([]),
+    report_history: Some(False),
+    json: False,
+    explain: False,
+    quiet: True,
+    suggest: False,
+  )
+}
+
+/// The file half of a `path:line:column` location.
+fn source_path(location: String) -> String {
+  location |> string.split(":") |> list.first |> result.unwrap(location)
+}
+
+fn emit_apply(
+  plans: List(apply.Plan),
+  verification: Option(List(Verified)),
+  json: Bool,
+  applied: Bool,
+) -> Nil {
+  case json {
+    True -> io.println(apply_json(plans, verification))
+    False -> io.print(render_plans(plans, verification, applied))
+  }
+}
+
+/// One `apply --json` value: Apply JSON v1.
+fn apply_json(
+  plans: List(apply.Plan),
+  verification: Option(List(Verified)),
+) -> String {
+  json.object([
+    #("schema_version", json.int(1)),
+    #(
+      "plans",
+      json.array(plans, fn(plan) {
+        json.object([
+          #("file", json.string(plan.file)),
+          #("create", json.bool(plan.create)),
+          #("imports_added", json.array(plan.imports_added, json.string)),
+          #("tests_added", json.array(plan.tests_added, json.string)),
+          #("tests_skipped", json.array(plan.tests_skipped, json.string)),
+        ])
+      }),
+    ),
+    #(
+      "verification",
+      json.nullable(verification, fn(entries) {
+        json.array(entries, fn(entry) {
+          json.object([
+            #("mutant_id", json.string(entry.mutant_id)),
+            #("display_id", json.string(entry.display_id)),
+            #("outcome", json.string(entry.outcome)),
+            #("killed", json.bool(entry.killed)),
+          ])
+        })
+      }),
+    ),
+  ])
+  |> json.to_string
+}
+
+/// What `apply` did, or would do, as a terminal reads it.
+fn render_plans(
+  plans: List(apply.Plan),
+  verification: Option(List(Verified)),
+  applied: Bool,
+) -> String {
+  case plans {
+    [] -> "Nothing to apply: no suggestion had a test that could be written.\n"
+    _ ->
+      string.concat(list.map(plans, render_plan(_, applied)))
+      <> apply_summary(plans, applied)
+      <> render_verification(verification)
+  }
+}
+
+/// What one plan did to one file, or would do to it.
+///
+/// A file that gains no import and no test is left exactly as it is, formatter
+/// included, so it is reported as unchanged rather than as updated: a second
+/// `apply` over an applied workspace has nothing to say about it.
+fn render_plan(plan: apply.Plan, applied: Bool) -> String {
+  plan.file
+  <> ": "
+  <> case plan.create, applied, plan.imports_added, plan.tests_added {
+    True, True, _, _ -> "created"
+    True, False, _, _ -> "would be created"
+    False, _, [], [] -> "unchanged"
+    False, True, _, _ -> "updated"
+    False, False, _, _ -> "would be updated"
+  }
+  <> "\n"
+  <> string.concat(
+    list.map(plan.imports_added, fn(line) { "  + " <> line <> "\n" }),
+  )
+  <> string.concat(
+    list.map(plan.tests_added, fn(name) { "  + " <> name <> "\n" }),
+  )
+  <> string.concat(
+    list.map(plan.tests_skipped, fn(name) {
+      "  = " <> name <> " (already present)\n"
+    }),
+  )
+}
+
+fn apply_summary(plans: List(apply.Plan), applied: Bool) -> String {
+  let tests =
+    list.fold(plans, 0, fn(total, plan) {
+      total + list.length(plan.tests_added)
+    })
+  int.to_string(tests)
+  <> case applied {
+    True -> " test(s) written to "
+    False -> " test(s) would be written to "
+  }
+  <> int.to_string(list.length(plans))
+  <> " file(s).\n"
+}
+
+fn render_verification(verification: Option(List(Verified))) -> String {
+  case verification {
+    None -> ""
+    Some([]) ->
+      "No generated test was found in those modules, so nothing was verified.\n"
+    Some(entries) ->
+      case list.filter(entries, fn(entry) { !entry.killed }) {
+        [] ->
+          "Verified "
+          <> int.to_string(list.length(entries))
+          <> " mutant(s): every one of them is dead.\n"
+        alive ->
+          int.to_string(list.length(alive))
+          <> " of "
+          <> int.to_string(list.length(entries))
+          <> " mutant(s) are still alive after the generated tests: "
+          <> string.join(list.map(alive, named_mutant), ", ")
+          <> "\n"
+      }
+  }
+}
+
+/// One surviving mutant, named the way the reader saw it, with its outcome.
+fn named_mutant(entry: Verified) -> String {
+  mutant_name(entry) <> " (" <> entry.outcome <> ")"
+}
+
+fn mutant_name(entry: Verified) -> String {
+  case entry.display_id {
+    "" -> entry.mutant_id
+    display_id -> display_id
+  }
+}
+
+/// Prints the tests that kill whatever a finished run left alive.
+///
+/// Only a text-mode `run --suggest` asks for this: `run --json` prints exactly
+/// one JSON value and a second one after it would break every reader of the
+/// first, which is why the two flags are refused together. The survivors are
+/// handed over as ids rather than looked up again, so a run that stored no
+/// report at all can still be followed by suggestions. A probe that fails is
+/// reported as a warning: the mutation result is already on the reader's
+/// screen, and the run's own exit code is the one that matters.
+fn suggest_after_run(
+  workspace: String,
+  options: Options,
+  run: report.RunReport,
+) -> Nil {
+  let survivors =
+    list.filter(run.results, fn(result_) {
+      result_.aggregate == outcome.Survived
+    })
+  case options.suggest, survivors {
+    False, _ -> Nil
+    True, [] -> Nil
+    True, alive -> {
+      let request =
+        suggest_command.SuggestOptions(
+          ..suggest_command.default_options(),
+          includes: list.unique(
+            list.map(alive, fn(result_) { result_.mutant.path }),
+          ),
+        )
+      case
+        suggest_command.suggest_survivors(
+          workspace,
+          request,
+          list.map(alive, fn(result_) { result_.mutant.id }),
+        )
+      {
+        Error(error) ->
+          write_diagnostic(
+            options.log_format == "json",
+            "warning",
+            diagnostic_code(error),
+            error,
+            None,
+          )
+        Ok(found) -> {
+          io.print("\n")
+          io.print(render_suggestions(found))
+        }
+      }
+    }
+  }
+}
+
+/// Says on stderr that `--function` named something the run never found.
+///
+/// The run itself succeeded — a selection with nothing to kill in it is not a
+/// failure — but every count of the summary is then zero, which reads exactly
+/// like a function whose mutants are all dead already. `--quiet` does not
+/// silence it: it reports a probable mistake in the command, not progress.
+fn warn_unmatched_function(
+  options: Options,
+  report: suggest_command.Report,
+) -> Nil {
+  case report.unmatched_function {
+    None -> Nil
+    Some(name) ->
+      write_diagnostic(
+        options.log_format == "json",
+        "warning",
+        "GMU8012",
+        "no function named `"
+          <> name
+          <> "` has a mutant in the files this run selected",
+        None,
+      )
   }
 }
 
@@ -1000,6 +1749,324 @@ fn catalog_json(
   |> json.to_string
 }
 
+// --- suggest and explain output ---------------------------------------------
+
+/// Everything one `suggest` run found, as a terminal reads it.
+///
+/// One block per suggestion — what it kills, then the test that kills it —
+/// then the import lines each module under test needs, then the one line that
+/// says what the whole run came to.
+///
+/// Public so that the exact text a reader scans can be pinned by a test
+/// without a probe run behind it; nothing outside this package calls it.
+pub fn render_suggestions(report: suggest_command.Report) -> String {
+  let scopes = module_scopes(report.suggestions, report.style)
+  report.suggestions
+  |> list.map(fn(suggestion) {
+    render_suggestion(suggestion, scope_of(scopes, suggestion, report.style))
+  })
+  |> string.concat
+  |> string.append(render_import_hints(report, scopes))
+  |> string.append(suggest_summary(report))
+}
+
+/// One rendering scope per module under test.
+///
+/// The generated tests of one module belong in one test module, and one file
+/// names one module one way: the import lines a reader is shown and the calls
+/// those tests make have to be settled together or they name it two ways.
+fn module_scopes(
+  suggestions: List(render.Suggestion),
+  style: render.AssertStyle,
+) -> List(#(String, render.Scope)) {
+  suggestions
+  |> list.map(fn(suggestion) { suggestion.module_path })
+  |> list.unique
+  |> list.map(fn(module) {
+    #(
+      module,
+      render.scope(
+        list.filter(suggestions, fn(item) { item.module_path == module }),
+        style,
+      ),
+    )
+  })
+}
+
+/// The scope one suggestion is rendered in.
+fn scope_of(
+  scopes: List(#(String, render.Scope)),
+  suggestion: render.Suggestion,
+  style: render.AssertStyle,
+) -> render.Scope {
+  list.key_find(scopes, suggestion.module_path)
+  |> result.unwrap(render.scope([suggestion], style))
+}
+
+fn render_suggestion(
+  suggestion: render.Suggestion,
+  scope: render.Scope,
+) -> String {
+  suggestion.display_id
+  <> " "
+  <> suggestion.operator
+  <> " at "
+  <> suggestion.location
+  <> ": "
+  <> compact(suggestion.original)
+  <> " -> "
+  <> compact(suggestion.replacement)
+  <> "; kills "
+  <> int.to_string(list.length(suggestion.kills))
+  <> " mutant(s)\n"
+  <> case render.test_source(scope, suggestion) {
+    Ok(source) -> source
+    Error(reason) -> reason
+  }
+  <> "\n\n"
+}
+
+/// The imports each module under test needs, once per module.
+///
+/// The generated tests for one module belong in one test module, so the
+/// import lines are collected the same way rather than repeated under every
+/// suggestion.
+fn render_import_hints(
+  report: suggest_command.Report,
+  scopes: List(#(String, render.Scope)),
+) -> String {
+  scopes
+  |> list.map(fn(entry) {
+    let #(module, scope) = entry
+    case
+      report.suggestions
+      |> list.filter(fn(suggestion) { suggestion.module_path == module })
+      |> render.imports(scope, _)
+    {
+      [] -> ""
+      lines ->
+        "Imports for "
+        <> module
+        <> ":\n"
+        <> string.concat(list.map(lines, fn(line) { "  " <> line <> "\n" }))
+        <> "\n"
+    }
+  })
+  |> string.concat
+}
+
+/// What the run came to, counted rather than listed.
+fn suggest_summary(report: suggest_command.Report) -> String {
+  let killed =
+    report.suggestions
+    |> list.flat_map(fn(suggestion) { suggestion.kills })
+    |> set.from_list
+  int.to_string(list.length(report.suggestions))
+  <> " suggestion(s) kill "
+  <> int.to_string(list.count(report.distinguishable, set.contains(killed, _)))
+  <> " of "
+  <> int.to_string(list.length(report.distinguishable))
+  <> " distinguishable mutant(s); "
+  <> int.to_string(list.length(report.indistinguishable))
+  <> " indistinguishable (possibly equivalent); "
+  <> int.to_string(list.length(report.unsupported))
+  <> " unsupported; "
+  <> int.to_string(list.length(report.skipped))
+  <> " function(s) skipped.\n"
+  <> case report.survivors_missing {
+    [] -> ""
+    files ->
+      "The latest report never covered " <> string.join(files, ", ") <> ".\n"
+  }
+}
+
+/// One `suggest --json` value: Suggest JSON v1.
+fn suggest_json(report: suggest_command.Report) -> String {
+  let scopes = module_scopes(report.suggestions, report.style)
+  json.object([
+    #("schema_version", json.int(1)),
+    #(
+      "suggestions",
+      json.array(report.suggestions, fn(item) {
+        suggestion_json(item, scope_of(scopes, item, report.style))
+      }),
+    ),
+    #(
+      "indistinguishable",
+      json.array(report.indistinguishable, fn(entry) {
+        json.object([
+          #("mutant_id", json.string(entry.mutant.id)),
+          #("display_id", json.string(entry.mutant.display_id)),
+          #("function", json.string(entry.function)),
+          #("cases", json.int(entry.cases)),
+        ])
+      }),
+    ),
+    #(
+      "unsupported",
+      json.array(report.unsupported, fn(entry) {
+        json.object([
+          #("mutant_id", json.string(entry.mutant.id)),
+          #("display_id", json.string(entry.mutant.display_id)),
+          #("function", json.string(entry.function)),
+          #("reason", json.string(entry.reason)),
+        ])
+      }),
+    ),
+    #(
+      "skipped",
+      json.array(report.skipped, fn(entry) {
+        json.object([
+          #("module", json.string(entry.module)),
+          #("function", json.string(entry.function)),
+          #("reason", json.string(entry.reason)),
+        ])
+      }),
+    ),
+    #("survivors_missing", json.array(report.survivors_missing, json.string)),
+  ])
+  |> json.to_string
+}
+
+/// One suggestion of a Suggest JSON v1 document.
+///
+/// The values are reported the way the generated test names them, so that
+/// `inputs`, `expected`, `test_source` and `imports` of one entry all name the
+/// module under test by the one name a file importing it can use.
+fn suggestion_json(
+  candidate: render.Suggestion,
+  scope: render.Scope,
+) -> json.Json {
+  let suggestion = render.rendered(scope, candidate)
+  json.object([
+    #("module_path", json.string(suggestion.module_path)),
+    #("function", json.string(suggestion.function)),
+    #("mutant_id", json.string(suggestion.mutant_id)),
+    #("display_id", json.string(suggestion.display_id)),
+    #("operator", json.string(suggestion.operator)),
+    #("location", json.string(suggestion.location)),
+    #("original", json.string(suggestion.original)),
+    #("replacement", json.string(suggestion.replacement)),
+    #("inputs", json.array(suggestion.inputs, json.string)),
+    #("expected", json.nullable(suggestion.expected, json.string)),
+    #("expected_inspect", json.string(suggestion.expected_inspect)),
+    #("actual_inspect", json.string(suggestion.actual_inspect)),
+    #("kills", json.array(suggestion.kills, json.string)),
+    #("test_name", json.string(render.test_name(suggestion))),
+    #(
+      "test_source",
+      json.string(render.test_source(scope, suggestion) |> result.unwrap("")),
+    ),
+    #("imports", json.array(render.imports(scope, [suggestion]), json.string)),
+  ])
+}
+
+/// One explanation, as a terminal reads it.
+///
+/// Public for the same reason as `render_suggestions`: this block is the whole
+/// answer `explain` gives, and it is pinned by a test rather than described.
+pub fn render_explanation(explanation: suggest_command.Explanation) -> String {
+  let mutant = explanation.mutant
+  mutant.display_id
+  <> " "
+  <> operator.name(mutant.operator)
+  <> " at "
+  <> mutant.path
+  <> ":"
+  <> int.to_string(mutant.line)
+  <> ":"
+  <> int.to_string(mutant.column)
+  // A mutant outside every function of its module has no function to name,
+  // and `... at src/app.gleam:1:19 in ` leaves the reader an empty gap where
+  // one belongs.
+  <> case explanation.function {
+    "" -> ""
+    name -> " in " <> name
+  }
+  <> "\n"
+  <> compact(mutant.original)
+  <> " -> "
+  <> compact(mutant.replacement)
+  <> "\n"
+  <> "status: "
+  <> probe_result.status_name(explanation.status)
+  <> "\n"
+  <> "inputs: "
+  <> case explanation.inputs {
+    [] -> "(none found)"
+    inputs -> string.join(inputs, ", ")
+  }
+  <> "\n"
+  <> answers(explanation)
+  <> "\n"
+  <> case explanation.test_source {
+    Some(source) -> source <> "\n"
+    None -> "no test can be written: " <> explanation.reason <> "\n"
+  }
+}
+
+/// What each side answered, or the fact that neither answer was recorded.
+///
+/// Only a verdict that separated its mutant has a value from both sides. One
+/// that did not — every `indistinguishable`, `nondeterministic` and
+/// `unsupported` mutant — carries no inspect at all, and a call that panicked
+/// or timed out carries none for its own side. Printing the sentence anyway
+/// leaves the reader an empty gap where a value belongs, so the sentence says
+/// what was missed instead.
+fn answers(explanation: suggest_command.Explanation) -> String {
+  case
+    compact(explanation.expected_inspect),
+    compact(explanation.actual_inspect)
+  {
+    "", "" -> "no result was recorded for either side"
+    expected, actual ->
+      "the original "
+      <> answered("is", expected)
+      <> ", the mutant "
+      <> answered("answers", actual)
+  }
+}
+
+/// One side of that sentence: its value, or that it never produced one.
+fn answered(verb: String, inspect: String) -> String {
+  case inspect {
+    "" -> "never answered"
+    value -> verb <> " " <> value
+  }
+}
+
+/// One `explain --json` value.
+fn explain_json(explanation: suggest_command.Explanation) -> String {
+  let mutant = explanation.mutant
+  json.object([
+    #("schema_version", json.int(1)),
+    #("mutant_id", json.string(mutant.id)),
+    #("display_id", json.string(mutant.display_id)),
+    #("function", json.string(explanation.function)),
+    #("operator", json.string(operator.name(mutant.operator))),
+    #(
+      "location",
+      json.string(
+        mutant.path
+        <> ":"
+        <> int.to_string(mutant.line)
+        <> ":"
+        <> int.to_string(mutant.column),
+      ),
+    ),
+    #("original", json.string(mutant.original)),
+    #("replacement", json.string(mutant.replacement)),
+    #("status", json.string(probe_result.status_name(explanation.status))),
+    #("inputs", json.array(explanation.inputs, json.string)),
+    #("expected", json.nullable(explanation.expected, json.string)),
+    #("expected_inspect", json.string(explanation.expected_inspect)),
+    #("actual_inspect", json.string(explanation.actual_inspect)),
+    #("test_source", json.nullable(explanation.test_source, json.string)),
+    #("reason", json.string(explanation.reason)),
+  ])
+  |> json.to_string
+}
+
 fn compact(value: String) -> String {
   value |> string.replace("\r", "") |> string.replace("\n", " ") |> string.trim
 }
@@ -1032,6 +2099,23 @@ fn help_text() -> String {
     |> glint.add(
       at: ["init"],
       do: command("Add [tools.gleam_mutants] to gleam.toml."),
+    )
+    |> glint.add(
+      at: ["suggest"],
+      do: command("Propose tests that kill surviving mutants (Erlang only)."),
+    )
+    |> glint.add(
+      at: ["explain"],
+      // The mutant is positional, and glint has no way to render an argument
+      // in its own subcommand list, so the description carries it: a reader
+      // who only ever runs `--help` still learns that `explain` takes an id.
+      do: command(
+        "Explain <id-prefix>: one mutant and the input that kills it.",
+      ),
+    )
+    |> glint.add(
+      at: ["apply"],
+      do: command("Write the suggested tests into the project (Erlang only)."),
     )
     |> glint.add(
       at: ["report", "latest"],
@@ -1075,11 +2159,29 @@ fn help_text() -> String {
   <> "  --include <glob>      override mutation includes (repeatable)\n"
   <> "  --operator <name>     select an operator (repeatable)\n"
   <> "  --test-command <argv...>\n"
+  <> "\nRun options:\n"
+  <> "  --suggest             propose tests for the survivors (text mode)\n"
   <> "\nList options:\n"
   <> "  --validate            compiler-validate discovered candidates\n"
   <> "\nDoctor options:\n"
   <> "  --json                emit one doctor JSON v1 value\n"
   <> "  --all-runtimes        require all four supported runtimes\n"
+  <> "\nSuggest/explain options (explain takes <id-prefix> first):\n"
+  <> "  --changed <git-ref>   limit suggestions to files changed from ref\n"
+  <> "  --include <glob>      override mutation includes (repeatable)\n"
+  <> "  --function <name>     probe only the function of that name\n"
+  <> "  --mutant <id-prefix>  probe exactly one unambiguous mutant\n"
+  <> "  --survivors           keep only the latest report's survivors\n"
+  <> "  --seed <n>            fix the input search\n"
+  <> "  --max-cases <n>       inputs tried per mutant (1-100000)\n"
+  <> "  --max-shrinks <n>     shrinking steps taken (0-100000)\n"
+  <> "  --budget <duration>   100ms through 24h per probe process\n"
+  <> "  --style <value>       assert or should\n"
+  <> "  --json                emit one Suggest JSON v1 value\n"
+  <> "\nApply options (every suggest flag above, and):\n"
+  <> "  --yes                 write the tests; without it nothing is written\n"
+  <> "  --verify              write, then re-run the engine over those files\n"
+  <> "  --json                emit one Apply JSON v1 value\n"
   <> "\nInit options:\n"
   <> "  --dry-run | --check   preview migration or check it is current\n"
   <> "  --gitignore           explicitly add the report directory\n"

@@ -138,6 +138,12 @@ fn full_spec() -> harness.ProbeSpec {
   ])
 }
 
+/// The source of a Gleam string literal holding `text`, as the probe writes
+/// it: only ids without quotes or backslashes are used here.
+fn literal(text: String) -> String {
+  "\"" <> text <> "\""
+}
+
 /// The needles that are absent from `source`, so failures name them.
 fn missing(source: String, needles: List(String)) -> List(String) {
   list.filter(needles, fn(needle) { !string.contains(source, needle) })
@@ -296,6 +302,20 @@ pub fn rendered_probe_uses_the_probe_result_field_names_test() {
       "\"function\"", "\"mutant\"", "\"status\"", "\"inputs\"", "\"expected\"",
       "\"expected_inspect\"", "\"actual_inspect\"", "\"cases\"", "\"shrinks\"",
       "\"reason\"", "\"distinguished\"", "\"indistinguishable\"", "io.println(",
+    ])
+    == []
+}
+
+pub fn rendered_probe_reports_the_mutants_one_input_kills_test() {
+  let rendered = harness.render_probe(full_spec())
+  let assert [first, second, ..] = mutant_ids()
+
+  // Every result line carries a kill set, and the search of a function knows
+  // the whole list of that function's mutants to play the shrunk input
+  // against — `is_positive` carries two.
+  assert missing(rendered, [
+      "\"kills\"",
+      "[" <> literal(first) <> ", " <> literal(second) <> "]",
     ])
     == []
 }
@@ -1358,6 +1378,12 @@ fn shapes_target(rt: String) -> String {
       "  " <> select(rt, "m_boom", "value", "panic as \"boom\""),
       "}",
       "",
+      // The other way around: the original panics for every input, so there
+      // is no result for a generated test to state.
+      "pub fn always_boom(value: Int) -> Int {",
+      "  " <> select(rt, "m_always", "panic as \"always\"", "value"),
+      "}",
+      "",
       "pub fn steady(value: Int) -> Int {",
       "  " <> select(rt, "m_hang", "value", "spin(value)"),
       "}",
@@ -1396,6 +1422,15 @@ fn shapes_target(rt: String) -> String {
       "    Pair(a, _) -> " <> select(rt, "m_split", "a", "a + 1"),
       "  }",
       "}",
+      "",
+      // Two mutants in one function, each of which every input tells apart:
+      // whichever input the search settles on kills both of them.
+      "pub fn twins(value: Int) -> Int {",
+      "  "
+        <> select(rt, "m_twin_a", "value", "value + 1")
+        <> " + "
+        <> select(rt, "m_twin_b", "0", "1"),
+      "}",
     ],
     "\n",
   )
@@ -1413,6 +1448,7 @@ fn shapes_functions() -> List(#(String, List(String))) {
     #("quad", ["m_quad"]),
     #("five", ["m_five"]),
     #("boom", ["m_boom"]),
+    #("always_boom", ["m_always"]),
     #("steady", ["m_hang"]),
     #("quiet", ["m_quiet"]),
     #("dice", ["m_dice"]),
@@ -1420,6 +1456,7 @@ fn shapes_functions() -> List(#(String, List(String))) {
     #("tally", ["m_tally"]),
     #("open", ["m_open"]),
     #("split", ["m_split"]),
+    #("twins", ["m_twin_a", "m_twin_b"]),
   ]
 }
 
@@ -1432,6 +1469,7 @@ fn shapes_expected() -> List(#(String, String)) {
     #("m_quad", "distinguished"),
     #("m_five", "distinguished"),
     #("m_boom", "distinguished"),
+    #("m_always", "distinguished"),
     #("m_hang", "distinguished"),
     #("m_quiet", "indistinguishable"),
     #("m_dice", "nondeterministic"),
@@ -1439,6 +1477,8 @@ fn shapes_expected() -> List(#(String, String)) {
     #("m_tally", "distinguished"),
     #("m_open", "distinguished"),
     #("m_split", "distinguished"),
+    #("m_twin_a", "distinguished"),
+    #("m_twin_b", "distinguished"),
   ]
 }
 
@@ -1745,6 +1785,20 @@ fn statuses(
 }
 
 @target(erlang)
+/// The result the probe reported for one mutant.
+fn reported(run: ProbeRun, mutant: String) -> probe_result.ProbeResult {
+  let assert Ok(found) =
+    list.find(run.results, fn(result) { result.mutant == mutant })
+  found
+}
+
+@target(erlang)
+/// The kill set the probe reported for one mutant.
+fn killed(run: ProbeRun, mutant: String) -> List(String) {
+  reported(run, mutant).kills
+}
+
+@target(erlang)
 fn probe_runs(run: LiveRun) -> List(ProbeRun) {
   [run.shapes, run.returns, run.secrets, run.mutual, run.printer]
 }
@@ -1874,6 +1928,43 @@ pub fn rendered_probe_compiles_and_answers_inside_a_snapshot_test() {
     list.find(run.shapes.results, fn(result) { result.mutant == "m_open" })
   assert boxed.inputs == ["probe_shapes.Box(#())"]
 
+  // A distinguished result names every mutant of its function that the same
+  // input kills, in the order the probe was given them, its own included.
+  assert killed(run.shapes, "m_positive") == ["m_positive"]
+  assert killed(run.shapes, "m_twin_a") == ["m_twin_a", "m_twin_b"]
+  assert killed(run.shapes, "m_twin_b") == ["m_twin_a", "m_twin_b"]
+
+  // A mutant no input separates, and one whose original disagrees with
+  // itself, kill nothing at all.
+  assert killed(run.shapes, "m_quiet") == []
+  assert killed(run.shapes, "m_dice") == []
+
+  // The probe reports the value the call answered with, not the wrapper it
+  // travelled home in: an inspect a generated test can compare against.
+  let positive = reported(run.shapes, "m_positive")
+  assert list.contains(["True", "False"], positive.expected_inspect)
+  assert positive.expected_outcome == probe_result.Returned
+  assert positive.actual_outcome == probe_result.Returned
+
+  // A call that never answered has no value to inspect, and says so: a
+  // mutant that panics, one that hangs, and an original that panics for
+  // every input.
+  let boom = reported(run.shapes, "m_boom")
+  assert boom.expected_outcome == probe_result.Returned
+  assert boom.actual_outcome == probe_result.Panicked
+  assert boom.actual_inspect == ""
+
+  let hang = reported(run.shapes, "m_hang")
+  assert hang.expected_outcome == probe_result.Returned
+  assert hang.actual_outcome == probe_result.TimedOut
+  assert hang.actual_inspect == ""
+
+  let always = reported(run.shapes, "m_always")
+  assert always.expected_outcome == probe_result.Panicked
+  assert always.expected_inspect == ""
+  assert always.expected == None
+  assert always.actual_outcome == probe_result.Returned
+
   // A printable result is rendered as source a test could paste back in.
   let assert [made] = run.returns.results
   assert statuses([made]) == [#("m_make", "distinguished")]
@@ -1883,10 +1974,15 @@ pub fn rendered_probe_compiles_and_answers_inside_a_snapshot_test() {
     "probe_return_only.",
   )
 
-  // An unprintable result leaves `expected` empty but still reports.
+  // An unprintable result leaves `expected` empty but still reports. The
+  // generated test falls back to comparing `string.inspect` output, so what
+  // is reported has to be that output — the value itself, not the wrapper.
   let assert [hidden] = run.secrets.results
   assert statuses([hidden]) == [#("m_hidden", "distinguished")]
   assert hidden.expected == None
+  assert hidden.expected_outcome == probe_result.Returned
+  assert string.starts_with(hidden.expected_inspect, "Secret(")
+  assert string.starts_with(hidden.actual_inspect, "Secret(")
 
   // Mutually recursive generators terminate, and every way into the cycle —
   // one function per type, one function over both, one that converts between

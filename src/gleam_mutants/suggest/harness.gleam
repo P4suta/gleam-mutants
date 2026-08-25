@@ -650,11 +650,34 @@ fn main_function(functions: List(ProbeFunction)) -> String {
 }
 
 /// The parts of the probe that do not depend on the module under test.
+///
+/// `ended` is spelled that way rather than `outcome` because every search
+/// binds `outcome` for the counterexample it found, which would shadow it.
 const runtime_source = "fn normalise(observation: Observation(a)) -> Observation(a) {
   case observation {
     Value(value) -> Value(value)
     Panic(_) -> Panic(\"\")
     Timeout -> Timeout
+  }
+}
+
+/// The value the call answered with, never the wrapper it travelled home in:
+/// a host that reports `Value(False)` where a test has to read `False` has
+/// nothing to write the test from.
+fn observed(observation: Observation(a)) -> String {
+  case observation {
+    Value(value) -> string.inspect(value)
+    _ -> \"\"
+  }
+}
+
+/// How the call ended, so that a host can tell a value apart from the absence
+/// of one.
+fn ended(observation: Observation(a)) -> String {
+  case observation {
+    Value(_) -> \"returned\"
+    Panic(_) -> \"panicked\"
+    Timeout -> \"timed_out\"
   }
 }
 
@@ -705,10 +728,13 @@ fn emit(
   inputs: List(String),
   expected: String,
   expected_inspect: String,
+  expected_outcome: String,
   actual_inspect: String,
+  actual_outcome: String,
   cases: Int,
   shrinks: Int,
   reason: String,
+  kills: List(String),
 ) -> Nil {
   io.println(
     json_object([
@@ -718,10 +744,13 @@ fn emit(
       #(\"inputs\", json_array(inputs)),
       #(\"expected\", expected),
       #(\"expected_inspect\", json_string(expected_inspect)),
+      #(\"expected_outcome\", json_string(expected_outcome)),
       #(\"actual_inspect\", json_string(actual_inspect)),
+      #(\"actual_outcome\", json_string(actual_outcome)),
       #(\"cases\", int.to_string(cases)),
       #(\"shrinks\", int.to_string(shrinks)),
       #(\"reason\", json_string(reason)),
+      #(\"kills\", json_array(kills)),
     ]),
   )
 }
@@ -1323,7 +1352,7 @@ fn one_function(probe: ProbeFunction, index: Int) -> #(List(String), Int) {
         args_printer(plan),
       ],
       result_printer,
-      [runner_function(plan), agrees_function(plan)],
+      [runner_function(plan), agrees_function(plan), kills_function(probe)],
       searches,
     ])
   #(blocks, index + list.length(probe.mutant_ids))
@@ -1344,10 +1373,13 @@ fn probe_function(probe: ProbeFunction) -> String {
         "[]",
         "\"null\"",
         "\"\"",
+        "\"returned\"",
         "\"\"",
+        "\"returned\"",
         "0",
         "0",
         "reason",
+        "[]",
       ])
     })
   "fn probe_"
@@ -1486,6 +1518,27 @@ fn agrees_function(plan: typederive.FunctionPlan) -> String {
   <> "(args, mutant))\n}"
 }
 
+/// Renders the helper naming every mutant of one function that an input
+/// separates from the original.
+///
+/// The whole mutant list of the function is replayed against the input with
+/// the comparison the search itself used, so a distinguished result can name
+/// every mutant it kills — its own included — in the order the probe was
+/// given them.
+fn kills_function(probe: ProbeFunction) -> String {
+  let name = probe.plan.name
+  let ids = string.join(list.map(probe.mutant_ids, quoted), ", ")
+  "fn kills_"
+  <> name
+  <> "(args: "
+  <> args_type(probe.plan)
+  <> ") -> List(String) {\n  list.filter(["
+  <> ids
+  <> "], fn(mutant) { !agrees_"
+  <> name
+  <> "(args, mutant) })\n}"
+}
+
 /// Renders the search for one mutant.
 ///
 /// `offset` numbers the search within its function, while `index` shifts the
@@ -1525,18 +1578,23 @@ fn search_function(
   <> quoted(mutant)
   <> "))\n"
   <> expected
-  <> "\n"
+  <> "\n      let kills = kills_"
+  <> name
+  <> "(shrunk)\n"
   <> emit_call("      ", [
     quoted(name),
     quoted(mutant),
     "\"distinguished\"",
     "show_args_" <> name <> "(shrunk)",
     "expected",
-    "string.inspect(original)",
-    "string.inspect(mutated)",
+    "observed(original)",
+    "ended(original)",
+    "observed(mutated)",
+    "ended(mutated)",
     "cases",
     "shrinks",
     "\"\"",
+    "kills",
   ])
   <> "\n    }\n    pbt.NotFound(cases) ->\n"
   <> emit_call("      ", [
@@ -1546,10 +1604,13 @@ fn search_function(
     "[]",
     "\"null\"",
     "\"\"",
+    "\"returned\"",
     "\"\"",
+    "\"returned\"",
     "cases",
     "0",
     "\"\"",
+    "[]",
   ])
   <> "\n  }\n}"
 }

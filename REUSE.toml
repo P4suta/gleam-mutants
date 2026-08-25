@@ -16,9 +16,15 @@ path = [
   "schema/doctor-v1.schema.json",
   "schema/list-v1.schema.json",
   "schema/run-report-v1.schema.json",
+  "schema/apply-v1.schema.json",
+  "schema/explain-v1.schema.json",
+  "schema/suggest-v1.schema.json",
   "priv/gleam_mutants/schema/doctor-v1.schema.json",
   "priv/gleam_mutants/schema/list-v1.schema.json",
   "priv/gleam_mutants/schema/run-report-v1.schema.json",
+  "priv/gleam_mutants/schema/apply-v1.schema.json",
+  "priv/gleam_mutants/schema/explain-v1.schema.json",
+  "priv/gleam_mutants/schema/suggest-v1.schema.json",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 gleam_mutants contributors"

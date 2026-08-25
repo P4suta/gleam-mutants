@@ -45,7 +45,10 @@ import tomlet
 /// workspace's mutation `includes` already cover. `function_filter` narrows
 /// the run to the one function of that exact name, dropping every other
 /// function from both the results and the skipped list; `None` probes them
-/// all. `seed`, `max_cases` and `max_shrinks` are handed to the property
+/// all. `exclude_functions` names functions the probe leaves alone: they are
+/// never compiled into it, never called and never timed, and each of their
+/// mutants comes back `Unsupported` with the function among the skipped ones.
+/// `seed`, `max_cases` and `max_shrinks` are handed to the property
 /// search inside the probe, `call_timeout_ms` bounds one call of the function
 /// under test and `probe_timeout_ms` bounds a whole probe process.
 /// `nondeterminism_checks` is how many inputs the original is replayed on
@@ -61,8 +64,16 @@ pub type Request {
     call_timeout_ms: Int,
     probe_timeout_ms: Int,
     nondeterminism_checks: Int,
+    exclude_functions: List(String),
   )
 }
+
+/// Why a function `exclude_functions` names has no test written for it.
+///
+/// The one configuration key that fills that field is
+/// `[tools.gleam_mutants.suggest] exclude_functions`, and the reader who set
+/// it is the one reading this reason back.
+pub const excluded_reason = "excluded by suggest.exclude_functions"
 
 /// A function the runner walked past, and why.
 pub type Skipped {
@@ -126,13 +137,16 @@ fn is_code(candidate: String) -> Bool {
 ///
 /// `results` holds exactly one entry per mutant of every function the run
 /// considered — a verdict for the functions that were probed, an `Unsupported`
-/// entry for the mutants of the functions in `skipped`. `unassigned_mutants`
-/// counts the mutants that fall outside every function, such as those in
-/// module constants. `snapshot_root` is left on disk for the caller to read
-/// and then delete.
+/// entry for the mutants of the functions in `skipped`. `mutants` carries the
+/// discovered mutant of every one of those ids, so a caller can name an
+/// operator, a location and the source a verdict is about without discovering
+/// the catalogue a second time. `unassigned_mutants` counts the mutants that
+/// fall outside every function, such as those in module constants.
+/// `snapshot_root` is left on disk for the caller to read and then delete.
 pub type RunOutput {
   RunOutput(
     results: List(ProbeResult),
+    mutants: List(Mutant),
     skipped: List(Skipped),
     unassigned_mutants: Int,
     snapshot_root: String,
@@ -152,6 +166,7 @@ pub fn defaults(workspace: String, files: List(String)) -> Request {
     call_timeout_ms: 1000,
     probe_timeout_ms: 120_000,
     nondeterminism_checks: 3,
+    exclude_functions: [],
   )
 }
 
@@ -318,6 +333,9 @@ fn run_snapshot(
           }
           list.append(probed, plan.unsupported)
         }),
+        mutants: list.flat_map(prepared.catalogs, fn(source_catalog) {
+          source_catalog.mutants
+        }),
         skipped: list.flat_map(plans, fn(plan) { plan.skipped }),
         unassigned_mutants: list.fold(plans, 0, fn(total, plan) {
           total + plan.unassigned
@@ -443,9 +461,18 @@ fn plan_module(
   let module = module_name(source_catalog.path)
   let probe_module = "gleam_mutants_probe_" <> tag <> "_" <> flatten(module)
   let considered = filter_targets(request.function_filter, targets)
-  let sorted =
-    list.fold(considered, Sorted([], [], [], []), fn(sorted, target) {
+  let #(probing, left_alone) =
+    split_excluded(request.exclude_functions, considered)
+  let judged =
+    list.fold(probing, Sorted([], [], [], []), fn(sorted, target) {
       sort_target(sorted, context, module, target)
+    })
+  // The excluded functions are sorted after the probed ones rather than in
+  // source order: they were never a candidate for the probe, so they read as
+  // a tail of things left alone rather than as gaps in the walk.
+  let sorted =
+    list.fold(left_alone, judged, fn(sorted, target) {
+      given_up(sorted, module, target, excluded_reason)
     })
   let spec =
     ProbeSpec(
@@ -512,22 +539,25 @@ fn sort_target(
         skipped: sorted.skipped,
         unsupported: sorted.unsupported,
       )
-    Error(reason) ->
-      Sorted(
-        ..sorted,
-        skipped: [
-          Skipped(module, target.function.name, reason),
-          ..sorted.skipped
-        ],
-        unsupported: list.fold(
-          target.mutants,
-          sorted.unsupported,
-          fn(all, item) {
-            [unsupported(target.function.name, item, reason), ..all]
-          },
-        ),
-      )
+    Error(reason) -> given_up(sorted, module, target, reason)
   }
+}
+
+/// One function nothing will be written for: skipped, with every mutant of it
+/// reported as unsupported so that none of them is quietly dropped.
+fn given_up(
+  sorted: Sorted,
+  module: String,
+  target: select.FunctionTarget,
+  reason: String,
+) -> Sorted {
+  Sorted(
+    ..sorted,
+    skipped: [Skipped(module, target.function.name, reason), ..sorted.skipped],
+    unsupported: list.fold(target.mutants, sorted.unsupported, fn(all, item) {
+      [unsupported(target.function.name, item, reason), ..all]
+    }),
+  )
 }
 
 /// The targets a request asks about: every one, or the single named function.
@@ -544,6 +574,23 @@ pub fn filter_targets(
     Some(name) ->
       list.filter(targets, fn(target) { target.function.name == name })
   }
+}
+
+/// The targets a request probes, and the ones `exclude_functions` names.
+///
+/// The split happens before anything is classified, generated or compiled, so
+/// a function in the second half is never called: that is the whole point of
+/// excluding one, which is usually that calling it is unsafe or slow. Its
+/// mutants are still reported — as `Unsupported`, under a function the run
+/// says it walked past — because a selected mutant that appears nowhere is
+/// indistinguishable from one nothing was found for.
+pub fn split_excluded(
+  excluded: List(String),
+  targets: List(select.FunctionTarget),
+) -> #(List(select.FunctionTarget), List(select.FunctionTarget)) {
+  list.partition(targets, fn(target) {
+    !list.contains(excluded, target.function.name)
+  })
 }
 
 /// Plans random input for one function, or says which wall was hit.
@@ -697,9 +744,12 @@ fn unsupported(function: String, item: Mutant, reason: String) -> ProbeResult {
     inputs: [],
     expected: None,
     expected_inspect: "",
+    expected_outcome: probe_result.Returned,
     actual_inspect: "",
+    actual_outcome: probe_result.Returned,
     cases: 0,
     shrinks: 0,
     reason: reason,
+    kills: [],
   )
 }

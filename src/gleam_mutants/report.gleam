@@ -313,6 +313,57 @@ pub fn latest(workspace: String) -> Result(String, String) {
   |> result.map_error(simplifile.describe_error)
 }
 
+/// The ids of every mutant a stored Run Report v1 document saw survive.
+///
+/// `json` is the text of a native report, as `latest` answers with. Only the
+/// mutants whose aggregate outcome is `survived` are named, in the order the
+/// report lists them, so a caller can narrow a fresh selection down to what
+/// the last run failed to kill. A document that is not a native report, or
+/// that holds no `mutants` array, is refused rather than read as empty: a
+/// silent `[]` would look exactly like a run that killed everything.
+pub fn survivor_ids(json: String) -> Result(List(String), String) {
+  use graded <- result.map(graded_mutants(json))
+  graded
+  |> list.filter(fn(entry) { entry.1 == "survived" })
+  |> list.map(fn(entry) { entry.0 })
+}
+
+/// The paths of every mutant a stored Run Report v1 document graded.
+///
+/// A file named here was covered by the last run, whatever it found there; a
+/// selected file missing from this list was never run at all, which is the
+/// difference `suggest --survivors` reports rather than silently drops.
+pub fn covered_paths(json: String) -> Result(List(String), String) {
+  use graded <- result.map(graded_mutants(json))
+  graded
+  |> list.map(fn(entry) { entry.2 })
+  |> list.unique
+}
+
+/// Every graded mutant of a stored report as `#(id, aggregate, path)`.
+fn graded_mutants(
+  json: String,
+) -> Result(List(#(String, String, String)), String) {
+  json.parse(json, graded_decoder())
+  |> result.map_error(fn(error) {
+    "not a native Run Report v1 document: " <> string.inspect(error)
+  })
+}
+
+fn graded_decoder() -> decode.Decoder(List(#(String, String, String))) {
+  use _ <- decode.field("schema_version", decode.int)
+  use graded <- decode.field(
+    "mutants",
+    decode.list({
+      use id <- decode.subfield(["mutant", "id"], decode.string)
+      use path <- decode.subfield(["mutant", "path"], decode.string)
+      use aggregate <- decode.field("aggregate", decode.string)
+      decode.success(#(id, aggregate, path))
+    }),
+  )
+  decode.success(graded)
+}
+
 fn write_atomic(target: String, text: String) -> Result(Nil, String) {
   let temporary = target <> ".tmp-" <> platform.random_nonce()
   use _ <- result.try(
