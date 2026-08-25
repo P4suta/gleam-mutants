@@ -12,6 +12,9 @@ import gleam_mutants/core/operator.{type Operator}
 import gleam_mutants/core/path
 import tomlet
 
+/// The characters a bare TOML key is written with.
+const key_characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+
 pub type Target {
   AutoTarget
   ErlangTarget
@@ -38,6 +41,40 @@ pub type DiagnosticsMode {
   DiagnosticsNone
   DiagnosticsErrors
   DiagnosticsAll
+}
+
+/// How generated tests state their expectation.
+pub type AssertStyle {
+  /// The `assert <call> == <expected>` keyword form.
+  AssertKeyword
+  /// The `<call> |> should.equal(<expected>)` gleeunit form.
+  ShouldEqual
+}
+
+/// The `[tools.gleam_mutants.suggest]` section.
+///
+/// `seed`, `max_cases` and `max_shrinks` steer the differential probe's
+/// search, `call_timeout_ms` bounds one call to the module under test and
+/// `probe_timeout_ms` one probe process — there is one per module under test —
+/// over the same 100ms-24h range the `--budget` flag takes. `assert_style` picks the form of
+/// the tests that are written, and `exclude_functions` names functions the
+/// probe leaves alone: no probe calls them, so one that is unsafe or slow to
+/// call costs a run nothing, and each of their mutants is reported as one no
+/// test can be written for.
+///
+/// The `suggest` and `explain` commands read this section; `run`, `list` and
+/// reporting ignore it. Their matching flags — `--seed`, `--max-cases`,
+/// `--max-shrinks`, `--budget` and `--style` — override it for one run.
+pub type SuggestConfig {
+  SuggestConfig(
+    seed: Int,
+    max_cases: Int,
+    max_shrinks: Int,
+    call_timeout_ms: Int,
+    probe_timeout_ms: Int,
+    assert_style: AssertStyle,
+    exclude_functions: List(String),
+  )
 }
 
 pub type ReportConfig {
@@ -71,6 +108,7 @@ pub type Config {
     minimum_score: Float,
     require_mutants: Bool,
     report: ReportConfig,
+    suggest: SuggestConfig,
   )
 }
 
@@ -109,6 +147,15 @@ pub fn defaults(cpu_count: Int) -> Config {
       DiagnosticsErrors,
       80,
       60,
+    ),
+    suggest: SuggestConfig(
+      seed: 1,
+      max_cases: 200,
+      max_shrinks: 500,
+      call_timeout_ms: 1000,
+      probe_timeout_ms: 120_000,
+      assert_style: AssertKeyword,
+      exclude_functions: [],
     ),
   )
 }
@@ -290,6 +337,52 @@ fn decode_document(
     ["tools", "gleam_mutants", "report", "low"],
     base.report.low,
   ))
+  use suggest_seed <- result.try(optional_int(
+    source,
+    document,
+    ["tools", "gleam_mutants", "suggest", "seed"],
+    base.suggest.seed,
+  ))
+  use suggest_max_cases <- result.try(optional_int(
+    source,
+    document,
+    ["tools", "gleam_mutants", "suggest", "max_cases"],
+    base.suggest.max_cases,
+  ))
+  use suggest_max_shrinks <- result.try(optional_int(
+    source,
+    document,
+    ["tools", "gleam_mutants", "suggest", "max_shrinks"],
+    base.suggest.max_shrinks,
+  ))
+  use suggest_call_timeout <- result.try(optional_int(
+    source,
+    document,
+    ["tools", "gleam_mutants", "suggest", "call_timeout_ms"],
+    base.suggest.call_timeout_ms,
+  ))
+  use suggest_probe_timeout <- result.try(optional_int(
+    source,
+    document,
+    ["tools", "gleam_mutants", "suggest", "probe_timeout_ms"],
+    base.suggest.probe_timeout_ms,
+  ))
+  use suggest_style_name <- result.try(optional_string(
+    source,
+    document,
+    ["tools", "gleam_mutants", "suggest", "assert_style"],
+    assert_style_name(base.suggest.assert_style),
+  ))
+  use suggest_style <- result.try(decode_assert_style(
+    source,
+    suggest_style_name,
+  ))
+  use suggest_excluded <- result.try(optional_strings(
+    source,
+    document,
+    ["tools", "gleam_mutants", "suggest", "exclude_functions"],
+    base.suggest.exclude_functions,
+  ))
   use <- bool.guard(
     when: includes == [],
     return: Error(error_at(
@@ -365,6 +458,41 @@ fn decode_document(
     )),
   )
 
+  use <- bool.guard(
+    when: suggest_max_cases < 1 || suggest_max_cases > 100_000,
+    return: Error(error_at(
+      source,
+      "max_cases",
+      "suggest.max_cases must be between 1 and 100000",
+    )),
+  )
+  use <- bool.guard(
+    when: suggest_max_shrinks < 0 || suggest_max_shrinks > 100_000,
+    return: Error(error_at(
+      source,
+      "max_shrinks",
+      "suggest.max_shrinks must be between 0 and 100000",
+    )),
+  )
+  use <- bool.guard(
+    when: suggest_call_timeout < 10 || suggest_call_timeout > 600_000,
+    return: Error(error_at(
+      source,
+      "call_timeout_ms",
+      "suggest.call_timeout_ms must be between 10 and 600000",
+    )),
+  )
+  // The range `--budget` accepts, to the millisecond: a flag and the section
+  // it overrides asking for two different things is a wart nobody can act on.
+  use <- bool.guard(
+    when: suggest_probe_timeout < 100 || suggest_probe_timeout > 86_400_000,
+    return: Error(error_at(
+      source,
+      "probe_timeout_ms",
+      "suggest.probe_timeout_ms must be between 100 and 86400000",
+    )),
+  )
+
   Ok(Config(
     version: version,
     includes: includes,
@@ -391,6 +519,15 @@ fn decode_document(
       report_high,
       report_low,
     ),
+    suggest: SuggestConfig(
+      suggest_seed,
+      suggest_max_cases,
+      suggest_max_shrinks,
+      suggest_call_timeout,
+      suggest_probe_timeout,
+      suggest_style,
+      suggest_excluded,
+    ),
   ))
 }
 
@@ -407,6 +544,7 @@ fn validate_unknown_keys(
       "cache",
       "policy",
       "report",
+      "suggest",
     ]),
     #(["tools", "gleam_mutants", "mutation"], [
       "include",
@@ -434,6 +572,15 @@ fn validate_unknown_keys(
       "diagnostics",
       "high",
       "low",
+    ]),
+    #(["tools", "gleam_mutants", "suggest"], [
+      "seed",
+      "max_cases",
+      "max_shrinks",
+      "call_timeout_ms",
+      "probe_timeout_ms",
+      "assert_style",
+      "exclude_functions",
     ]),
   ]
   use table <- list.try_each(tables)
@@ -845,6 +992,29 @@ fn decode_diagnostics(
   }
 }
 
+fn decode_assert_style(
+  source: String,
+  value: String,
+) -> Result(AssertStyle, ConfigError) {
+  case value {
+    "assert" -> Ok(AssertKeyword)
+    "should" -> Ok(ShouldEqual)
+    _ ->
+      Error(error_at(
+        source,
+        "assert_style",
+        "suggest.assert_style must be assert or should",
+      ))
+  }
+}
+
+fn assert_style_name(style: AssertStyle) -> String {
+  case style {
+    AssertKeyword -> "assert"
+    ShouldEqual -> "should"
+  }
+}
+
 fn diagnostics_name(mode: DiagnosticsMode) -> String {
   case mode {
     DiagnosticsNone -> "none"
@@ -919,10 +1089,40 @@ fn locate_lines(
   case lines {
     [] -> #(1, 1)
     [line, ..rest] ->
-      case string.split_once(line, key) {
-        Ok(#(before, _)) -> #(line_number, string.length(before) + 1)
-        Error(_) -> locate_lines(rest, key, line_number + 1)
+      case key_column(line, key, 0) {
+        Ok(column) -> #(line_number, column)
+        Error(Nil) -> locate_lines(rest, key, line_number + 1)
       }
+  }
+}
+
+/// The column `key` stands on its own at in `line`, or nothing.
+///
+/// A key that only appears inside a longer name is not the key being reported:
+/// `timeout_ms` is written inside `call_timeout_ms`, and pointing an error at
+/// the wrong section is worse than pointing at nothing. `consumed` counts the
+/// characters already cut from the front of the line, so the column stays the
+/// one in the whole line.
+fn key_column(line: String, key: String, consumed: Int) -> Result(Int, Nil) {
+  case string.split_once(line, key) {
+    Error(Nil) -> Error(Nil)
+    Ok(#(before, after)) -> {
+      let column = consumed + string.length(before) + 1
+      case
+        continues_key(string.last(before)) || continues_key(string.first(after))
+      {
+        False -> Ok(column)
+        True -> key_column(after, key, column + string.length(key) - 1)
+      }
+    }
+  }
+}
+
+/// Whether a bare TOML key runs through `character`.
+fn continues_key(character: Result(String, Nil)) -> Bool {
+  case character {
+    Ok(character) -> string.contains(key_characters, character)
+    Error(Nil) -> False
   }
 }
 

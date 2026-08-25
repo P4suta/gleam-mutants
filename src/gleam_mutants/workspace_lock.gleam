@@ -22,7 +22,16 @@ pub fn acquire(workspace: String) -> Result(WorkspaceLock, String) {
     |> path.join(cache.workspace_id(workspace))
   use _ <- result.try(
     simplifile.create_directory_all(directory)
-    |> result.map_error(simplifile.describe_error),
+    |> result.map_error(fn(error) {
+      // Every run takes this lock before it cuts a single mutant, so a cache
+      // directory nothing may write into is the first thing a sandboxed run
+      // hits. It used to answer with the bare errno and nothing else, which
+      // names neither what failed nor where.
+      "GMU7005: could not create the workspace cache directory "
+      <> directory
+      <> ": "
+      <> simplifile.describe_error(error)
+    }),
   )
   let lock_path = path.join(directory, "run.lock")
   let response = platform.acquire_lock(lock_path, run_id, started, 2000)

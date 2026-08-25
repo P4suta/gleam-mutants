@@ -223,6 +223,24 @@ pub fn report_config_rejects_unsafe_paths_and_thresholds_test() {
   assert !config.report_overlaps_mutation_sources(safe)
 }
 
+pub fn a_mutant_the_suite_noticed_is_detected_test() {
+  // A mutant that hangs the suite is one the suite noticed, and the score has
+  // always counted it with the kills. Everything that decides whether a mutant
+  // is dead — `apply --verify` included — has to agree with the number the
+  // same workspace reports, so the two answer from one predicate.
+  let outcomes = [
+    outcome.Killed,
+    outcome.TimedOut,
+    outcome.Survived,
+    outcome.TestError("boom"),
+  ]
+  assert list.map(outcomes, outcome.detected) == [True, True, False, False]
+
+  let counted = score.calculate(outcomes)
+  assert list.length(list.filter(outcomes, outcome.detected))
+    == counted.killed + counted.timed_out
+}
+
 pub fn score_timeout_and_exit_policy_test() {
   let mutation_score =
     score.calculate([

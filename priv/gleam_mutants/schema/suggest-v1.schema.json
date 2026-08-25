@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gleam-mutants.invalid/schema/suggest-v1.schema.json",
+  "title": "gleam-mutants suggest output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "suggestions", "indistinguishable", "nondeterministic", "unsupported", "skipped", "survivors_missing"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "workspace_digest": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+    "suggestions": { "type": "array", "items": { "$ref": "#/$defs/suggestion" } },
+    "indistinguishable": { "type": "array", "items": { "$ref": "#/$defs/indistinguishable" } },
+    "nondeterministic": { "type": "array", "items": { "$ref": "#/$defs/nondeterministic" } },
+    "unsupported": { "type": "array", "items": { "$ref": "#/$defs/unsupported" } },
+    "skipped": { "type": "array", "items": { "$ref": "#/$defs/skipped" } },
+    "survivors_missing": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "suggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module_path", "function", "mutant_id", "display_id", "operator", "location", "original", "replacement", "inputs", "expected", "expected_inspect", "actual_inspect", "kills", "test_name", "test_source", "imports"],
+      "properties": {
+        "module_path": { "type": "string", "minLength": 1 },
+        "function": { "type": "string", "minLength": 1 },
+        "mutant_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "display_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{20,64}$" },
+        "operator": { "type": "string" },
+        "location": { "type": "string" },
+        "original": { "type": "string" },
+        "replacement": { "type": "string" },
+        "inputs": { "type": "array", "items": { "type": "string" } },
+        "expected": { "type": ["string", "null"] },
+        "expected_inspect": { "type": "string" },
+        "actual_inspect": { "type": "string" },
+        "kills": {
+          "description": "Every mutant this test kills, its own included, restricted to the mutants this run selected. An id named here and nowhere else in the document is a mutant another suggestion kills as well, dropped from `suggestions` as redundant.",
+          "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" }
+        },
+        "test_name": { "type": "string", "minLength": 1 },
+        "test_source": { "type": "string", "minLength": 1 },
+        "imports": {
+          "description": "The import lines this one test needs, on its own. They cannot be concatenated across suggestions: two tests of the same module can name different unqualified constructors (`import gleam/option.{Some}` and `import gleam/option.{None}`), and a file holding both must merge them into one line per module.",
+          "type": "array", "items": { "type": "string" }
+        }
+      }
+    },
+    "indistinguishable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutant_id", "display_id", "function", "cases"],
+      "properties": {
+        "mutant_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "display_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{20,64}$" },
+        "function": { "type": "string" },
+        "cases": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "nondeterministic": {
+      "description": "Every selected mutant whose original disagreed with itself, so that no verdict was possible. A status of its own rather than a kind of `unsupported`: nothing is wrong with the mutant, the function under test simply does not answer the same way twice.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutant_id", "display_id", "function", "reason"],
+      "properties": {
+        "mutant_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "display_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{20,64}$" },
+        "function": { "type": "string" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "unsupported": {
+      "description": "Every selected mutant no test can be written for, and which wall was hit. A run reports each mutant it selected exactly once: here, in `indistinguishable`, in `nondeterministic`, or in the `kills` of a suggestion.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutant_id", "display_id", "function", "reason"],
+      "properties": {
+        "mutant_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "display_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{20,64}$" },
+        "function": {
+          "description": "The function the mutant lives in, or an empty string for a mutant that falls outside every function of its module and so could never be called.",
+          "type": "string"
+        },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "skipped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "function", "reason"],
+      "properties": {
+        "module": { "type": "string" },
+        "function": { "type": "string" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

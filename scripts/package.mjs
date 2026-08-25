@@ -281,6 +281,9 @@ function smokeHexArtifact(artifact, temporaryRoot) {
     "priv/gleam_mutants/schema/run-report-v1.schema.json",
     "priv/gleam_mutants/schema/list-v1.schema.json",
     "priv/gleam_mutants/schema/doctor-v1.schema.json",
+    "priv/gleam_mutants/schema/suggest-v1.schema.json",
+    "priv/gleam_mutants/schema/explain-v1.schema.json",
+    "priv/gleam_mutants/schema/apply-v1.schema.json",
     "priv/gleam_mutants/schema/mutation-testing-report-schema-3.9.0.json",
     "priv/gleam_mutants/vendor/mutation-testing-elements/3.9.0/LICENSE",
     "priv/gleam_mutants/vendor/mutation-testing-elements/3.9.0/PROVENANCE.json",
@@ -343,7 +346,18 @@ const javascriptBuild = path.join(root, "build", "dev", "javascript");
       const parts = relative.split(path.sep);
       if (parts.includes("_gleam_artefacts") || parts[0] === "gleeunit") return false;
       if (fs.lstatSync(source).isDirectory()) return true;
-      if (parts[0] === "gleam_mutants" && /^(core_test|engine_.*_smoke|engine_smoke|gleam_mutants_test|gleam@@private_main)/.test(path.basename(source))) return false;
+      // `gleam build` compiles this package's own `test/` modules into the
+      // same directory as its `src/` ones, so the published runtime is cut
+      // back to the modules that came from `src/` — the prelude re-export
+      // aside. Naming the test modules instead would publish every new one
+      // until somebody noticed it in the tarball.
+      if (parts[0] === "gleam_mutants" && parts.length === 2 && path.extname(source) === ".mjs") {
+        const stem = path.basename(source, ".mjs");
+        const published = stem === "gleam"
+          || fs.existsSync(path.join(root, "src", `${stem}.gleam`))
+          || fs.existsSync(path.join(root, "src", `${stem}.mjs`));
+        if (!published) return false;
+      }
       return path.extname(source) === ".mjs";
     },
   });
@@ -352,7 +366,7 @@ const javascriptBuild = path.join(root, "build", "dev", "javascript");
   fs.copyFileSync(path.join(root, "LICENSE-APACHE"), path.join(stage, "LICENSE-APACHE"));
   fs.copyFileSync(path.join(root, "THIRD_PARTY_NOTICES.md"), path.join(stage, "THIRD_PARTY_NOTICES.md"));
   fs.mkdirSync(path.join(stage, "schemas"), { recursive: true });
-  for (const name of ["run-report-v1.schema.json", "list-v1.schema.json", "doctor-v1.schema.json"]) {
+  for (const name of ["run-report-v1.schema.json", "list-v1.schema.json", "doctor-v1.schema.json", "suggest-v1.schema.json", "explain-v1.schema.json", "apply-v1.schema.json"]) {
     fs.copyFileSync(path.join(root, "schema", name), path.join(stage, "schemas", name));
   }
   fs.mkdirSync(path.join(stage, "third-party", "mutation-testing-elements"), { recursive: true });

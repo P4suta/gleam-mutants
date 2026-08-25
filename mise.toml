@@ -46,6 +46,9 @@ description = "Run snapshot mutation-engine smoke tests"
 run = [
   "gleam run -m engine_smoke --target erlang",
   "gleam run -m engine_smoke --target javascript --runtime node",
+  "gleam run -m suggest_smoke --target erlang",
+  "gleam run -m suggest_cli_smoke --target erlang",
+  "gleam run -m apply_smoke --target erlang",
   "gleam run -m compiler_validation_smoke --target erlang",
   "node scripts/snapshot-safety-smoke.mjs",
   "node scripts/report-storage-smoke.mjs",
@@ -63,7 +66,7 @@ description = "Run unit and end-to-end tests on Erlang, Node, Deno, and Bun"
 run = [
   "gleam test --target erlang",
   "gleam test --target javascript --runtime node",
-  "deno run --allow-read --allow-run --allow-env=GLEAM_MUTANTS_ACTIVE,GLEAM_MUTANTS_RUNTIME build/dev/javascript/gleam_mutants/gleam@@private_main_v1.18.1.mjs",
+  "deno run --allow-read --allow-write --allow-run --allow-env=GLEAM_MUTANTS_ACTIVE,GLEAM_MUTANTS_RUNTIME,TMPDIR,TEMP,TMP,HOME,USERPROFILE,XDG_CACHE_HOME,LOCALAPPDATA,GITHUB_ACTIONS,GITHUB_STEP_SUMMARY build/dev/javascript/gleam_mutants/gleam@@private_main_v1.18.1.mjs",
   "gleam test --target javascript --runtime bun",
   "gleam run -m engine_matrix_smoke --target erlang",
   "gleam run -m framework_matrix_smoke --target erlang",
@@ -104,6 +107,17 @@ run = [
   "mise run test",
   "mise run docs",
   "mise run lint",
+]
+
+[tasks.vscode]
+description = "Install, lint, test, build, and smoke-test the VS Code extension"
+dir = "editors/vscode"
+run = [
+  "npm ci",
+  "npm run lint",
+  "npm test",
+  "npm run build",
+  "npm run smoke",
 ]
 
 [tasks.dogfood]

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gleam-mutants.invalid/schema/explain-v1.schema.json",
+  "title": "gleam-mutants explain output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "mutant_id", "display_id", "function", "operator", "location", "original", "replacement", "status", "inputs", "expected", "expected_inspect", "actual_inspect", "test_source", "reason"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "mutant_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+    "display_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{20,64}$" },
+    "function": {
+      "description": "The function the mutant lives in, or an empty string for a mutant that falls outside every function of its module and so could never be called.",
+      "type": "string"
+    },
+    "operator": { "type": "string", "minLength": 1 },
+    "location": { "type": "string", "minLength": 1 },
+    "original": { "type": "string" },
+    "replacement": { "type": "string" },
+    "status": { "enum": ["distinguished", "indistinguishable", "nondeterministic", "unsupported"] },
+    "inputs": {
+      "description": "The rendered Gleam source of each argument the probe called with. Empty unless an input separated the mutant from the original.",
+      "type": "array", "items": { "type": "string" }
+    },
+    "expected": {
+      "description": "The original's result as Gleam source, or null when it cannot be printed as source. `expected_inspect` holds it either way.",
+      "type": ["string", "null"]
+    },
+    "expected_inspect": { "type": "string" },
+    "actual_inspect": { "type": "string" },
+    "test_source": {
+      "description": "The generated test, or null when none can be written. `reason` says which wall was hit whenever this is null.",
+      "type": ["string", "null"]
+    },
+    "reason": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "test_source": { "type": "null" } } },
+      "then": { "properties": { "reason": { "minLength": 1 } } }
+    }
+  ]
+}

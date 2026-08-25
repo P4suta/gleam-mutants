@@ -112,7 +112,7 @@ for (const name of ["LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md"]) 
   fs.copyFileSync(path.join(root, name), path.join(distributionRoot, name));
 }
 fs.copyFileSync(schemaDestination, path.join(distributionSchema, `mutation-testing-report-schema-${version}.json`));
-for (const name of ["run-report-v1.schema.json", "list-v1.schema.json", "doctor-v1.schema.json"]) {
+for (const name of ["run-report-v1.schema.json", "list-v1.schema.json", "doctor-v1.schema.json", "suggest-v1.schema.json", "explain-v1.schema.json"]) {
   fs.copyFileSync(path.join(root, "schema", name), path.join(distributionSchema, name));
 }
 fs.copyFileSync(path.join(vendorDirectory, "LICENSE"), path.join(distributionVendor, "LICENSE"));

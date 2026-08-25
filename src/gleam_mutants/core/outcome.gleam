@@ -36,6 +36,20 @@ pub fn runtime_name(runtime: Runtime) -> String {
   }
 }
 
+/// Whether an outcome counts the mutant as dead.
+///
+/// A mutant that hangs the suite is one the suite noticed, which is how
+/// `score.calculate` scores it: killed and timed out are both detected, and a
+/// test error is a run that never reached a verdict. Every caller that decides
+/// whether one mutant is dead answers from here, so no two of them can
+/// disagree about the same workspace.
+pub fn detected(value: Outcome) -> Bool {
+  case value {
+    Killed | TimedOut -> True
+    Survived | TestError(_) -> False
+  }
+}
+
 pub fn aggregate(outcomes: List(RuntimeOutcome)) -> Outcome {
   case
     list.find(outcomes, fn(item) {

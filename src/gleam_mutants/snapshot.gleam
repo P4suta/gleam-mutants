@@ -124,8 +124,7 @@ fn scan_directory(
       case simplifile.file_info_type(info), platform.is_reparse_point(source) {
         simplifile.Symlink, _ | _, True ->
           Error("refusing symlink or junction in workspace: " <> child_relative)
-        simplifile.Other, _ ->
-          Error("refusing special file in workspace: " <> child_relative)
+        simplifile.Other, _ -> Error(special_file_refusal(child_relative))
         simplifile.Directory, _ ->
           scan_directory(
             source_root,
@@ -201,8 +200,7 @@ fn copy_entry(
   case simplifile.file_info_type(info), platform.is_reparse_point(source) {
     simplifile.Symlink, _ | _, True ->
       Error("refusing symlink or junction in workspace: " <> relative)
-    simplifile.Other, _ ->
-      Error("refusing special file in workspace: " <> relative)
+    simplifile.Other, _ -> Error(special_file_refusal(relative))
     simplifile.Directory, _ -> {
       use _ <- result.try(
         simplifile.create_directory_all(destination)
@@ -250,6 +248,26 @@ fn copy_entry(
       ])
     }
   }
+}
+
+/// Why a character device, socket or named pipe stops a snapshot, and the way
+/// past it.
+///
+/// A snapshot is a byte-for-byte copy of the workspace, and there is no honest
+/// copy of a special file: reading one can block forever and writing one can
+/// have effects nobody asked a mutation run for. So the refusal stands. What
+/// it owes the reader is the path — a bare `refusing special file in
+/// workspace` over a dotfile the build never reads is a dead end — and the one
+/// thing that actually resolves it, which is getting the file out of the tree
+/// the run was pointed at. `--root` is worth naming because the file is often
+/// not the project's at all: a shell profile a sandbox bind-mounts over a home
+/// directory that happens to be the working directory.
+fn special_file_refusal(relative: String) -> String {
+  "GMU7004: refusing special file in workspace: "
+  <> relative
+  <> " — a snapshot copies regular files only, so move it out of the "
+  <> "workspace or remove it, or point --root at a directory that holds only "
+  <> "the project"
 }
 
 fn excluded(relative: String, excluded_directories: List(String)) -> Bool {

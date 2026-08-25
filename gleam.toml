@@ -6,7 +6,7 @@ name = "gleam_mutants"
 version = "0.1.0"
 # x-release-please-end
 gleam = ">= 1.17.0 and < 2.0.0"
-internal_modules = ["gleam_mutants/*", "gleam_mutants/core/*"]
+internal_modules = ["gleam_mutants/*", "gleam_mutants/core/*", "gleam_mutants/suggest/*"]
 
 description = "Mutation testing for Gleam across Erlang, Node, Deno, and Bun"
 licences = ["MIT", "Apache-2.0"]
@@ -21,6 +21,11 @@ source = "docs/configuration.md"
 title = "Mutation operators"
 path = "operators.html"
 source = "docs/operators.md"
+
+[[documentation.pages]]
+title = "Suggesting tests"
+path = "suggest.html"
+source = "docs/suggest.md"
 
 [[documentation.pages]]
 title = "Architecture"

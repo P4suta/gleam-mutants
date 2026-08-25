@@ -1,0 +1,102 @@
+{
+  "name": "gleam-mutants-vscode",
+  "displayName": "gleam-mutants",
+  "description": "Surviving mutants and suggested tests from gleam-mutants, inside the editor.",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "publisher": "gleam-mutants",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/P4suta/gleam-mutants.git",
+    "directory": "editors/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/P4suta/gleam-mutants/issues"
+  },
+  "homepage": "https://github.com/P4suta/gleam-mutants/tree/main/editors/vscode#readme",
+  "engines": {
+    "node": ">=20",
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Testing",
+    "Linters"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:gleam.toml",
+    "onLanguage:gleam"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "gleam_mutants.runFile",
+        "title": "Mutation-test this file",
+        "category": "gleam_mutants"
+      },
+      {
+        "command": "gleam_mutants.suggestFile",
+        "title": "Suggest a test for this file",
+        "category": "gleam_mutants"
+      },
+      {
+        "command": "gleam_mutants.explainMutant",
+        "title": "Explain a surviving mutant",
+        "category": "gleam_mutants"
+      },
+      {
+        "command": "gleam_mutants.refreshDiagnostics",
+        "title": "Refresh surviving mutants from the last report",
+        "category": "gleam_mutants"
+      }
+    ],
+    "configuration": {
+      "title": "gleam_mutants",
+      "properties": {
+        "gleam_mutants.command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "gleam",
+            "run",
+            "-m",
+            "gleam_mutants",
+            "--"
+          ],
+          "scope": "resource",
+          "description": "How to run the CLI, executable first. The default runs it out of the workspace's own dev dependencies; set it to [\"gleam-mutants\"] to use the escript or npm binary instead."
+        },
+        "gleam_mutants.reportPath": {
+          "type": "string",
+          "default": "reports/mutation/mutation.json",
+          "scope": "resource",
+          "description": "Where `run` leaves its mutation report, relative to the workspace root. Surviving mutants are published from this file, and republished whenever it is written."
+        },
+        "gleam_mutants.timeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "minimum": 0,
+          "scope": "resource",
+          "description": "How long any one `suggest`, `apply` or `explain` invocation may take, in milliseconds. Zero means no budget. `run` is not bound by this: it runs in a terminal you can interrupt."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
+    "test": "vitest run",
+    "lint": "npm run typecheck && vitest run",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.9.2",
+    "@types/vscode": "1.90.0",
+    "esbuild": "0.25.12",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}

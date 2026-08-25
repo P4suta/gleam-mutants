@@ -41,6 +41,18 @@ import gleam_mutants/workspace_lock
 import simplifile
 import tomlet
 
+/// Everything one run of the engine was asked for.
+///
+/// Every `Option` field overrides the workspace's own configuration when it is
+/// `Some`: `report_formats` replaces `report.formats` and `report_history`
+/// replaces `report.history`, so a caller that only wants a verdict — `apply
+/// --verify` is the one in this package — can run without writing a project
+/// report or storing a run the reader never asked for.
+///
+/// `annotations` is that caller's other switch. A run started by the reader
+/// annotates its survivors for GitHub Actions; a run started by another
+/// command on the reader's behalf must not, whatever that command prints,
+/// because the annotations would be interleaved into output it owns.
 pub type Options {
   Options(
     root: Option(String),
@@ -54,6 +66,8 @@ pub type Options {
     test_command: Option(List(String)),
     mutant_prefix: Option(String),
     report_formats: Option(List(String)),
+    report_history: Option(Bool),
+    annotations: Bool,
     json: Bool,
     explain: Bool,
     quiet: Bool,
@@ -61,6 +75,7 @@ pub type Options {
     log_format: String,
     help_requested: Bool,
     version_requested: Bool,
+    suggest: Bool,
   )
 }
 
@@ -87,7 +102,8 @@ type ValidationError {
   ValidationInfrastructure(String)
 }
 
-type SourceCatalog {
+/// A source file paired with the mutants and rejected candidates found in it.
+pub type SourceCatalog {
   SourceCatalog(
     path: String,
     source: String,
@@ -128,24 +144,27 @@ type Prepared {
 
 pub fn default_options() -> Options {
   Options(
-    None,
-    False,
-    None,
-    [],
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    False,
-    False,
-    False,
-    0,
-    "text",
-    False,
-    False,
+    root: None,
+    matrix: False,
+    changed: None,
+    includes: [],
+    operators: None,
+    strict: None,
+    jobs: None,
+    timeout_ms: None,
+    test_command: None,
+    mutant_prefix: None,
+    report_formats: None,
+    report_history: None,
+    annotations: True,
+    json: False,
+    explain: False,
+    quiet: False,
+    verbosity: 0,
+    log_format: "text",
+    help_requested: False,
+    version_requested: False,
+    suggest: False,
   )
 }
 
@@ -336,12 +355,15 @@ fn list_snapshot(
         snapshot.digest(snapshot),
       ))
       use _ <- result.try(build_targets(snapshot.root(snapshot), runtimes))
+      // The build above is what makes `True` true: the snapshot compiles with
+      // nothing mutated in it, so a batch that fails fails over a mutant.
       use validation <- result.try(delta_validate(
         snapshot,
         catalogs,
         candidates,
         runtimes,
         runtime_module,
+        True,
       ))
       let #(valid, rejected) = validation
       use mutation_plan <- result.try(plan.build(
@@ -450,9 +472,9 @@ fn execute(
     True -> report.save(run_report, workspace)
     False -> Ok("")
   })
-  case options.json {
-    True -> Nil
-    False -> report.emit_github(run_report)
+  case options.annotations, options.json {
+    True, False -> report.emit_github(run_report)
+    _, _ -> Nil
   }
   let phase = pipeline.completed(prepared.phase)
   let _ = pipeline.state(phase)
@@ -616,12 +638,15 @@ fn prepare(
     snapshot.root(snapshot),
     snapshot.digest(snapshot),
   ))
+  // The baseline above built the snapshot and ran its tests in it, so the
+  // copy is known to compile with nothing mutated in it.
   use validation <- result.try(delta_validate(
     snapshot,
     catalogs,
     candidates,
     runtimes,
     runtime_module,
+    True,
   ))
   let #(valid, rejected) = validation
   use _ <- result.try(case candidates != [] && valid == [] {
@@ -719,6 +744,10 @@ fn apply_options(config: Config, options: Options) -> Config {
         Some(formats) -> formats
         None -> config.report.formats
       },
+      history: case options.report_history {
+        Some(value) -> value
+        None -> config.report.history
+      },
     ),
   )
 }
@@ -738,6 +767,17 @@ fn validate_effective_config(config: Config) -> Result(Nil, String) {
   }
 }
 
+/// The workspace-relative `.gleam` paths that changed since a git reference.
+///
+/// `None` is answered for `None`: nothing was asked about, so nothing narrows
+/// the selection. Otherwise every added, copied, modified or renamed path
+/// between the merge base and `HEAD` is collected, together with the staged,
+/// unstaged and untracked changes on top of it, so that a working tree is
+/// judged as it stands rather than as it was committed.
+///
+/// Private: `--changed` reaches every caller through `run` and `list_mutants`,
+/// which own the selection this narrows, and `suggest` asks them for it rather
+/// than resolving a git reference of its own.
 fn resolve_changed(
   workspace: String,
   reference: Option(String),
@@ -824,7 +864,9 @@ fn git_changed_paths(
   }
 }
 
-fn discover_catalogs(
+/// Reads each relative source file under `root` and discovers its mutants,
+/// assigning stable display ids across the whole selection.
+pub fn discover_catalogs(
   root: String,
   files: List(String),
   operators: List(Operator),
@@ -980,12 +1022,47 @@ fn run_instrumented_baseline(
   }
 }
 
+/// Compile-checks `mutants` against `base`, splitting them into the ones that
+/// build and the ones that do not.
+///
+/// This is the check `run` and `list --validate` already make, exposed so that
+/// the differential probe can make it too: a probe instruments a whole file's
+/// mutants at once, and a single type-invalid one — a pipeline stage deletion,
+/// almost always — otherwise takes the entire file down with it. The cost is
+/// one extra build when everything is valid; only a failure pays for the
+/// bisect that isolates which mutants are to blame.
+///
+/// Unlike `run` and `list --validate`, the caller here has not built `base`
+/// yet, so `base_compiles` is `False`: a workspace that does not compile makes
+/// every batch of it invalid, and a bisect told only that a batch failed would
+/// blame each mutant of that workspace in turn — one full copy and one cold
+/// build each — for a fault none of them has.
+pub fn validate_mutants(
+  base: Snapshot,
+  catalogs: List(SourceCatalog),
+  mutants: List(Mutant),
+  runtimes: List(Runtime),
+  runtime_module: RuntimeModule,
+) -> Result(#(List(Mutant), List(RejectedMutant)), String) {
+  delta_validate(base, catalogs, mutants, runtimes, runtime_module, False)
+}
+
+/// Splits `mutants` into the ones that build and the ones that do not.
+///
+/// `base_compiles` says whether the copy is known to compile with nothing
+/// mutated in it. A caller that has already built it — `run` after its
+/// baseline, `list --validate` after its build — says `True` and pays nothing;
+/// a caller that has not says `False`, and the first batch that fails buys one
+/// pristine build to find out whose fault it is before any bisecting begins.
+/// Below that first split the answer is known either way, so the recursion
+/// carries `True`.
 fn delta_validate(
   base: Snapshot,
   catalogs: List(SourceCatalog),
   mutants: List(Mutant),
   runtimes: List(Runtime),
   runtime_module: RuntimeModule,
+  base_compiles: Bool,
 ) -> Result(#(List(Mutant), List(RejectedMutant)), String) {
   case mutants {
     [] -> Ok(#([], []))
@@ -1006,6 +1083,10 @@ fn delta_validate(
             [mutant] ->
               Ok(#([], [RejectedMutant(mutant, "compile-invalid", diagnostic)]))
             _ -> {
+              use _ <- result.try(case base_compiles {
+                True -> Ok(Nil)
+                False -> validate_base(base, catalogs, runtimes, runtime_module)
+              })
               let middle = list.length(mutants) / 2
               let left = list.take(mutants, middle)
               let right = list.drop(mutants, middle)
@@ -1015,6 +1096,7 @@ fn delta_validate(
                 left,
                 runtimes,
                 runtime_module,
+                True,
               ))
               use right_result <- result.try(delta_validate(
                 base,
@@ -1022,6 +1104,7 @@ fn delta_validate(
                 right,
                 runtimes,
                 runtime_module,
+                True,
               ))
               Ok(#(
                 list.append(left_result.0, right_result.0),
@@ -1030,6 +1113,32 @@ fn delta_validate(
             }
           }
       }
+  }
+}
+
+/// Compile-checks the copy with nothing mutated in it at all.
+///
+/// An empty mutant list leaves `instrument` nothing to write, so this builds
+/// the workspace exactly as it stands. One build, bought only once a batch has
+/// already failed, and it answers the question a bisect cannot: whether the
+/// compiler is objecting to a mutant or to the workspace the mutants were
+/// taken from.
+fn validate_base(
+  base: Snapshot,
+  catalogs: List(SourceCatalog),
+  runtimes: List(Runtime),
+  runtime_module: RuntimeModule,
+) -> Result(Nil, String) {
+  case
+    validate_batch(base, catalogs, [], runtimes, runtime.name(runtime_module))
+  {
+    Ok(Nil) -> Ok(Nil)
+    Error(ValidationInfrastructure(error)) -> Error(error)
+    Error(CandidateInvalid(diagnostic)) ->
+      Error(
+        "the snapshot does not compile before anything is mutated:\n"
+        <> diagnostic,
+      )
   }
 }
 
@@ -1119,7 +1228,9 @@ fn normalize_snapshot_location(
   }
 }
 
-fn instrument(
+/// Rewrites every catalogued source that owns a selected mutant so each
+/// mutation site is wrapped in a `runtime_module.select` call.
+pub fn instrument(
   root: String,
   catalogs: List(SourceCatalog),
   mutants: List(Mutant),
@@ -1189,7 +1300,27 @@ fn is_leading_comment_or_blank(line: String) -> Bool {
   trimmed == "" || string.starts_with(trimmed, "//")
 }
 
-fn build_targets(root: String, runtimes: List(Runtime)) -> Result(Nil, String) {
+/// Writes generated source files (path relative to root, content) into a
+/// snapshot, creating parent directories.
+pub fn write_generated_files(
+  root: String,
+  files: List(#(String, String)),
+) -> Result(Nil, String) {
+  use #(relative, contents) <- list.try_each(files)
+  let target = path.join(root, relative)
+  use _ <- result.try(
+    simplifile.create_directory_all(path.parent(target))
+    |> result.map_error(simplifile.describe_error),
+  )
+  simplifile.write(target, contents)
+  |> result.map_error(simplifile.describe_error)
+}
+
+/// Compiles the project at `root` once per distinct target of `runtimes`.
+pub fn build_targets(
+  root: String,
+  runtimes: List(Runtime),
+) -> Result(Nil, String) {
   let targets = runtimes |> list.map(runtime_target) |> list.unique
   use target <- list.try_each(targets)
   let process_result =

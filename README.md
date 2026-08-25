@@ -78,12 +78,50 @@ gleam run -m gleam_mutants -- list --validate
 gleam run -m gleam_mutants -- run
 gleam run -m gleam_mutants -- run --matrix
 gleam run -m gleam_mutants -- run --changed origin/main
+gleam run -m gleam_mutants -- suggest --survivors
+gleam run -m gleam_mutants -- explain <mutant-id-prefix>
+gleam run -m gleam_mutants -- run --suggest
+gleam run -m gleam_mutants -- apply --verify
 ```
 
 With no arguments, help is shown; mutation starts only with `run`. The stable
-tree is `run`, `list`, `doctor`, `init`, `report list|latest|validate|clean`, and
-`cache status|clean`. All commands accept `--root`; without it, the nearest
-parent `gleam.toml` is selected. Run `--help` for all flags.
+tree is `run`, `list`, `doctor`, `init`, `suggest`, `explain`, `apply`,
+`report list|latest|validate|clean`, and `cache status|clean`. All commands
+accept `--root`; without it, the nearest parent `gleam.toml` is selected. Run
+`--help` for all flags.
+
+`suggest` proposes the tests that kill surviving mutants and `explain` shows one
+mutant with the input that separates it; both probe the workspace differentially
+and run on the Erlang target only.
+
+**The probe calls every public function of the selected modules for real**, with
+generated arguments, in the environment you ran it in — the snapshot isolates
+source, not effects, so a function that writes files, deletes directories or
+talks to the network does exactly that, hundreds of times. Name such functions
+in `exclude_functions`, or narrow the run with `--function` or `--include`, and
+see [side effects](docs/suggest.md#side-effects) before pointing `suggest` at
+code you do not know.
+
+`apply` writes those tests into your own test modules, one flat file per module
+under test: `src/app/util.gleam` is tested by `test/app_util_test.gleam`.
+Without `--yes` it is a dry run that only prints the files and tests it would
+add; with `--yes` it appends the missing tests and imports, skipping any test
+name it has written before, calling every module by the name your own file
+already binds it under, and running `gleam format` over what it touched.
+`--verify` implies `--yes` and then re-runs the mutation engine over those
+source files, exiting 1 if any mutant the new tests claim to kill is still
+alive; that run stores no
+report of its own, so `report latest` still answers from your last `run`. It
+also grades the workspace before it writes, so each mutant is reported as
+newly killed, already killed by your own tests, or still surviving, and a
+generated test that added nothing is warned about — two mutation runs instead
+of one, unless your last stored `run` graded every mutant in question and
+started after the last write to `src/` or `test/`, which `--no-reuse`
+refuses.
+`run --suggest` prints the suggestions for that run's own survivors under the
+normal summary and never changes its exit code; it is refused with `--json`,
+which prints exactly one JSON value. A generated test pins the behaviour the
+code has today, so read them before committing them — see [suggesting tests](docs/suggest.md).
 
 `list` is the fast discovery path: it reads configuration, snapshots the
 workspace, and finds candidates without building, instrumenting, running a
@@ -127,13 +165,33 @@ project reports without deleting existing files; set `history = false` to stop
 native history. Fixed project filenames remain `mutation.json` and
 `mutation.html` when enabled.
 
+## Editor integration
+
+A VS Code extension lives in [`editors/vscode`](editors/vscode). It publishes
+the surviving mutants of the last `mutation.json` as warnings on the lines they
+change, and offers two quick fixes on each of them: generate the test that
+kills this mutant, which runs `suggest` and then `apply` and opens the test
+module it wrote, and explain this mutant. It shells out to this CLI rather than
+reimplementing it, so what the editor shows is what `run`, `suggest` and
+`apply` print. Build and install it from source with the instructions in
+[`editors/vscode/README.md`](editors/vscode/README.md); the same caveats apply,
+`suggest` calls your code for real and supports the Erlang target alone.
+
 ## Safety model
 
 The original source files are read only: the only normal project writes are the
-two report files above. `gleam_mutants` creates a sorted disposable snapshot,
+two report files above, plus the test modules `apply --yes` is explicitly asked
+to write. That covers what the tool writes, not what your code writes when
+`suggest`, `explain` or `apply` call it — see
+[side effects](docs/suggest.md#side-effects).
+`gleam_mutants` creates a sorted disposable snapshot,
 excludes the effective report directory from its manifest and cache fingerprint,
 rejects symlinks, junctions and special files, and performs all build and test
-work there. A bounded parallel worker pool uses independent snapshots,
+work there. A refused special file is reported as `GMU7004` and names the path
+and a way past it; a cache directory that cannot be created fails under
+`GMU7005`, and a report the tool cannot write under `GMU6002` (native history)
+or `GMU6003` (project reports) — each naming the path it failed at, rather
+than as a bare errno. A bounded parallel worker pool uses independent snapshots,
 reuses each worker's local build cache between mutant waves, and terminates full
 process trees on timeout or interruption. Generated runtime modules exist only
 in those snapshots. The tool performs no telemetry and no runtime network
@@ -143,7 +201,9 @@ The native report history is scoped to the canonical workspace below the OS
 cache directory and can be managed with `report`. Reports may contain original
 source and diagnostics; treat CI artifacts accordingly. `run --json` writes one
 native JSON v1 value plus LF to stdout after a domain result exists, while early
-failures keep stdout empty. GitHub annotations are suppressed in JSON mode.
+failures keep stdout empty. GitHub annotations are suppressed in JSON mode, and
+runs the tool makes on your behalf — the two `apply --verify` takes — never
+annotate at all.
 
 ## Development
 
@@ -185,8 +245,9 @@ failure. The Linux workflow runs Sunday at 03:41 UTC or manually, has a
 absent from ordinary PR CI and the daily nightly matrix, but is required by the
 manual release-candidate and publish gates.
 
-See [configuration](docs/configuration.md), [operators](docs/operators.md), and
-[architecture](docs/architecture.md) for details.
+See [configuration](docs/configuration.md), [operators](docs/operators.md),
+[suggesting tests](docs/suggest.md), and [architecture](docs/architecture.md)
+for details.
 
 ## Licence
 
