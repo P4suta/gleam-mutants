@@ -165,6 +165,18 @@ project reports without deleting existing files; set `history = false` to stop
 native history. Fixed project filenames remain `mutation.json` and
 `mutation.html` when enabled.
 
+## Editor integration
+
+A VS Code extension lives in [`editors/vscode`](editors/vscode). It publishes
+the surviving mutants of the last `mutation.json` as warnings on the lines they
+change, and offers two quick fixes on each of them: generate the test that
+kills this mutant, which runs `suggest` and then `apply` and opens the test
+module it wrote, and explain this mutant. It shells out to this CLI rather than
+reimplementing it, so what the editor shows is what `run`, `suggest` and
+`apply` print. Build and install it from source with the instructions in
+[`editors/vscode/README.md`](editors/vscode/README.md); the same caveats apply,
+`suggest` calls your code for real and supports the Erlang target alone.
+
 ## Safety model
 
 The original source files are read only: the only normal project writes are the

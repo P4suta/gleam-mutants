@@ -109,6 +109,17 @@ run = [
   "mise run lint",
 ]
 
+[tasks.vscode]
+description = "Install, lint, test, build, and smoke-test the VS Code extension"
+dir = "editors/vscode"
+run = [
+  "npm ci",
+  "npm run lint",
+  "npm test",
+  "npm run build",
+  "npm run smoke",
+]
+
 [tasks.dogfood]
 description = "Mutation-test a deterministic pure-core unit-test subset"
 run = "gleam run -m gleam_mutants -- run --include src/gleam_mutants/core/score.gleam --strict --test-command gleam test"

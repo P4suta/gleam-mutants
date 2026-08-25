@@ -398,6 +398,24 @@ present, so a later run adds them back to the flat file. Delete the generated
 module rather than empty it if you do not want it regenerated, and re-run
 `suggest` rather than `apply` once the tests live somewhere else.
 
+## Editors
+
+The same three commands are wired into VS Code by the extension in
+[`editors/vscode`](../editors/vscode). A surviving mutant is a warning on the
+line it changes; the lightbulb on it offers "Generate a test that kills this
+mutant", which runs `suggest --json` for that one mutant, then
+`apply --yes --json` for what it suggested, and opens the test module at the
+test it added. A mutant no input told apart is reported as probably equivalent
+rather than written, and one no test can be written for carries the reason from
+the `unsupported` bucket above. There is also a command for the whole file,
+which lists every suggestion with its generated source and writes the one you
+pick.
+
+The extension runs this CLI — it does not reimplement any of it — so
+everything on this page holds inside the editor too, the side effects of
+probing above and the Erlang-only support first among them. It is built from
+source; see [`editors/vscode/README.md`](../editors/vscode/README.md).
+
 ## Error codes
 
 All three commands share the `GMU8xxx` range. Every one of these exits 2.

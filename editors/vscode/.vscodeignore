@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+.vscode/**
+.gitignore
+.vscodeignore
+esbuild.mjs
+fixtures/**
+scripts/**
+node_modules/**
+src/**
+test/**
+tsconfig.json
+vitest.config.ts
+**/*.map
+**/*.ts
+dist/core/**
