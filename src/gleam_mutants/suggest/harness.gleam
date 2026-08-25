@@ -9,6 +9,7 @@
 // so the rendered text can be asserted on directly.
 
 import glance
+import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -19,6 +20,8 @@ import gleam_mutants/suggest/genspec.{
   IntSpec, ListSpec, NilSpec, OptionSpec, RecursiveRef, ResultSpec, StringSpec,
   TupleSpec,
 }
+import gleam_mutants/suggest/hints
+import gleam_mutants/suggest/probe_result
 import gleam_mutants/suggest/typederive
 
 /// The depth a custom-type generator starts at, which bounds its recursion.
@@ -31,8 +34,15 @@ const determinism_offset = 7919
 // --- The specification -------------------------------------------------------
 
 /// One function to probe together with the mutants that live inside it.
+///
+/// `hints` holds the literals the function's own body writes down, which the
+/// generators of its parameters draw on purpose beside their random values.
 pub type ProbeFunction {
-  ProbeFunction(plan: typederive.FunctionPlan, mutant_ids: List(String))
+  ProbeFunction(
+    plan: typederive.FunctionPlan,
+    mutant_ids: List(String),
+    hints: hints.Hints,
+  )
 }
 
 /// Everything the renderer needs to emit a probe module and its Erlang FFI.
@@ -681,6 +691,49 @@ fn ended(observation: Observation(a)) -> String {
   }
 }
 
+/// An observation as a test would have to state it: how the call ended, and
+/// the value it answered with as `string.inspect` renders it.
+fn stated(observation: Observation(a)) -> String {
+  ended(observation) <> \":\" <> observed(observation)
+}
+
+/// Whether two observations of one input are told apart by something a
+/// generated test could state.
+///
+/// Values are compared structurally, and Erlang compares a fun by the
+/// environment it captured — while every assertion that can be written goes
+/// through `string.inspect`, which renders every fun as `//fn(a) { ... }`. Two
+/// observations that differ only there are no separation anybody could write
+/// down, so they are not counted as one here either.
+fn separated(original: Observation(a), mutated: Observation(a)) -> Bool {
+  original != mutated && stated(original) != stated(mutated)
+}
+
+/// The first generated input on which `differs` holds, if there is one.
+///
+/// This is how a mutant nothing can be written for is told apart from one
+/// nothing separates at all: the search has already answered that no input
+/// states a difference, and this asks the cheaper question of whether any
+/// input makes one. Nothing is shrunk, because there is no test to make small.
+fn diverging(
+  generator: pbt.Generator(a),
+  s: pbt.Seed,
+  remaining: Int,
+  differs: fn(a) -> Bool,
+) -> Result(a, Nil) {
+  case remaining <= 0 {
+    True -> Error(Nil)
+    False -> {
+      let #(tree, advanced) = pbt.generate(generator, s)
+      let args = pbt.tree_root(tree)
+      case differs(args) {
+        True -> Ok(args)
+        False -> diverging(generator, advanced, remaining - 1, differs)
+      }
+    }
+  }
+}
+
 fn determinism(
   generator: pbt.Generator(a),
   s: pbt.Seed,
@@ -981,7 +1034,7 @@ fn one_of_expression(options: List(String), name: String) -> String {
 fn variant_generator(variant: VariantSpec, scope: Scope) -> String {
   let generators =
     list.map(variant.fields, fn(field) {
-      generator_expression(field.spec, spent_depth, scope)
+      generator_expression(field.spec, spent_depth, scope, hints.none())
     })
   case generators {
     [] -> "pbt.constant(target." <> variant.name <> ")"
@@ -1032,6 +1085,17 @@ fn custom_printer(module: String, entry: Custom) -> String {
             list.map(list.zip(names, rendered), fn(pair) {
               bound(pair.0, pair.1)
             })
+          // A record with six positional numbers is a value no reviewer can
+          // read, and `gleam format` cannot recover the intent: the label the
+          // type gave a field is written down beside it.
+          let pieces =
+            list.map(list.zip(fields, rendered), fn(pair) {
+              let #(field, text) = pair
+              case field.label {
+                Some(name) -> quoted(name <> ": ") <> " <> " <> text
+                None -> text
+              }
+            })
           "    target."
           <> variant.name
           <> "("
@@ -1039,7 +1103,7 @@ fn custom_printer(module: String, entry: Custom) -> String {
           <> ") ->\n      "
           <> quoted(label <> "(")
           <> " <> "
-          <> string.join(rendered, " <> \", \" <> ")
+          <> string.join(pieces, " <> \", \" <> ")
           <> " <> "
           <> quoted(")")
         }
@@ -1063,31 +1127,76 @@ fn custom_printer(module: String, entry: Custom) -> String {
 /// a `gen_type_*` body spends one unit of the budget on every hop — including
 /// the hop into a *different* type, which is what keeps two mutually recursive
 /// types from resetting each other's budget and generating for ever.
-fn generator_expression(spec: GenSpec, depth: String, scope: Scope) -> String {
+///
+/// `told` is the literals the function under test wrote down. A parameter of a
+/// kind it named one of is drawn from the hinted generator, list elements and
+/// tuple components included; a custom type is not, because one `gen_type_*`
+/// is shared by every function of the module and could not answer to any one
+/// of them.
+fn generator_expression(
+  spec: GenSpec,
+  depth: String,
+  scope: Scope,
+  told: hints.Hints,
+) -> String {
   case spec {
-    IntSpec -> "pbt.small_int()"
-    FloatSpec -> "pbt.float()"
+    IntSpec ->
+      hinted(
+        "pbt.small_int()",
+        "pbt.int_with_hints(-100, 100, ",
+        int_hints(told),
+      )
+    FloatSpec ->
+      hinted("pbt.float()", "pbt.float_with_hints(", float_hints(told))
     BoolSpec -> "pbt.bool()"
-    StringSpec -> "pbt.string()"
+    StringSpec ->
+      hinted("pbt.string()", "pbt.string_with_hints(", string_hints(told))
     NilSpec -> "pbt.nil()"
     BitArraySpec -> "pbt.bit_array()"
     ListSpec(element) ->
-      "pbt.list(" <> generator_expression(element, depth, scope) <> ")"
+      "pbt.list(" <> generator_expression(element, depth, scope, told) <> ")"
     OptionSpec(inner) ->
-      "pbt.option(" <> generator_expression(inner, depth, scope) <> ")"
+      "pbt.option(" <> generator_expression(inner, depth, scope, told) <> ")"
     ResultSpec(ok, error) ->
       "pbt.result("
-      <> generator_expression(ok, depth, scope)
+      <> generator_expression(ok, depth, scope, told)
       <> ", "
-      <> generator_expression(error, depth, scope)
+      <> generator_expression(error, depth, scope, told)
       <> ")"
     TupleSpec(elements) ->
-      tuple_generator(list.map(elements, generator_expression(_, depth, scope)))
+      tuple_generator(
+        list.map(elements, generator_expression(_, depth, scope, told)),
+      )
     CustomSpec(name, arguments, _) ->
       "gen_type_" <> custom_key(name, arguments, scope) <> "(" <> depth <> ")"
     RecursiveRef(name) ->
       "gen_type_" <> recursive_key(name, scope) <> "(" <> spent_depth <> ")"
   }
+}
+
+/// `plain` when the function wrote no literal of this kind down, and the
+/// hinted generator when it did.
+///
+/// A hint list that is always empty would be noise in every probe the tool
+/// writes, and the plain generator is the one every existing probe already
+/// reads as the default.
+fn hinted(plain: String, opening: String, values: List(String)) -> String {
+  case values {
+    [] -> plain
+    _ -> opening <> "[" <> string.join(values, ", ") <> "])"
+  }
+}
+
+fn int_hints(told: hints.Hints) -> List(String) {
+  list.map(told.ints, int.to_string)
+}
+
+fn float_hints(told: hints.Hints) -> List(String) {
+  list.map(told.floats, float.to_string)
+}
+
+fn string_hints(told: hints.Hints) -> List(String) {
+  list.map(told.strings, quoted)
 }
 
 /// The depth a search enters a custom-type generator with.
@@ -1348,11 +1457,16 @@ fn one_function(probe: ProbeFunction, index: Int) -> #(List(String), Int) {
       [
         probe_function(probe),
         check_function(plan),
-        generator_function(plan),
+        generator_function(probe),
         args_printer(plan),
       ],
       result_printer,
-      [runner_function(plan), agrees_function(plan), kills_function(probe)],
+      [
+        runner_function(plan),
+        agrees_function(plan),
+        alike_function(plan),
+        kills_function(probe),
+      ],
       searches,
     ])
   #(blocks, index + list.length(probe.mutant_ids))
@@ -1405,10 +1519,11 @@ fn check_function(plan: typederive.FunctionPlan) -> String {
   <> "(args, \"\") },\n  )\n}"
 }
 
-fn generator_function(plan: typederive.FunctionPlan) -> String {
+fn generator_function(probe: ProbeFunction) -> String {
+  let plan = probe.plan
   let generators =
     list.map(plan.parameters, fn(parameter) {
-      generator_expression(parameter.spec, entry_depth(), no_scope)
+      generator_expression(parameter.spec, entry_depth(), no_scope, probe.hints)
     })
   let body = case generators {
     [] -> "pbt.constant(Nil)"
@@ -1506,8 +1621,24 @@ fn runner_function(plan: typederive.FunctionPlan) -> String {
   <> ") }, mutant, call_timeout_ms)\n}"
 }
 
+/// Renders the comparison the search and the kill set are both settled by:
+/// two observations disagree only when a test could say how.
 fn agrees_function(plan: typederive.FunctionPlan) -> String {
   "fn agrees_"
+  <> plan.name
+  <> "(args: "
+  <> args_type(plan)
+  <> ", mutant: String) -> Bool {\n  !separated(\n    normalise(run_"
+  <> plan.name
+  <> "(args, \"\")),\n    normalise(run_"
+  <> plan.name
+  <> "(args, mutant)),\n  )\n}"
+}
+
+/// Renders the plain structural comparison, which is the wider question:
+/// whether the two answered with the same value at all, writable or not.
+fn alike_function(plan: typederive.FunctionPlan) -> String {
+  "fn alike_"
   <> plan.name
   <> "(args: "
   <> args_type(plan)
@@ -1543,6 +1674,12 @@ fn kills_function(probe: ProbeFunction) -> String {
 ///
 /// `offset` numbers the search within its function, while `index` shifts the
 /// seed so that no two searches in the module draw the same inputs.
+///
+/// A search that finds nothing asks one more question over the same inputs:
+/// whether any of them divided the two at all. If one did, the mutant is not
+/// indistinguishable — it is one no assertion can state, which is a wall
+/// rather than a verdict, and saying so is what keeps the probe from proposing
+/// a test that passes with the mutant in place.
 fn search_function(
   probe: ProbeFunction,
   mutant: String,
@@ -1596,8 +1733,38 @@ fn search_function(
     "\"\"",
     "kills",
   ])
-  <> "\n    }\n    pbt.NotFound(cases) ->\n"
-  <> emit_call("      ", [
+  <> "\n    }\n    pbt.NotFound(cases) ->\n      case\n        diverging(gen_"
+  <> name
+  <> "(), pbt.seed(probe_seed + "
+  <> int.to_string(index)
+  <> "), max_cases, fn(args) {\n          !alike_"
+  <> name
+  <> "(args, "
+  <> quoted(mutant)
+  <> ")\n        })\n      {\n        Ok(divided) -> {\n          let original = normalise(run_"
+  <> name
+  <> "(divided, \"\"))\n          let mutated = normalise(run_"
+  <> name
+  <> "(divided, "
+  <> quoted(mutant)
+  <> "))\n"
+  <> emit_call("          ", [
+    quoted(name),
+    quoted(mutant),
+    "\"unsupported\"",
+    "show_args_" <> name <> "(divided)",
+    "\"null\"",
+    "observed(original)",
+    "ended(original)",
+    "observed(mutated)",
+    "ended(mutated)",
+    "cases",
+    "0",
+    quoted(probe_result.inexpressible_reason),
+    "[]",
+  ])
+  <> "\n        }\n        Error(Nil) ->\n"
+  <> emit_call("          ", [
     quoted(name),
     quoted(mutant),
     "\"indistinguishable\"",
@@ -1612,7 +1779,7 @@ fn search_function(
     "\"\"",
     "[]",
   ])
-  <> "\n  }\n}"
+  <> "\n      }\n  }\n}"
 }
 
 fn emit_call(indent: String, arguments: List(String)) -> String {

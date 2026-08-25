@@ -6,8 +6,9 @@
 // It probes `fixtures/boundary_project`, whose every function is chosen to
 // pin one branch of the runner down: a boundary only `0` tells apart, an
 // equivalent mutant no input can kill, a custom type the probe has to build,
-// an option-in/result-out pair, a private function and a function-typed
-// parameter. Run it with
+// an option-in/result-out pair, a private function, a function-typed
+// parameter, and a pipeline whose stage-deletion mutant does not type check.
+// Run it with
 //
 //     gleam run -m suggest_smoke --target erlang
 
@@ -75,6 +76,7 @@ fn problems(
     abs_problems(request, output, mutants),
     area_problems(output),
     maybe_double_problems(output, mutants),
+    join_problems(output, mutants),
     unsupported_problems(output, "helper", "private"),
     unsupported_problems(output, "applies", "function"),
     skipped_problems(output),
@@ -144,8 +146,13 @@ fn survivor_problems(
   )
 }
 
+/// The two mutants of `abs` nothing separates, at the lines they live on.
+///
+/// The line numbers move whenever the fixture gains a line above `abs`, which
+/// is the price of naming the mutants precisely enough that a silently
+/// relocated verdict cannot pass for the right one.
 const expected_survivors = [
-  "abs line 22: 0 -> 1", "abs line 22: value < 0 -> value <= 0",
+  "abs line 23: 0 -> 1", "abs line 23: value < 0 -> value <= 0",
 ]
 
 /// `value > 0` becoming `value >= 0` is told apart by `0` and nothing else.
@@ -300,6 +307,51 @@ fn maybe_double_problems(
   list.append(arithmetic, neutral)
 }
 
+/// One mutant the compiler rejects is a verdict, not the end of the file.
+///
+/// Deleting the pipeline stage of `join` leaves a `List(String)` where the
+/// annotation promises a `String`, so that mutant cannot be built — and `run`
+/// rejects exactly the same one. The probe has to say so about that mutant
+/// alone: the string-neutral mutant on the very same line is perfectly good,
+/// and every other function of the file is untouched.
+fn join_problems(
+  output: diff_runner.RunOutput,
+  mutants: List(Mutant),
+) -> List(String) {
+  let uncompilable = "join `parts |> string.join(\"; \")` -> `parts`"
+  let rejected = case
+    locate(output, mutants, "join", operator.PipelineStageDeletion)
+  {
+    Error(reason) -> [reason]
+    Ok(probe) ->
+      list.flatten([
+        expect(
+          probe.status == Unsupported,
+          uncompilable
+            <> " is "
+            <> probe_result.status_name(probe.status)
+            <> ", expected unsupported: nothing can build it",
+        ),
+        expect(
+          string.contains(probe.reason, "does not compile"),
+          uncompilable
+            <> " gives the reason "
+            <> string.inspect(probe.reason)
+            <> ", which never says it does not compile",
+        ),
+        expect(
+          probe.kills == [],
+          uncompilable <> " claims to kill " <> string.inspect(probe.kills),
+        ),
+      ])
+  }
+  let neutral = case locate(output, mutants, "join", operator.StringNeutral) {
+    Error(reason) -> [reason]
+    Ok(probe) -> distinguished(probe, "join `\"; \"` -> `\"\"`")
+  }
+  list.append(rejected, neutral)
+}
+
 /// Mutants of a function the probe cannot call are still reported, as
 /// unsupported, with a reason that says which wall was hit.
 fn unsupported_problems(
@@ -360,6 +412,13 @@ fn skipped_problems(output: diff_runner.RunOutput) -> List(String) {
     expect(
       !skipped("is_positive"),
       "`is_positive` was skipped, expected it to be probed",
+    ),
+    // A function holding one mutant nobody can build is still probed: it is
+    // the mutant that is out, not the function.
+    expect(
+      !skipped("join"),
+      "`join` was skipped, expected it to be probed around its one "
+        <> "type-invalid mutant",
     ),
   ])
 }

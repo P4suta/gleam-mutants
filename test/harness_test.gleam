@@ -22,6 +22,7 @@ import gleam_mutants/suggest/genspec.{
   VariantSpec,
 }
 import gleam_mutants/suggest/harness.{ProbeFunction, ProbeSpec}
+import gleam_mutants/suggest/hints
 @target(erlang)
 import gleam_mutants/suggest/pbt_source
 @target(erlang)
@@ -97,11 +98,25 @@ fn plan_in(source: String, name: String) -> typederive.FunctionPlan {
   planned
 }
 
+/// The parsed function `name`, which is what a probe harvests literals from.
+fn function_in(source: String, name: String) -> glance.Function {
+  let assert Ok(module) = glance.module(source)
+  let assert Ok(found) =
+    list.find(module.functions, fn(definition) {
+      definition.definition.name == name
+    })
+  found.definition
+}
+
 fn probe_function(
   name: String,
   mutant_ids: List(String),
 ) -> harness.ProbeFunction {
-  ProbeFunction(plan: plan(name), mutant_ids: mutant_ids)
+  ProbeFunction(
+    plan: plan(name),
+    mutant_ids: mutant_ids,
+    hints: hints.harvest(function_in(target_source, name)),
+  )
 }
 
 fn spec_for(functions: List(harness.ProbeFunction)) -> harness.ProbeSpec {
@@ -287,6 +302,73 @@ pub fn rendered_probe_builds_a_generator_for_every_arity_test() {
   assert result.is_ok(glance.module(rendered))
 }
 
+/// The literals a function writes down are drawn on purpose.
+///
+/// Measured on real code, no seed and no budget reached the inputs the
+/// separating cases needed: `normalize_path` needs a path starting `"./"`,
+/// and a boundary at `x > 10` needs `10`. Both are in the source of the
+/// function itself, so the generator of each parameter is told about them.
+pub fn rendered_probe_seeds_a_generator_with_the_functions_literals_test() {
+  let rendered =
+    harness.render_probe(
+      spec_in(hint_source, [
+        #("big", ["m_big"]),
+        #("is_path", ["m_path"]),
+        #("joined", ["m_join"]),
+        #("plain", ["m_plain"]),
+      ]),
+    )
+
+  assert missing(function_source(rendered, "gen_big"), [
+      "pbt.int_with_hints(-100, 100, [10, 9, 11])",
+    ])
+    == []
+  assert missing(function_source(rendered, "gen_is_path"), [
+      "pbt.string_with_hints([\"./\"])",
+    ])
+    == []
+  // A hint reaches every value of that kind inside the parameter, list
+  // elements included: `join(parts, "; ")` is separated by a list holding the
+  // separator, not by a `List(String)` shaped like anything else.
+  assert missing(function_source(rendered, "gen_joined"), [
+      "pbt.list(pbt.string_with_hints([\"; \"]))",
+    ])
+    == []
+  assert result.is_ok(glance.module(rendered))
+}
+
+/// A function with nothing to harvest keeps the plain generators: a hint list
+/// that is always empty would be noise in every probe the tool writes.
+pub fn rendered_probe_keeps_the_plain_generators_without_hints_test() {
+  let rendered =
+    harness.render_probe(spec_in(hint_source, [#("plain", ["m_plain"])]))
+  assert missing(function_source(rendered, "gen_plain"), [
+      "pbt.small_int()", "pbt.string()",
+    ])
+    == []
+  assert present(function_source(rendered, "gen_plain"), ["_with_hints"]) == []
+}
+
+/// Functions whose bodies name the values their mutants hide behind.
+const hint_source = "import gleam/string
+
+pub fn big(x: Int) -> Bool {
+  x > 10
+}
+
+pub fn is_path(s: String) -> Bool {
+  string.starts_with(s, \"./\")
+}
+
+pub fn joined(parts: List(String)) -> String {
+  string.join(parts, \"; \")
+}
+
+pub fn plain(x: Int, s: String) -> Int {
+  string.length(s) + x
+}
+"
+
 pub fn rendered_probe_generates_custom_type_generators_test() {
   let rendered = harness.render_probe(full_spec())
   assert missing(rendered, [
@@ -460,6 +542,48 @@ pub fn printer_helpers_qualify_constructors_with_the_module_test() {
       "target.Empty -> \"util.Empty\"", "fn show_bool(",
     ])
     == []
+}
+
+/// A record with labelled fields prints with its labels.
+///
+/// `score.Score(1, 0, -1, 0, 0, 0.0)` is a value a reviewer cannot read: six
+/// positional fields, and no way to tell which is which without opening the
+/// type. `gleam format` cannot recover the intent, so the printer has to write
+/// it down.
+pub fn printer_helpers_render_labelled_fields_with_their_labels_test() {
+  let helpers =
+    harness.render_printer_helpers("app/score", [
+      CustomSpec("Score", [], [
+        VariantSpec("Score", [
+          FieldSpec(Some("total"), IntSpec),
+          FieldSpec(Some("killed"), IntSpec),
+        ]),
+        VariantSpec("Mixed", [
+          FieldSpec(Some("first"), IntSpec),
+          FieldSpec(None, BoolSpec),
+        ]),
+        VariantSpec("Bare", [FieldSpec(None, IntSpec)]),
+      ]),
+    ])
+  assert missing(helpers, [
+      "\"score.Score(\"", "\"total: \"", "\"killed: \"", "\"first: \"",
+      "\"score.Bare(\"",
+    ])
+    == []
+}
+
+/// An unlabelled field keeps its position and gains no label.
+pub fn printer_helpers_leave_an_unlabelled_field_positional_test() {
+  let helpers =
+    harness.render_printer_helpers("app/util", [
+      CustomSpec("Ctor", [], [
+        VariantSpec("Ctor", [
+          FieldSpec(None, IntSpec),
+          FieldSpec(None, BoolSpec),
+        ]),
+      ]),
+    ])
+  assert present(helpers, [": \" <>"]) == []
 }
 
 pub fn printer_helpers_render_the_bits_a_byte_does_not_hold_test() {
@@ -643,7 +767,11 @@ fn spec_in(
 ) -> harness.ProbeSpec {
   spec_for(
     list.map(functions, fn(entry) {
-      ProbeFunction(plan: plan_in(source, entry.0), mutant_ids: entry.1)
+      ProbeFunction(
+        plan: plan_in(source, entry.0),
+        mutant_ids: entry.1,
+        hints: hints.harvest(function_in(source, entry.0)),
+      )
     }),
   )
 }
@@ -940,7 +1068,8 @@ pub fn rendered_probe_refuses_a_type_with_no_finite_values_test() {
       ],
       return_spec: None,
     )
-  let rendered = harness.render_probe(spec_for([ProbeFunction(plan, ["m1"])]))
+  let rendered =
+    harness.render_probe(spec_for([ProbeFunction(plan, ["m1"], hints.none())]))
   assert result.is_ok(glance.module(rendered))
   assert missing(rendered, [
       "panic as \"gleam_mutants: Loop has no values to generate\"",
@@ -1107,7 +1236,7 @@ fn case_clash_spec() -> harness.ProbeSpec {
       ],
       return_spec: None,
     )
-  spec_for([ProbeFunction(plan, ["m1"])])
+  spec_for([ProbeFunction(plan, ["m1"], hints.none())])
 }
 
 pub fn check_spec_accepts_a_probe_whose_helpers_are_unique_test() {
@@ -1189,7 +1318,7 @@ pub fn check_spec_reports_two_instantiations_that_share_a_helper_name_test() {
       return_spec: None,
     )
   let assert Error(message) =
-    harness.check_spec(spec_for([ProbeFunction(plan, ["m1"])]))
+    harness.check_spec(spec_for([ProbeFunction(plan, ["m1"], hints.none())]))
   assert string.starts_with(message, "GMU8008: ")
   assert string.contains(message, "box_int")
   // Naming the key alone leaves the reader hunting for the pair that asked
@@ -1256,6 +1385,8 @@ type LiveRun {
     returns: ProbeRun,
     secrets: ProbeRun,
     mutual: ProbeRun,
+    captured: ProbeRun,
+    paths: ProbeRun,
     printer: ProbeRun,
     cases: List(PrinterCase),
   )
@@ -1574,6 +1705,73 @@ fn mutual_target(rt: String) -> String {
 }
 
 @target(erlang)
+/// A module whose result carries a function value.
+///
+/// `Wrapper` is a plain named type, so the return is comparable as far as the
+/// annotation goes — and at run time it holds a closure. Both mutants change a
+/// value the closure captures rather than any code it runs, so the original and
+/// the mutant answer with funs that are structurally unequal (Erlang compares a
+/// fun by its environment) and that `string.inspect` renders identically. A
+/// test written from that separation passes with the mutant in place, so there
+/// is no test to write and the probe has to say so.
+fn functional_target(rt: String) -> String {
+  string.join(
+    [
+      "import " <> rt,
+      "",
+      "pub type Wrapper {",
+      "  Wrapper(f: fn(Int) -> Int)",
+      "}",
+      "",
+      "pub fn make(x: Int) -> Wrapper {",
+      "  let base = " <> select(rt, "m_capture", "x + 1", "x - 1"),
+      "  let scale = " <> select(rt, "m_scale", "2", "3"),
+      "  Wrapper(fn(y) { base + scale * y })",
+      "}",
+    ],
+    "\n",
+  )
+  <> "\n"
+}
+
+@target(erlang)
+/// A module whose mutant is separated by a literal it writes down itself.
+///
+/// `strip` answers differently only for a string starting `"./"`, and a
+/// uniform draw over 0 to 20 printable ASCII characters produces one about
+/// once in nine thousand: 25 cases never reach it, and neither did 2000 on
+/// real code. The literal is right there in the source, so the generator of
+/// `s` is told about it and the search finds `"./"` in a handful of draws.
+fn paths_target(rt: String) -> String {
+  string.join(
+    [
+      "import gleam/string",
+      "import " <> rt,
+      "",
+      "pub fn strip(s: String) -> String {",
+      "  case string.starts_with(s, \"./\") {",
+      "    True -> string.drop_start(s, "
+        <> select(rt, "m_strip", "2", "1")
+        <> ")",
+      "    False -> s",
+      "  }",
+      "}",
+      "",
+      // The literal lives in a pattern and nowhere else, which is where most
+      // Gleam code writes one: nothing in an expression names `"GET"`.
+      "pub fn method(m: String) -> Int {",
+      "  case m {",
+      "    \"GET\" -> " <> select(rt, "m_method", "1", "2"),
+      "    _ -> 0",
+      "  }",
+      "}",
+    ],
+    "\n",
+  )
+  <> "\n"
+}
+
+@target(erlang)
 fn live_spec(
   module: String,
   source: String,
@@ -1586,7 +1784,11 @@ fn live_spec(
     pbt_module: pbt_module,
     ffi_module: module <> "_probe_ffi",
     functions: list.map(functions, fn(entry) {
-      ProbeFunction(plan: plan_in(source, entry.0), mutant_ids: entry.1)
+      ProbeFunction(
+        plan: plan_in(source, entry.0),
+        mutant_ids: entry.1,
+        hints: hints.harvest(function_in(source, entry.0)),
+      )
     }),
     seed: 20_260_825,
     max_cases: 25,
@@ -1665,26 +1867,29 @@ fn printer_cases(source: String) -> List(PrinterCase) {
     ),
     PrinterCase(TupleSpec([IntSpec, StringSpec]), "#(1, \"a\")", "#(1, \"a\")"),
     PrinterCase(TupleSpec([]), "#()", "#()"),
+    // A record with labelled fields prints with its labels: this milestone's
+    // rendering change, and the difference between a value a reviewer can read
+    // and six positional numbers.
     PrinterCase(
       parameter_spec(source, "area"),
       "target.Circle(1)",
-      "probe_shapes.Circle(1)",
+      "probe_shapes.Circle(radius: 1)",
     ),
     PrinterCase(
       parameter_spec(source, "area"),
       "target.Square(-2)",
-      "probe_shapes.Square(-2)",
+      "probe_shapes.Square(side: -2)",
     ),
     // A variant field with no components: printed, never read.
     PrinterCase(
       parameter_spec(source, "open"),
       "target.Box(#())",
-      "probe_shapes.Box(#())",
+      "probe_shapes.Box(u: #())",
     ),
     PrinterCase(
       parameter_spec(source, "split"),
       "target.Pair(2, #())",
-      "probe_shapes.Pair(2, #())",
+      "probe_shapes.Pair(a: 2, u: #())",
     ),
   ]
 }
@@ -1800,7 +2005,15 @@ fn killed(run: ProbeRun, mutant: String) -> List(String) {
 
 @target(erlang)
 fn probe_runs(run: LiveRun) -> List(ProbeRun) {
-  [run.shapes, run.returns, run.secrets, run.mutual, run.printer]
+  [
+    run.shapes,
+    run.returns,
+    run.secrets,
+    run.mutual,
+    run.captured,
+    run.paths,
+    run.printer,
+  ]
 }
 
 @target(erlang)
@@ -1816,6 +2029,8 @@ fn live_run(root: String) -> LiveRun {
   let return_only_source = return_only_target(rt)
   let opaque_source = opaque_target(rt)
   let mutual_source = mutual_target(rt)
+  let functional_source = functional_target(rt)
+  let paths_source = paths_target(rt)
   let probes = [
     LiveProbe(
       spec: live_spec(
@@ -1847,6 +2062,19 @@ fn live_run(root: String) -> LiveRun {
       ]),
       source: mutual_source,
     ),
+    LiveProbe(
+      spec: live_spec("probe_functional", functional_source, pbt_module, [
+        #("make", ["m_capture", "m_scale"]),
+      ]),
+      source: functional_source,
+    ),
+    LiveProbe(
+      spec: live_spec("probe_paths", paths_source, pbt_module, [
+        #("strip", ["m_strip"]),
+        #("method", ["m_method"]),
+      ]),
+      source: paths_source,
+    ),
   ]
   list.each(probes, fn(probe) { install(root, probe) })
 
@@ -1872,6 +2100,8 @@ fn live_run(root: String) -> LiveRun {
     returns: run_probe(root, "probe_return_only_probe"),
     secrets: run_probe(root, "probe_opaque_probe"),
     mutual: run_probe(root, "probe_mutual_probe"),
+    captured: run_probe(root, "probe_functional_probe"),
+    paths: run_probe(root, "probe_paths_probe"),
     printer: run_probe(root, "printer_check"),
     cases: cases,
   )
@@ -1923,10 +2153,11 @@ pub fn rendered_probe_compiles_and_answers_inside_a_snapshot_test() {
     list.find(run.shapes.results, fn(result) { result.mutant == "m_unit" })
   assert unit.inputs == ["#()"]
 
-  // So does a variant field with no components, inside its constructor.
+  // So does a variant field with no components, inside its constructor —
+  // under the label the type gave it.
   let assert Ok(boxed) =
     list.find(run.shapes.results, fn(result) { result.mutant == "m_open" })
-  assert boxed.inputs == ["probe_shapes.Box(#())"]
+  assert boxed.inputs == ["probe_shapes.Box(u: #())"]
 
   // A distinguished result names every mutant of its function that the same
   // input kills, in the order the probe was given them, its own included.
@@ -2002,6 +2233,38 @@ pub fn rendered_probe_compiles_and_answers_inside_a_snapshot_test() {
     option.unwrap(converted.expected, ""),
     "probe_mutual.Print(",
   )
+
+  // A separation nothing can be written down is not a separation.
+  //
+  // Both mutants change a value the returned closure captures, so the original
+  // and the mutant are structurally unequal and render identically. Calling
+  // that `distinguished` produces a test that passes with the mutant in place;
+  // the probe has to report the wall instead, and claim no kill at all.
+  assert statuses(run.captured.results)
+    == [#("m_capture", "unsupported"), #("m_scale", "unsupported")]
+  let captured = reported(run.captured, "m_capture")
+  assert string.contains(captured.reason, "function values")
+  assert captured.expected_inspect == captured.actual_inspect
+  assert killed(run.captured, "m_capture") == []
+  assert killed(run.captured, "m_scale") == []
+
+  // A mutant nothing but the function's own literal separates.
+  //
+  // With uniform strings this was `indistinguishable` after every budget
+  // tried; harvested, `"./"` is drawn on purpose and the search reports the
+  // shortest input that tells the two apart.
+  assert statuses(run.paths.results)
+    == [#("m_strip", "distinguished"), #("m_method", "distinguished")]
+  let stripped = reported(run.paths, "m_strip")
+  assert stripped.inputs == ["\"./\""]
+  assert stripped.expected == Some("\"\"")
+
+  // The same, for a literal written in a pattern rather than in an expression:
+  // `case m { "GET" -> .. }` is the only place the function names the string
+  // that separates its mutant, and 95^3 uniform draws never reach it.
+  let matched = reported(run.paths, "m_method")
+  assert matched.inputs == ["\"GET\""]
+  assert matched.expected == Some("1")
 
   // The printers the probe ships, over values picked here.
   let printed = printed_lines(run.printer)
@@ -2254,9 +2517,9 @@ pub fn rendered_probe_compiles_parameterised_types_inside_a_snapshot_test() {
   let assert Ok(paired) =
     list.find(run.generic.results, fn(result) { result.mutant == "m_pair" })
   let assert [boxed_int, boxed_string] = paired.inputs
-  assert string.starts_with(boxed_int, "probe_generic.Box(")
+  assert string.starts_with(boxed_int, "probe_generic.Box(inner: ")
   assert !string.contains(boxed_int, "\"")
-  assert string.starts_with(boxed_string, "probe_generic.Box(\"")
+  assert string.starts_with(boxed_string, "probe_generic.Box(inner: \"")
 
   // A recursive parameterised type generates and prints.
   let assert Ok(totalled) =
@@ -2279,8 +2542,11 @@ pub fn rendered_probe_compiles_parameterised_types_inside_a_snapshot_test() {
   let assert Ok(unpacked) =
     list.find(run.generic.results, fn(result) { result.mutant == "m_unpack" })
   let assert [both] = unpacked.inputs
-  assert string.starts_with(both, "probe_generic.Both(probe_generic.Box(")
-  assert string.contains(both, "probe_generic.Box(\"")
+  assert string.starts_with(
+    both,
+    "probe_generic.Both(probe_generic.Box(inner: ",
+  )
+  assert string.contains(both, "probe_generic.Box(inner: \"")
 
   // A parameter whose type argument no variant uses is still annotated with
   // that argument, and the probe prints what the variants hold.

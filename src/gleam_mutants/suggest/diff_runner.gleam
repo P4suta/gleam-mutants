@@ -16,9 +16,11 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import gleam_mutants/config.{type Config}
 import gleam_mutants/core/mutant.{type Mutant}
+import gleam_mutants/core/operator.{type Operator}
 import gleam_mutants/core/outcome
 import gleam_mutants/core/path
 import gleam_mutants/engine.{type SourceCatalog}
@@ -28,6 +30,7 @@ import gleam_mutants/snapshot.{type Snapshot}
 import gleam_mutants/suggest/harness.{
   type ProbeFunction, type ProbeSpec, ProbeFunction, ProbeSpec,
 }
+import gleam_mutants/suggest/hints
 import gleam_mutants/suggest/pbt_source
 import gleam_mutants/suggest/probe_result.{
   type ProbeResult, ProbeResult, Unsupported,
@@ -45,9 +48,17 @@ import tomlet
 /// workspace's mutation `includes` already cover. `function_filter` narrows
 /// the run to the one function of that exact name, dropping every other
 /// function from both the results and the skipped list; `None` probes them
-/// all. `exclude_functions` names functions the probe leaves alone: they are
-/// never compiled into it, never called and never timed, and each of their
-/// mutants comes back `Unsupported` with the function among the skipped ones.
+/// all. `operators` narrows the mutants discovered to the named operators,
+/// exactly as `run --operator` does, and an empty list leaves the workspace's
+/// own selection alone. `mutants` narrows them to a set of ids the caller has
+/// already settled — a `--mutant` prefix, or the survivors of a stored report
+/// — so that a probe asked about one line of a file does not instrument the
+/// rest of it; `None` probes every mutant discovered. Both narrow before
+/// anything is instrumented, which is the difference between a cheap probe and
+/// a whole file's worth of one. `exclude_functions` names functions the probe
+/// leaves alone: they are never compiled into it, never called and never
+/// timed, and each of their mutants comes back `Unsupported` with the function
+/// among the skipped ones.
 /// `seed`, `max_cases` and `max_shrinks` are handed to the property
 /// search inside the probe, `call_timeout_ms` bounds one call of the function
 /// under test and `probe_timeout_ms` bounds a whole probe process.
@@ -58,6 +69,8 @@ pub type Request {
     workspace: String,
     files: List(String),
     function_filter: Option(String),
+    operators: List(Operator),
+    mutants: Option(List(String)),
     seed: Int,
     max_cases: Int,
     max_shrinks: Int,
@@ -153,13 +166,16 @@ pub type RunOutput {
   )
 }
 
-/// A request with the standard budgets: seed 1, 200 cases, 500 shrinks, a
-/// second per call, two minutes per probe and three determinism replays.
+/// A request with the standard budgets and no narrowing: seed 1, 200 cases,
+/// 500 shrinks, a second per call, two minutes per probe and three determinism
+/// replays.
 pub fn defaults(workspace: String, files: List(String)) -> Request {
   Request(
     workspace: workspace,
     files: files,
     function_filter: None,
+    operators: [],
+    mutants: None,
     seed: 1,
     max_cases: 200,
     max_shrinks: 500,
@@ -371,11 +387,12 @@ fn prepare(
     request.files,
     snapshot.source_files(snapshot, configured.includes, configured.excludes),
   ))
-  use catalogs <- result.try(engine.discover_catalogs(
-    root,
-    request.files,
-    configured.operators,
-  ))
+  use catalogs <- result.try(
+    engine.discover_catalogs(root, request.files, case request.operators {
+      [] -> configured.operators
+      chosen -> chosen
+    }),
+  )
   use plans <- result.try(
     list.try_map(catalogs, fn(source_catalog) {
       plan_module(request, source_catalog, tag, pbt_module)
@@ -457,7 +474,8 @@ fn plan_module(
     }),
   )
   let context = typederive.context(parsed)
-  let #(targets, outside) = select.assign(parsed, source_catalog.mutants)
+  let #(targets, outside) =
+    select.assign(parsed, chosen_mutants(request, source_catalog.mutants))
   let module = module_name(source_catalog.path)
   let probe_module = "gleam_mutants_probe_" <> tag <> "_" <> flatten(module)
   let considered = filter_targets(request.function_filter, targets)
@@ -530,6 +548,7 @@ fn sort_target(
           ProbeFunction(
             plan: plan,
             mutant_ids: list.map(target.mutants, fn(item) { item.id }),
+            hints: hints.harvest(target.function),
           ),
           ..sorted.probes
         ],
@@ -555,9 +574,25 @@ fn given_up(
     ..sorted,
     skipped: [Skipped(module, target.function.name, reason), ..sorted.skipped],
     unsupported: list.fold(target.mutants, sorted.unsupported, fn(all, item) {
-      [unsupported(target.function.name, item, reason), ..all]
+      [unsupported(target.function.name, item.id, reason), ..all]
     }),
   )
+}
+
+/// The mutants of one source a request is about: the ones it named, or every
+/// one discovered when it named none.
+///
+/// Narrowing here rather than after the probe is what a `--mutant` prefix and
+/// a `--survivors` run are worth: the mutants nobody asked about are never
+/// instrumented, never compiled and never searched for.
+fn chosen_mutants(request: Request, discovered: List(Mutant)) -> List(Mutant) {
+  case request.mutants {
+    None -> discovered
+    Some(ids) -> {
+      let wanted = set.from_list(ids)
+      list.filter(discovered, fn(item) { set.contains(wanted, item.id) })
+    }
+  }
 }
 
 /// The targets a request asks about: every one, or the single named function.
@@ -638,7 +673,9 @@ fn flatten(module: String) -> String {
 /// Instruments the snapshot, writes the probes, builds once and runs them.
 ///
 /// Nothing is written when no function is worth probing: there would be no
-/// mutant to resolve and no probe to run.
+/// mutant to resolve and no probe to run. Everything that is worth probing is
+/// compile-checked first, so that the one mutant nobody can build comes back
+/// as a verdict of its own instead of taking its whole file down.
 fn probe(
   request: Request,
   snapshot: Snapshot,
@@ -651,36 +688,157 @@ fn probe(
     [] -> Ok([])
     active -> {
       use module <- result.try(runtime.generate(root, snapshot.digest(snapshot)))
+      use refused <- result.try(refused_mutants(
+        snapshot,
+        catalogs,
+        active,
+        module,
+      ))
+      let narrowed = list.map(active, fn(plan) { buildable(plan, refused) })
+      let running =
+        list.filter(narrowed, fn(item) { item.plan.spec.functions != [] })
       use _ <- result.try(engine.instrument(
         root,
         catalogs,
-        list.flat_map(active, fn(plan) { plan.probed }),
+        list.flat_map(running, fn(item) { item.plan.probed }),
         runtime.name(module),
       ))
       use _ <- result.try(
         engine.write_generated_files(root, [
           #("src/" <> pbt_module <> ".gleam", pbt_source.source()),
-          ..list.flat_map(active, fn(plan) {
+          ..list.flat_map(running, fn(item) {
             [
               #(
-                "src/" <> plan.probe_module <> ".gleam",
-                harness.render_probe(plan.spec),
+                "src/" <> item.plan.probe_module <> ".gleam",
+                harness.render_probe(item.plan.spec),
               ),
               #(
-                "src/" <> plan.ffi_module <> ".erl",
-                harness.render_ffi(plan.spec),
+                "src/" <> item.plan.ffi_module <> ".erl",
+                harness.render_ffi(item.plan.spec),
               ),
             ]
           })
         ]),
       )
+      // The snapshot is built even when every mutant was refused: a workspace
+      // that does not compile on its own would otherwise be reported as a file
+      // full of invalid mutants rather than as the broken workspace it is.
       use _ <- result.try(
         engine.build_targets(root, [outcome.Erlang])
         |> result.map_error(fn(error) {
           "GMU8003: the instrumented snapshot did not compile:\n" <> error
         }),
       )
-      list.try_map(active, fn(plan) { run_probe(request, root, plan) })
+      use reported <- result.map(
+        list.try_map(running, fn(item) { run_probe(request, root, item.plan) }),
+      )
+      list.map(narrowed, fn(item) {
+        let probed = case list.key_find(reported, item.plan.probe_module) {
+          Ok(results) -> results
+          Error(Nil) -> []
+        }
+        #(item.plan.probe_module, list.append(probed, item.rejected))
+      })
+    }
+  }
+}
+
+/// One module's plan narrowed to the mutants that compile, beside the verdict
+/// reported for each one that does not.
+type Buildable {
+  Buildable(plan: ModulePlan, rejected: List(ProbeResult))
+}
+
+/// Why a mutant nothing can build has no test written for it.
+///
+/// The compiler's own first line follows, because "does not compile" alone
+/// leaves a reader nothing to check.
+const uncompilable_reason = "mutant does not compile: "
+
+/// The mutants of this run the compiler refuses, each with the line saying so.
+///
+/// `pipeline-stage-deletion` regularly leaves a value of the wrong type behind,
+/// which `run` has always rejected one mutant at a time. A probe instruments a
+/// whole file at once, so without this check one such mutant took every mutant
+/// of its file down with it. It costs one build when everything is valid; only
+/// a rejection pays for the bisect that isolates which mutants are to blame.
+///
+/// A workspace that does not compile at all is the engine's to answer, not the
+/// bisect's: `validate_mutants` buys one pristine build the first time a batch
+/// fails, and says so in the failure this passes on under GMU8003 — the code
+/// the run would have reached anyway once the instrumented snapshot failed to
+/// build, only now without a copy and a cold build per mutant on the way to
+/// it.
+fn refused_mutants(
+  snapshot: Snapshot,
+  catalogs: List(SourceCatalog),
+  active: List(ModulePlan),
+  module: runtime.RuntimeModule,
+) -> Result(List(#(String, String)), String) {
+  use validated <- result.map(
+    engine.validate_mutants(
+      snapshot,
+      catalogs,
+      list.flat_map(active, fn(plan) { plan.probed }),
+      [outcome.Erlang],
+      module,
+    )
+    |> result.map_error(fn(error) { "GMU8003: " <> error }),
+  )
+  list.map(validated.1, fn(rejected) {
+    #(rejected.mutant.id, first_line(rejected.diagnostic))
+  })
+}
+
+/// The first line of a compiler diagnostic that has anything in it.
+///
+/// A whole build transcript is not a reason a reader can act on; the line
+/// naming the error is, and the snapshot holds the rest for whoever wants it.
+fn first_line(diagnostic: String) -> String {
+  diagnostic
+  |> string.split("\n")
+  |> list.map(string.trim)
+  |> list.filter(fn(line) { line != "" })
+  |> list.first
+  |> result.unwrap("the compiler gave no reason")
+}
+
+/// Takes the refused mutants out of one module's plan.
+///
+/// A function left with no mutant to play is dropped from the probe entirely:
+/// there is nothing left to search for, and calling it anyway would be one
+/// more call against the real machine for no verdict at all.
+fn buildable(plan: ModulePlan, refused: List(#(String, String))) -> Buildable {
+  let rejected =
+    list.flat_map(plan.spec.functions, fn(probe) {
+      list.filter_map(probe.mutant_ids, fn(id) {
+        list.key_find(refused, id)
+        |> result.map(fn(diagnostic) {
+          unsupported(probe.plan.name, id, uncompilable_reason <> diagnostic)
+        })
+      })
+    })
+  case rejected {
+    [] -> Buildable(plan: plan, rejected: [])
+    _ -> {
+      let kept = fn(id) { result.is_error(list.key_find(refused, id)) }
+      let functions =
+        plan.spec.functions
+        |> list.map(fn(probe) {
+          ProbeFunction(
+            ..probe,
+            mutant_ids: list.filter(probe.mutant_ids, kept),
+          )
+        })
+        |> list.filter(fn(probe) { probe.mutant_ids != [] })
+      Buildable(
+        plan: ModulePlan(
+          ..plan,
+          spec: ProbeSpec(..plan.spec, functions: functions),
+          probed: list.filter(plan.probed, fn(item) { kept(item.id) }),
+        ),
+        rejected: rejected,
+      )
     }
   }
 }
@@ -735,11 +893,15 @@ fn run_probe(
   }
 }
 
-/// The verdict reported for a mutant of a function that could not be probed.
-fn unsupported(function: String, item: Mutant, reason: String) -> ProbeResult {
+/// The verdict reported for a mutant no test will be written for.
+fn unsupported(
+  function: String,
+  mutant: String,
+  reason: String,
+) -> ProbeResult {
   ProbeResult(
     function: function,
-    mutant: item.id,
+    mutant: mutant,
     status: Unsupported,
     inputs: [],
     expected: None,

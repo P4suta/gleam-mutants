@@ -24,6 +24,9 @@ import gleam_mutants/platform
 import gleam_mutants/suggest/diff_runner
 
 @target(erlang)
+import gleam/int
+
+@target(erlang)
 import gleam_mutants/suggest/probe_result
 
 import gleam_mutants/suggest/select
@@ -91,6 +94,8 @@ pub fn defaults_carry_the_standard_budgets_test() {
       workspace: "workspace",
       files: ["src/app.gleam"],
       function_filter: None,
+      operators: [],
+      mutants: None,
       seed: 1,
       max_cases: 200,
       max_shrinks: 500,
@@ -704,6 +709,107 @@ pub fn run_hands_back_the_snapshot_that_did_not_compile_test() {
 }
 
 @target(erlang)
+/// The same type error, with twelve compiling functions under it.
+///
+/// Those twelve are there for their mutants alone: a validation that blames
+/// mutants one at a time for a workspace that does not compile pays a full
+/// copy and a cold build for every one of them, and the two mutants of
+/// `uncompilable_source` are far too few to see that happen.
+const wide_uncompilable_source = "pub fn broken(value: Int) -> Int {
+  value + \"one\"
+}
+
+pub fn f1(a: Int, b: Int) -> Int {
+  a + b + 1
+}
+
+pub fn f2(a: Int, b: Int) -> Int {
+  a + b + 2
+}
+
+pub fn f3(a: Int, b: Int) -> Int {
+  a + b + 3
+}
+
+pub fn f4(a: Int, b: Int) -> Int {
+  a + b + 4
+}
+
+pub fn f5(a: Int, b: Int) -> Int {
+  a + b + 5
+}
+
+pub fn f6(a: Int, b: Int) -> Int {
+  a + b + 6
+}
+
+pub fn f7(a: Int, b: Int) -> Int {
+  a + b + 7
+}
+
+pub fn f8(a: Int, b: Int) -> Int {
+  a + b + 8
+}
+
+pub fn f9(a: Int, b: Int) -> Int {
+  a + b + 9
+}
+
+pub fn f10(a: Int, b: Int) -> Int {
+  a + b + 10
+}
+
+pub fn f11(a: Int, b: Int) -> Int {
+  a + b + 11
+}
+
+pub fn f12(a: Int, b: Int) -> Int {
+  a + b + 12
+}
+"
+
+@target(erlang)
+/// A workspace that does not compile is blamed once, however many mutants the
+/// run selected in it.
+///
+/// The probe compile-checks the mutants it is about to instrument, and that
+/// check bisects to find the one the compiler is objecting to. When the
+/// objection is to the workspace itself every batch of it fails, and a bisect
+/// that does not know why walks the whole selection down to singletons: one
+/// copy of the workspace and one cold build per mutant before the build that
+/// finally says GMU8003. `run` and `list --validate` never pay it, because
+/// both build the workspace before they validate anything in it.
+///
+/// The bound is a ratio rather than a duration, so a slow machine cannot fail
+/// it: thirty-odd mutants may not cost twice what two cost, because neither
+/// may cost more than the two builds it takes to say the workspace is broken.
+pub fn run_blames_a_workspace_that_does_not_compile_once_test() {
+  let narrow_root =
+    workspace(stdlib_toml, [#("src/broken.gleam", uncompilable_source)])
+  let narrow_started = platform.monotonic_milliseconds()
+  let narrow = diff_runner.run(quick(narrow_root, ["src/broken.gleam"]))
+  let narrow_ms = platform.monotonic_milliseconds() - narrow_started
+  discard(narrow_root)
+  discard_run(narrow)
+
+  let wide_root =
+    workspace(stdlib_toml, [#("src/broken.gleam", wide_uncompilable_source)])
+  let wide_started = platform.monotonic_milliseconds()
+  let wide = diff_runner.run(quick(wide_root, ["src/broken.gleam"]))
+  let wide_ms = platform.monotonic_milliseconds() - wide_started
+  discard(wide_root)
+  discard_run(wide)
+
+  let assert Error(error) = wide
+  assert error.code == "GMU8003"
+  assert wide_ms <= narrow_ms * 2 + 5000
+  // Blamed as the workspace's failure, not as a mutant's: a run that reached
+  // GMU8003 by rejecting every mutant in turn would be reporting the build of
+  // the instrumented snapshot instead.
+  assert string.contains(error.message, "before anything is mutated")
+}
+
+@target(erlang)
 /// A module whose first function records on disk that it was called.
 ///
 /// `file:write_file/2` is reached directly rather than through simplifile, so
@@ -840,4 +946,121 @@ pub fn run_excluding_every_function_compiles_nothing_test() {
   })
   assert list.map(output.skipped, fn(entry) { entry.function })
     == ["shout", "add"]
+}
+
+// --- one mutant that does not compile ----------------------------------------
+//
+// `pipeline-stage-deletion` regularly produces a variant the compiler rejects,
+// which is expected and which `run` already handles one mutant at a time. The
+// probe instruments a whole file at once, so the same rejection used to take
+// every mutant of the file down with it. These two runs are the evidence that
+// it no longer does: the invalid mutant comes back as a verdict of its own,
+// and a run narrowed to another function never instruments it at all.
+
+@target(erlang)
+/// The report's own eight-line reproduction: deleting the pipeline stage
+/// leaves `parts`, a `List(String)`, where a `String` belongs.
+const uncompilable_mutant_source = "import gleam/string
+
+pub fn join(parts: List(String)) -> String {
+  parts
+  |> string.join(\"; \")
+}
+"
+
+@target(erlang)
+/// The same module, beside a function with nothing wrong with it.
+const narrowing_source = "import gleam/string
+
+pub fn join(parts: List(String)) -> String {
+  parts
+  |> string.join(\"; \")
+}
+
+pub fn add(a: Int, b: Int) -> Int {
+  a + b
+}
+"
+
+@target(erlang)
+/// The verdict reported for the one mutant of `output` made by `kind`.
+fn verdict_for(
+  output: diff_runner.RunOutput,
+  kind: operator.Operator,
+) -> Result(probe_result.ProbeResult, String) {
+  case list.filter(output.mutants, fn(item) { item.operator == kind }) {
+    [item] ->
+      list.find(output.results, fn(probe) { probe.mutant == item.id })
+      |> result.replace_error(
+        "no verdict was reported for the " <> operator.name(kind) <> " mutant",
+      )
+    found ->
+      Error(
+        int.to_string(list.length(found))
+        <> " "
+        <> operator.name(kind)
+        <> " mutants were discovered, expected exactly one",
+      )
+  }
+}
+
+@target(erlang)
+/// A mutant the compiler rejects is a verdict, not the end of the run.
+///
+/// The whole file used to fail with GMU8003 here. What has to happen instead
+/// is what `run` does: the invalid mutant is reported as one nothing can be
+/// written for, saying so in its reason, and the perfectly good mutant on the
+/// very same line is still probed and still told apart.
+pub fn run_reports_a_mutant_that_does_not_compile_as_unsupported_test() {
+  let root =
+    workspace(stdlib_toml, [#("src/repro.gleam", uncompilable_mutant_source)])
+  let outcome = diff_runner.run(quick(root, ["src/repro.gleam"]))
+  discard(root)
+  discard_run(outcome)
+
+  let assert Ok(output) = outcome
+  let assert Ok(rejected) = verdict_for(output, operator.PipelineStageDeletion)
+  assert rejected.function == "join"
+  assert rejected.status == probe_result.Unsupported
+  assert string.contains(rejected.reason, "does not compile")
+  assert rejected.kills == []
+  let assert Ok(kept) = verdict_for(output, operator.StringNeutral)
+  assert kept.function == "join"
+  assert kept.status == probe_result.Distinguished
+  // The function was probed, not walked past: only the one mutant is out.
+  assert output.skipped == []
+}
+
+@target(erlang)
+/// A run narrowed to one function instruments that function's mutants alone.
+///
+/// `join` holds the mutant nobody can build. A run that instruments every
+/// mutant it discovers would carry it into the snapshot however narrow the
+/// request was — which is exactly what `--mutant` and `explain` used to hit on
+/// the http corpus. Narrowing before instrumenting means the results never
+/// mention it at all.
+pub fn run_instruments_only_the_named_functions_mutants_test() {
+  let root = workspace(stdlib_toml, [#("src/narrow.gleam", narrowing_source)])
+  let outcome =
+    diff_runner.run(
+      diff_runner.Request(
+        ..quick(root, ["src/narrow.gleam"]),
+        function_filter: Some("add"),
+      ),
+    )
+  discard(root)
+  discard_run(outcome)
+
+  let assert Ok(output) = outcome
+  assert output.results != []
+  assert list.unique(list.map(output.results, fn(probe) { probe.function }))
+    == ["add"]
+  let assert Ok(uncompilable) =
+    list.find(output.mutants, fn(item) {
+      item.operator == operator.PipelineStageDeletion
+    })
+  assert list.all(output.results, fn(probe) { probe.mutant != uncompilable.id })
+  assert list.any(output.results, fn(probe) {
+    probe.status == probe_result.Distinguished
+  })
 }

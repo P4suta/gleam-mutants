@@ -22,6 +22,17 @@ pub type Status {
   Unsupported
 }
 
+/// Why a mutant an input divided from its original still has no test.
+///
+/// The search separates values structurally, and Erlang compares a fun by the
+/// environment it captured — but every assertion that can be written goes
+/// through `string.inspect`, which renders every fun as `//fn(a) { ... }`. A
+/// test written from such a separation passes with the mutant in place, which
+/// is worse than no test at all, so the probe reports the wall instead. The
+/// probe emits this reason and the host refuses to render anything whose two
+/// sides read alike, so the two speak with one voice.
+pub const inexpressible_reason = "original and mutant differ only by values no assertion can express (function values)"
+
 /// How one call ended.
 ///
 /// A call that did not return has no value to state, which is the difference

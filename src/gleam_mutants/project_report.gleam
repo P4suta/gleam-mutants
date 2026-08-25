@@ -28,7 +28,11 @@ pub fn write(
   use _ <- result.try(
     simplifile.create_directory_all(report_directory)
     |> result.map_error(fn(error) {
-      "could not create report directory: " <> simplifile.describe_error(error)
+      report_error(
+        "could not create report directory",
+        report_directory,
+        simplifile.describe_error(error),
+      )
     }),
   )
   use _ <- result.try(validate_destination(workspace, directory))
@@ -101,7 +105,13 @@ fn write_single(
   let report_directory = path.join(workspace, directory)
   use _ <- result.try(
     simplifile.create_directory_all(report_directory)
-    |> result.map_error(simplifile.describe_error),
+    |> result.map_error(fn(error) {
+      report_error(
+        "could not create report directory",
+        report_directory,
+        simplifile.describe_error(error),
+      )
+    }),
   )
   use _ <- result.try(validate_destination(workspace, directory))
   let target = path.join(report_directory, name)
@@ -125,12 +135,11 @@ fn stage(
     Ok(Nil) -> Ok(Nil)
     Error(error) -> {
       cleanup(target)
-      Error(
-        "could not stage "
-        <> label
-        <> " report: "
-        <> simplifile.describe_error(error),
-      )
+      Error(report_error(
+        "could not stage " <> label <> " report",
+        target,
+        simplifile.describe_error(error),
+      ))
     }
   }
 }
@@ -140,10 +149,11 @@ fn read_previous(target: String) -> Result(Option(BitArray), String) {
     Ok(bits) -> Ok(Some(bits))
     Error(simplifile.Enoent) -> Ok(None)
     Error(error) ->
-      Error(
-        "could not preserve previous report for rollback: "
-        <> simplifile.describe_error(error),
-      )
+      Error(report_error(
+        "could not preserve previous report for rollback",
+        target,
+        simplifile.describe_error(error),
+      ))
   }
 }
 
@@ -275,11 +285,22 @@ fn replace(
 ) -> Result(Nil, String) {
   simplifile.rename(at: temporary, to: target)
   |> result.map_error(fn(error) {
-    "could not atomically replace "
-    <> label
-    <> " report: "
-    <> simplifile.describe_error(error)
+    report_error(
+      "could not atomically replace " <> label <> " report",
+      target,
+      simplifile.describe_error(error),
+    )
   })
+}
+
+/// One project-report write failure, under its code and at its path.
+///
+/// A project report is written into the reader's own workspace, so a failure
+/// here is theirs to fix — a read-only checkout, a directory they do not own,
+/// a full disk. A bare errno names none of that, so every one of these carries
+/// `GMU6003` and the path it happened at.
+fn report_error(what: String, target: String, reason: String) -> String {
+  "GMU6003: " <> what <> " " <> target <> ": " <> reason
 }
 
 fn cleanup(target: String) -> Nil {

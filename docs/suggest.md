@@ -34,6 +34,46 @@ it was found from. Those kill sets are then **minimised** per function: the
 fewest tests that still kill everything any single test in the run could kill.
 Seven mutants often come back as three tests.
 
+## Side effects
+
+**The probe calls your code for real.** Every public function of the selected
+files is called, with generated arguments, in the environment the command was
+run in: the real home directory, the real cache directory, the real network,
+the real subprocess table. A function that writes a file writes it; one that
+deletes a directory deletes it; one that posts to an endpoint posts to it. It
+is called hundreds of times over — once per case, per mutant, per shrink step —
+and the generated test calls it again on every `gleam test` afterwards.
+
+**The snapshot isolates source, not effects.** The workspace is copied so that
+an instrumented mutant never touches your files, and everything a copy of your
+code reaches through an absolute path, an environment variable, a socket or a
+subprocess is the very thing the original would have reached. A twenty-line
+function writing `/tmp/<name>` under a generated `name` left 583 files behind
+in one `suggest` run while this was being measured.
+
+So run `suggest` where a stray write is harmless: a checkout, not a machine
+holding production credentials. Ways to keep a function out of the probe, in
+ascending order of what they give up:
+
+* **`exclude_functions`** in `[tools.gleam_mutants.suggest]` names the
+  functions the probe leaves alone. They are never compiled into a probe,
+  never called and never timed, and their mutants are reported as unsupported
+  so nothing the run selected goes unaccounted for. Write it down for anything
+  that touches the filesystem, the network, the clock or a subprocess before
+  you run `suggest` the first time.
+* **`--function <name>`** probes one function and nothing else; `--include
+  <glob>` narrows to one file and `--mutant <id-prefix>` to one mutant.
+  Whatever the narrowing leaves out is never compiled into a probe.
+* **Probe pure modules only.** Point the command at the files that compute
+  rather than act, and leave the ones that do I/O to tests you write yourself.
+  It gives up the most coverage and it is the only approach that needs nothing
+  configured.
+
+None of this is enforcement: `exclude_functions` is opt-in and per name, and a
+pure-looking function that calls an effectful one still performs the effect.
+Read the list of modules a run selected before you let it loose on a codebase
+you do not know.
+
 ## Commands
 
 ```sh
@@ -81,7 +121,70 @@ still answer from your last real `run`.
 `run --suggest` appends the suggestions for that run's own survivors under the
 normal summary. It never changes the run's exit code, and it is refused
 together with `run --json`, which prints exactly one JSON value; use
-`suggest --survivors` for a machine-readable answer.
+`suggest --survivors` for a machine-readable answer. A suggestion step that
+fails — on a workspace whose tests run on JavaScript, say — is printed as a
+warning under its own code, beside a run that still stands.
+
+### What `--verify` attributes
+
+Verification re-runs your whole suite, so "the mutant is dead" is not by itself
+"the generated test killed it": a mutant your own tests were already catching
+comes back dead whatever the new file does. `--verify` therefore grades the
+workspace **before** it writes as well as after, and says which side of the
+write is owed each kill.
+
+| Attribution | In Apply JSON v1 | Meaning |
+| --- | --- | --- |
+| newly killed | `new` | alive before the tests were written, or not discovered by that run at all; dead now |
+| already killed | `already_killed` | dead before the tests were written, and dead now |
+| still surviving | `surviving` | alive now, whatever it was before |
+
+`surviving`, and nothing else, is what exits 1. A mutant neither run
+discovered counts as surviving too: the file it came from was selected, so its
+absence is a finding rather than a pass.
+
+A generated test whose every claimed mutant comes back `already_killed` added
+no coverage — your own suite catches everything it catches — so it is named on
+stderr under `GMU8017` and deleting it costs you nothing. Only the tests that
+run wrote are judged that way. A test the module already held was in the suite
+while the baseline ran, so the baseline cannot say what it adds: a second
+`--verify` over an applied workspace writes nothing, reports its mutants as
+`already_killed`, and warns about none of them.
+
+**This costs two mutation runs where `--verify` used to cost one**, the first
+of them your whole suite over the same files, so expect roughly twice the wall
+time. The last line of every `--verify` says which run the attributions above
+it were graded against, because the two are not equally fresh:
+
+```text
+Baseline: a run of those files taken before the tests were written.
+Baseline: the last stored run, which started after everything in src/
+and test/ was last written; --no-reuse measures one instead.
+```
+
+The baseline run is skipped — the second line — when the workspace's last
+stored `run` is still a verdict on this workspace. Two things have to hold.
+It must have graded **every** mutant in question: a mutant id carries the
+digest of the source it was cut from, so an id that run named is a verdict on
+exactly that source, and nothing partial is reused, because a baseline missing
+one mutant would credit the generated tests with a kill nobody measured.
+
+The id says nothing about your **tests**, though, which are the other half of
+every kill — so the stored run must also have started after the last write to
+anything the suite is made of: `src/`, `test/`, `gleam.toml` and
+`manifest.toml`, directories included, so that a test module deleted since
+counts as a change too. Without that second condition, a run taken while a
+since-deleted test was killing a mutant would still call that mutant dead, and
+the generated test that now kills it would be reported as adding nothing and
+named under `GMU8017` — advice that deletes the only test standing.
+
+Modification times are what settle it, so a checkout that rewrote them, or a
+filesystem that keeps none, costs you the shortcut and nothing else. Pass
+`--no-reuse` to measure the baseline whatever the tree says.
+
+`run` followed by `apply --verify` therefore costs one verification run;
+`apply --verify` in a workspace with no history, after the sources or the
+tests have changed, or with `--no-reuse`, costs two.
 
 ### Flags
 
@@ -94,6 +197,7 @@ together with `run --json`, which prints exactly one JSON value; use
 | `--function <name>` | probe only the function of that name |
 | `--mutant <id-prefix>` | probe exactly one unambiguous mutant |
 | `--survivors` | keep only the latest stored report's survivors |
+| `--operator <name>` | select a mutation operator (repeatable) |
 | `--seed <n>` | fix the input search |
 | `--max-cases <n>` | inputs tried per mutant (1–100000) |
 | `--max-shrinks <n>` | shrinking steps taken (0–100000) |
@@ -101,8 +205,14 @@ together with `run --json`, which prints exactly one JSON value; use
 | `--style <value>` | `assert` or `should` |
 | `--json` | emit one JSON value instead of text |
 
-`apply` adds `--yes` and `--verify`. `explain` takes its mutant id as a
-positional argument and refuses `--mutant` beside it.
+`apply` adds `--yes`, `--verify` and `--no-reuse`. `explain` takes its mutant
+id as a positional argument and refuses `--mutant` beside it. `--operator`
+takes the same names `run --operator` and `list --operator` take, and
+overrides the workspace's own operator list for this run alone.
+
+Every one of these narrows the probe before anything is compiled: a run
+narrowed to one mutant, one operator or one report's survivors instruments only
+what it was asked about.
 
 ## Configuration
 
@@ -128,12 +238,29 @@ See [configuration](configuration.md) for the full ranges and precedence.
 Every selected mutant is accounted for exactly once, under one of four
 statuses.
 
-| Status | Meaning |
-| --- | --- |
-| distinguished | an input told the mutant apart; a test can be written |
-| indistinguishable | no input told it apart, so it is possibly equivalent |
-| nondeterministic | the original disagreed with itself, so no verdict holds |
-| unsupported | nothing could be probed; the reason says what stopped it |
+| Status | Meaning | Where it lands in `--json` |
+| --- | --- | --- |
+| distinguished | an input told the mutant apart; a test can be written | the `kills` of a `suggestions` entry |
+| indistinguishable | no input told it apart, so it is possibly equivalent | `indistinguishable` |
+| nondeterministic | the original disagreed with itself, so no verdict holds | `nondeterministic` |
+| unsupported | nothing could be probed; the reason says what stopped it | `unsupported` |
+
+Each of the four is a bucket of its own, and the text summary counts each of
+them separately: no consumer has to string-match a reason to recover the status
+this table names. A mutant the compiler rejects — a pipeline stage deletion that
+leaves the wrong type behind, most often — is reported as unsupported, with a
+reason beginning `mutant does not compile`, and every other mutant of its file
+is probed as usual. A mutant an input does divide from its original, but only
+by something no assertion can state — a result holding a function value, which
+`string.inspect` renders as `//fn(a) { ... }` on both sides — is reported as
+unsupported as well, rather than as a test that would pass with the mutant
+still in place.
+
+The `N of M distinguishable mutant(s)` the summary opens with counts *every*
+mutant an input told apart, whether or not a test could be written for it: a
+mutant separated and then refused — as unwritable, as inexpressible, or as
+bound to this machine — still counts towards `M`. `0 of 5` and `0 of 0` are
+different reports, and the first is the one that says where the run's gap is.
 
 **Indistinguishable is not proof of equivalence.** It means the search did not
 separate the mutant within its budget, and the number of cases tried is
@@ -150,6 +277,66 @@ in a module constant, is reported as unsupported for the same reason.
 
 Functions named in `exclude_functions` are skipped without being compiled into
 a probe at all, and their mutants are reported as unsupported.
+
+## How inputs are chosen
+
+Most of the values tried are drawn uniformly from the type: a random integer of
+the range, a random string of up to twenty printable ASCII characters, a random
+list. The rest is spent on values a uniform draw practically never produces,
+because those are the ones that separate a mutant:
+
+* **The edges of a range** — zero, both bounds, the neighbour just inside
+  either bound, and the units either side of zero. A boundary mutant (`>` for
+  `>=`) is told apart by an exact edge and by nothing else.
+* **A handful of shape-carrying strings** — `"a"`, `"ab"`, `"hello"`, `"0"`,
+  `" "`, `"\n"`, `"\r\n"`, `"/"`, `"./"` and `"\\"` — so a function that splits
+  on a separator or trims a line ending meets one.
+* **The literals the function under test writes down.** Every `Int`, `Float`
+  and `String` literal in the function's own body — at most thirty-two of each
+  kind — becomes a value its parameters are drawn from, in the expressions it
+  evaluates and in the patterns it matches on alike: `case method { "GET" -> …`
+  and `case path { "./" <> rest -> …` name their literal in a pattern and
+  nowhere else. A literal compared against with `<`, `<=`, `>` or `>=`
+  contributes its neighbours as well, so `x > 10` is searched with `10`, `9`
+  and `11`; a matched literal contributes none, because matching is equality.
+  A function holding `string.starts_with(s, "./")` is searched with `"./"`,
+  which twenty random characters would produce about once in nine thousand
+  draws.
+
+The first two take a quarter of the draws between them, whether or not the
+function writes any literal down: they are what separates a boundary mutant,
+and a function with literals in it is exactly the kind that also has one.
+Harvested literals are added on top rather than traded against them, taking an
+eighth of the draws of their own, so a couple of them are reached within the
+first tens of cases however many edges the type has. The remaining five eighths
+are the uniform draw.
+
+Raising `--max-cases` is rarely the lever it looks like: on real code, going
+from 200 to 2000 cases changed no verdict anywhere. Better priors are what move
+an `indistinguishable` into a suggestion.
+
+Once an input separates the mutant, it is shrunk to the smallest value that
+still does, with two rules that keep the result readable: at equal magnitude an
+integer prefers its non-negative form (so a test asserts on `1`, not `-1`), and
+a string never shrinks past a single character. The one way `""` reaches a
+suggestion is by having been *drawn*: the search keeps the first input that
+separates the mutant, and an empty string is a value like any other. Such a
+suggestion — `glob.included("", [""], []) == True` is a real one — pins an
+accident of an empty input rather than a behaviour, and is worth rejecting on
+sight. Records print with the labels their fields were declared with —
+`score.Score(total: 1, killed: 0, ...)` — so a six-field constructor is
+readable without opening the type.
+
+A suggestion whose inputs or expected value names an absolute path, this
+machine's home directory, its cache directory or its temporary directory is
+never written down — not by `suggest`, not by `apply`, and not by `explain`,
+which says `no test can be written: expected value depends on this machine` and
+prints the two answers instead. It is reported as unsupported, with that same
+reason. Such a test passes where it was generated and fails for everyone else.
+The absolute-path shapes are a fixed list — `/home/`, `/Users/`, `/root/`,
+`/tmp/`, `/var/folders/` and `C:\` — so a portable value that happens to hold
+one is refused too, and a home, cache or temporary directory that names nothing
+below its root (`HOME=/`) is ignored rather than allowed to refuse everything.
 
 ## Read the tests before you keep them
 
@@ -196,6 +383,18 @@ module it tests, so a project that lints its own copyright still passes on the
 file it was handed. A module you already have is left with the header you gave
 it.
 
+**Known limitation: two test modules for one source module.** The destination
+is computed from the source path alone, so a project whose tests live in a tree
+— `test/gleam/erlang/atom_test.gleam` for `src/gleam/erlang/atom.gleam` — gains
+`test/gleam_erlang_atom_test.gleam` beside it, and that module is then covered
+by two test files. Both compile and both run, nothing is overwritten and no
+test of yours is lost, but it is the first thing a reviewer asks about. Moving
+the generated tests by hand into the file you already have is the fix, with one
+catch: `apply` reads only its own flat target to decide what is already
+present, so a later run adds them back to the flat file. Delete the generated
+module rather than empty it if you do not want it regenerated, and re-run
+`suggest` rather than `apply` once the tests live somewhere else.
+
 ## Error codes
 
 All three commands share the `GMU8xxx` range. Every one of these exits 2.
@@ -204,7 +403,7 @@ All three commands share the `GMU8xxx` range. Every one of these exits 2.
 | --- | --- |
 | `GMU8001` | the workspace's tests run on JavaScript, which these commands do not support |
 | `GMU8002` | a selected file is not a Gleam source covered by the mutation includes |
-| `GMU8003` | the instrumented snapshot did not compile |
+| `GMU8003` | the snapshot did not compile, before or after instrumenting |
 | `GMU8004` | a probe timed out or exited non-zero |
 | `GMU8005` | a probe printed lines that are not results |
 | `GMU8006` | two selected files would generate one probe module; probe them separately |
@@ -218,9 +417,37 @@ All three commands share the `GMU8xxx` range. Every one of these exits 2.
 | `GMU8015` | a target test module could not be read or written |
 | `GMU8016` | `gleam format` refused a file that was written |
 
-One diagnostic is a warning rather than a failure. It is written to stderr,
-`--quiet` does not silence it, and the command still exits 0.
+Two diagnostics are warnings rather than failures.
 
 | Code | Meaning |
 | --- | --- |
-| `GMU8012` | `--function` named a function no selected file has a mutant in |
+| `GMU8012` | `--function` named a function this run selected no mutant in |
+| `GMU8017` | `apply --verify` wrote a test whose every claimed mutant was already dead |
+
+A third path turns any code in this range into a warning: `run --suggest`
+reports a suggestion step that failed under the code that step raised, because
+the run itself already graded its mutants and succeeded. A workspace whose
+tests run on JavaScript therefore ends a successful `run --suggest` with
+
+```text
+gleam-mutants: GMU8001: suggest supports the Erlang target only
+```
+
+rather than failing it. Run `suggest` on its own to get the same refusal as an
+exit 2.
+
+Every warning is written to stderr, `--quiet` silences none of them, and none
+changes the exit code: a run that raises only these still exits 0. In the
+terminal each line names its code exactly once; under `--log-format json` the
+code is in the `code` field, the way a failure carries it.
+
+A `GMU8017` raised against a baseline reused from a stored run is a claim
+about the tests that were in the tree when that run was taken. Only a stored
+run younger than every one of them is reused, so the two are the same tests —
+but if you have reason to doubt the timestamps, `--no-reuse` re-asks the
+question against a baseline measured on the spot before you delete anything.
+
+`apply --verify` drives the mutation engine, so it can also fail under the
+engine's own codes rather than one of these — `GMU7004` for a special file the
+snapshot refuses to copy, `GMU7005` for a cache directory it cannot create,
+for instance. Those name the path they failed at.

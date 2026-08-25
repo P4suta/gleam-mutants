@@ -334,12 +334,31 @@ pub fn string_is_short_printable_ascii_test() {
   assert list.any(codes, fn(code) { code > 100 })
 }
 
+/// Length shrinks before characters, and the floor is one character.
+///
+/// Re-pinned for the shrink policy this milestone changes: the empty string
+/// is no longer offered as a candidate, because a test asserting on `""` pins
+/// an accident rather than a behaviour (`glob.included("", [""], []) == True`
+/// was the measured example). A string of two characters or more still
+/// collapses by length first; a string of one has nothing shorter to offer and
+/// moves its character towards `"a"` instead; the empty string is still a
+/// leaf, because it is only ever reached by being drawn.
 pub fn string_shrinks_length_before_characters_test() {
   let trees = sample_trees(pbt.string(), pbt.seed(15), 100)
+  assert list.any(trees, fn(tree) { string.length(pbt.tree_root(tree)) == 1 })
   assert list.all(trees, fn(tree) {
     let root = pbt.tree_root(tree)
     case string.length(root) {
       0 -> list.is_empty(pbt.tree_children(tree))
+      1 ->
+        case root == "a" {
+          True -> list.is_empty(pbt.tree_children(tree))
+          False ->
+            child_roots(tree) != []
+            && list.all(child_roots(tree), fn(child) {
+              string.length(child) == 1
+            })
+        }
       length ->
         case list.first(child_roots(tree)) {
           Ok(first) -> string.length(first) < length
@@ -347,6 +366,51 @@ pub fn string_shrinks_length_before_characters_test() {
         }
     }
   })
+}
+
+/// The empty string is a value, not a shrink target.
+///
+/// Shrinking towards `""` is minimal and meaningless: measured on real code it
+/// produced `render.import_line(render.Requirement("", None, ["", ""]))
+/// == "import .{, }"`, which pins an artefact of an empty module name. A drawn
+/// string keeps at least one character, whatever it shrinks to.
+///
+/// Stated twice, because an exhaustive walk of a shrink tree is exponential:
+/// once one step deep over every string drawn, which is the whole statement by
+/// induction — a tree whose every child is non-empty and built the same way
+/// holds no empty string anywhere — and once four steps deep over the roots
+/// short enough to enumerate, which is where a length actually collapses.
+pub fn string_never_shrinks_to_the_empty_string_test() {
+  let trees = sample_trees(pbt.string(), pbt.seed(15), 100)
+  let nonempty = list.filter(trees, fn(tree) { pbt.tree_root(tree) != "" })
+  assert nonempty != []
+  assert list.all(nonempty, fn(tree) { !list.contains(child_roots(tree), "") })
+
+  let short =
+    list.filter(nonempty, fn(tree) { string.length(pbt.tree_root(tree)) <= 2 })
+  assert short != []
+  assert list.all(short, fn(tree) {
+    !list.contains(descendant_roots(tree, 4), "")
+  })
+}
+
+/// A property nothing satisfies shrinks to one character, not to none.
+pub fn string_shrinks_to_a_single_character_test() {
+  let assert Found(shrunk:, original:, ..) =
+    pbt.find_counterexample(pbt.string(), pbt.seed(15), 200, 500, fn(_) {
+      False
+    })
+  assert original != ""
+  assert shrunk == "a"
+}
+
+/// Unless the empty string is what was drawn: then it is the counterexample.
+pub fn string_keeps_the_empty_string_it_actually_drew_test() {
+  let empty_seed = first_seed_drawing_empty(pbt.seed(1), 500)
+  let assert Found(shrunk:, original:, ..) =
+    pbt.find_counterexample(pbt.string(), empty_seed, 200, 500, fn(_) { False })
+  assert original == ""
+  assert shrunk == ""
 }
 
 pub fn bit_array_is_at_most_sixteen_bytes_test() {
@@ -464,12 +528,59 @@ pub fn int_shrinks_to_the_smallest_failing_value_test() {
   assert shrinks == 4
 }
 
+/// A property that only negatives fail still reports a negative.
+///
+/// The new preference offers `-v` before the smaller magnitudes, and `5` here
+/// satisfies `x > -5`: a candidate that passes is not taken, so the answer is
+/// unchanged.
 pub fn int_shrinks_towards_zero_from_below_test() {
   let assert Found(shrunk:, ..) =
     pbt.find_counterexample(pbt.int(-100, 100), pbt.seed(77), 200, 500, fn(x) {
       x > -5
     })
   assert shrunk == -5
+}
+
+/// When both signs fail, the answer is the positive one.
+///
+/// `Score(total: 1, killed: 0, timed_out: -1, ..)` was the measured example:
+/// separating `killed + timed_out` from `killed - timed_out` only needs
+/// `timed_out != 0`, and at magnitude 1 the search chose `-1`, producing the
+/// nonsense expected value `"0% (-1/1)"`. At equal magnitude the non-negative
+/// representative is the one a reader can check by eye, so it is offered
+/// first.
+pub fn int_prefers_the_non_negative_representative_test() {
+  let assert Found(shrunk:, ..) =
+    pbt.find_counterexample(pbt.int(-100, 100), pbt.seed(1), 200, 500, fn(x) {
+      x == 0
+    })
+  assert shrunk == 1
+}
+
+/// The mirrored candidate belongs to the range, and comes before the halvings.
+pub fn int_offers_the_mirror_of_a_negative_value_test() {
+  let trees = sample_trees(pbt.int(-100, 100), pbt.seed(3), 200)
+  let negatives = list.filter(trees, fn(tree) { pbt.tree_root(tree) < -1 })
+  assert negatives != []
+  assert list.all(negatives, fn(tree) {
+    child_roots(tree) |> list.take(2) == [0, 0 - pbt.tree_root(tree)]
+  })
+
+  // A range that does not hold the mirror never offers it: `-7` mirrors to
+  // `7`, which `-100..-3` has no room for.
+  let below = sample_trees(pbt.int(-100, -3), pbt.seed(3), 200)
+  assert list.all(below, fn(tree) {
+    list.all(child_roots(tree), fn(child) { child >= -100 && child <= -3 })
+  })
+}
+
+/// A float shrinking from below is unchanged: `2.5` satisfies `x >. -2.5`.
+pub fn float_prefers_the_non_negative_representative_test() {
+  let assert Found(shrunk:, ..) =
+    pbt.find_counterexample(pbt.float(), pbt.seed(46), 200, 500, fn(x) {
+      x == 0.0
+    })
+  assert shrunk >. 0.0
 }
 
 pub fn mapped_generator_keeps_shrinking_test() {
@@ -567,7 +678,214 @@ pub fn shrink_budget_is_respected_test() {
   assert shrunk >= 10
 }
 
+// --- Hinted generators ------------------------------------------------------
+//
+// Raising `--max-cases` from 200 to 2000 and changing the seed moved nothing
+// on real code: more budget is not the lever, better priors are. A literal the
+// function under test writes down is a value the search has to be told about,
+// because a uniform draw over `-100..100` or over printable ASCII practically
+// never produces it.
+
+/// Every hint is reached inside the first hundred cases, whatever the seed.
+///
+/// Stated over three seeds and a hundred draws rather than over one seed and
+/// forty: `pbt.seed(1)` opens with `48271`, a draw so far below every bucket
+/// boundary that a one-seed test of the first few values would keep passing
+/// even if the hints had been given a single draw in a million. What is being
+/// pinned is the rate, so the test has to be wide enough to measure one.
+pub fn int_with_hints_reaches_every_hint_early_test() {
+  assert list.filter(seeds(), fn(seed) {
+      let values =
+        sample(pbt.int_with_hints(-100, 100, [42, -37]), pbt.seed(seed), 100)
+      !list.contains(values, 42) || !list.contains(values, -37)
+    })
+    == []
+}
+
+/// Hints are added to the search, not traded against the edges.
+///
+/// The edges are what separates a boundary mutant, and a function that writes
+/// a literal down is exactly the kind that also has one: spending half of the
+/// interesting quarter on the hints would have halved the edge coverage of
+/// every such function. The built-in quarter is left alone and the hints take
+/// a bucket of their own, so the hinted generator draws an edge as often as
+/// the plain one does.
+pub fn int_with_hints_keeps_the_built_in_interesting_values_test() {
+  let edges = [0, -100, 100, -99, 99, 1, -1]
+  assert list.filter(seeds(), fn(seed) {
+      let hinted =
+        sample(pbt.int_with_hints(-100, 100, [42, -37]), pbt.seed(seed), 400)
+      let plain = sample(pbt.int(-100, 100), pbt.seed(seed), 400)
+      let drawn = fn(values) { list.count(values, list.contains(edges, _)) }
+      // A quarter of 400 is 100, and the uniform draws add a handful more.
+      drawn(hinted) < 80 || drawn(hinted) > 140 || drawn(plain) < 80
+    })
+    == []
+
+  let values = sample(pbt.int_with_hints(-100, 100, [42]), pbt.seed(1), 200)
+  assert list.filter(edges, fn(edge) { !list.contains(values, edge) }) == []
+}
+
+/// A hint the range does not hold is not a value the range can produce.
+pub fn int_with_hints_drops_a_hint_outside_the_range_test() {
+  let values = sample(pbt.int_with_hints(0, 10, [42, 7, -3]), pbt.seed(1), 200)
+  assert list.all(values, fn(value) { value >= 0 && value <= 10 })
+  assert list.contains(values, 7)
+}
+
+/// An eighth of the draws are spent on the hints, and no more: five draws in
+/// eight still cover the range uniformly.
+pub fn int_with_hints_spends_an_eighth_of_its_draws_on_the_hints_test() {
+  assert list.filter(seeds(), fn(seed) {
+      let values =
+        sample(pbt.int_with_hints(-100, 100, [42, -37]), pbt.seed(seed), 400)
+      let picked = list.count(values, fn(value) { value == 42 || value == -37 })
+      // An eighth of 400 is 50, and the uniform draws add a couple more.
+      picked < 25 || picked > 90
+    })
+    == []
+
+  // The rest is the ordinary uniform draw: values nothing named at all still
+  // come out, and they cover both signs.
+  let values = sample(pbt.int_with_hints(-100, 100, [42]), pbt.seed(9), 400)
+  let plain =
+    list.filter(values, fn(value) {
+      !list.contains([42, 0, -100, 100, -99, 99, 1, -1], value)
+    })
+  assert list.length(plain) * 2 > 400
+  assert list.any(plain, fn(value) { value > 0 })
+  assert list.any(plain, fn(value) { value < 0 })
+}
+
+pub fn int_with_hints_is_deterministic_test() {
+  assert sample(pbt.int_with_hints(-100, 100, [42]), pbt.seed(9), 100)
+    == sample(pbt.int_with_hints(-100, 100, [42]), pbt.seed(9), 100)
+}
+
+/// A hinted value is not a leaf: it shrinks the way any value of the range
+/// does, so a hint that happens to be large still collapses.
+pub fn int_with_hints_shrinks_a_hint_with_the_normal_tree_test() {
+  let trees = sample_trees(pbt.int_with_hints(0, 100, [42]), pbt.seed(1), 200)
+  let hinted = list.filter(trees, fn(tree) { pbt.tree_root(tree) == 42 })
+  assert hinted != []
+  assert list.all(hinted, fn(tree) { list.first(child_roots(tree)) == Ok(0) })
+}
+
+/// A hinted string is reached inside the first hundred cases, at any seed.
+pub fn string_with_hints_reaches_every_hint_early_test() {
+  assert list.filter(seeds(), fn(seed) {
+      let values =
+        sample(pbt.string_with_hints(["./", "GET"]), pbt.seed(seed), 100)
+      !list.contains(values, "./") || !list.contains(values, "GET")
+    })
+    == []
+}
+
+/// The built-in set carries the shapes a uniform draw never makes: a line
+/// ending, a path separator, a backslash.
+pub fn string_with_hints_reaches_the_built_in_interesting_strings_test() {
+  let values = sample(pbt.string_with_hints([]), pbt.seed(1), 400)
+  assert list.filter(pbt.interesting_strings, fn(interesting) {
+      !list.contains(values, interesting)
+    })
+    == []
+  assert pbt.interesting_strings
+    == ["a", "ab", "hello", "0", " ", "\n", "\r\n", "/", "./", "\\"]
+}
+
+/// The built-in strings keep their quarter and the hints take an eighth of
+/// their own, exactly as the integers do — and five draws in eight are still
+/// the ordinary uniform strings.
+pub fn string_with_hints_spends_an_eighth_of_its_draws_on_the_hints_test() {
+  assert list.filter(seeds(), fn(seed) {
+      // Hints the built-in set does not already hold, so that the two buckets
+      // are told apart by the values they produce.
+      let values =
+        sample(pbt.string_with_hints(["GET", "POST"]), pbt.seed(seed), 400)
+      let hinted =
+        list.count(values, fn(value) { value == "GET" || value == "POST" })
+      let built_in =
+        list.count(values, list.contains(pbt.interesting_strings, _))
+      // An eighth of 400 is 50 and a quarter is 100; a hinted draw costs one
+      // draw where a uniform string costs one per character, so the shares a
+      // sample shows are near those figures rather than on them.
+      hinted < 20 || hinted > 90 || built_in < 70 || built_in > 140
+    })
+    == []
+
+  let values = sample(pbt.string_with_hints(["./"]), pbt.seed(9), 400)
+  let union = ["./", ..pbt.interesting_strings]
+  let plain = list.filter(values, fn(value) { !list.contains(union, value) })
+  assert list.length(plain) * 2 > 400
+  assert list.any(plain, fn(value) { string.length(value) > 4 })
+}
+
+pub fn string_with_hints_is_deterministic_test() {
+  assert sample(pbt.string_with_hints(["./"]), pbt.seed(9), 100)
+    == sample(pbt.string_with_hints(["./"]), pbt.seed(9), 100)
+}
+
+/// A hinted string shrinks the way any drawn string does — length first, then
+/// characters towards `"a"` — and never to the empty string.
+pub fn string_with_hints_shrinks_a_hint_with_the_normal_tree_test() {
+  let trees = sample_trees(pbt.string_with_hints(["./"]), pbt.seed(1), 200)
+  let hinted = list.filter(trees, fn(tree) { pbt.tree_root(tree) == "./" })
+  assert hinted != []
+  assert list.all(hinted, fn(tree) {
+    let children = child_roots(tree)
+    children != []
+    && list.all(children, fn(child) { string.length(child) >= 1 })
+  })
+}
+
+/// A hinted float is reached inside the first hundred cases, at any seed.
+pub fn float_with_hints_reaches_every_hint_early_test() {
+  assert list.filter(seeds(), fn(seed) {
+      let values =
+        sample(pbt.float_with_hints([2.5, -0.125]), pbt.seed(seed), 100)
+      !list.contains(values, 2.5) || !list.contains(values, -0.125)
+    })
+    == []
+}
+
+pub fn float_with_hints_is_deterministic_test() {
+  assert sample(pbt.float_with_hints([2.5]), pbt.seed(9), 100)
+    == sample(pbt.float_with_hints([2.5]), pbt.seed(9), 100)
+}
+
+/// A hinted search finds the one input that separates a literal comparison.
+///
+/// `string.starts_with(s, "./")` is the measured case: with uniform strings
+/// the probability of drawing a match is about one in nine thousand, so 200
+/// cases never reached it. Told the literal, the search reaches it in a
+/// handful.
+pub fn string_with_hints_separates_a_literal_prefix_test() {
+  let assert Found(shrunk:, ..) =
+    pbt.find_counterexample(
+      pbt.string_with_hints(["./"]),
+      pbt.seed(1),
+      200,
+      500,
+      fn(s) { !string.starts_with(s, "./") },
+    )
+  assert shrunk == "./"
+
+  assert pbt.find_counterexample(pbt.string(), pbt.seed(1), 200, 500, fn(s) {
+      !string.starts_with(s, "./")
+    })
+    == NotFound(200)
+}
+
 // --- Helpers ----------------------------------------------------------------
+
+/// The seeds a rate is measured at.
+///
+/// A generator's bias is a property of every seed, not of the one a test was
+/// written against: measuring it at three tells a real rate apart from an
+/// artefact of where a particular MINSTD run happens to start.
+fn seeds() -> List(Int) {
+  [1, 9, 12_345]
+}
 
 fn take_values(seed: pbt.Seed, count: Int) -> List(Int) {
   case count {
@@ -681,6 +999,32 @@ fn node(value: a, children: List(a)) -> pbt.Tree(a) {
 fn child_roots(tree: pbt.Tree(a)) -> List(a) {
   pbt.tree_children(tree)
   |> list.map(pbt.tree_root)
+}
+
+/// Every value reachable from `tree` within `depth` shrink steps, root aside.
+fn descendant_roots(tree: pbt.Tree(a), depth: Int) -> List(a) {
+  case depth <= 0 {
+    True -> []
+    False ->
+      pbt.tree_children(tree)
+      |> list.flat_map(fn(child) {
+        [pbt.tree_root(child), ..descendant_roots(child, depth - 1)]
+      })
+  }
+}
+
+/// The first seed at or after `from` whose next string draw is empty.
+fn first_seed_drawing_empty(from: pbt.Seed, remaining: Int) -> pbt.Seed {
+  case remaining <= 0 {
+    True -> from
+    False -> {
+      let #(tree, advanced) = pbt.generate(pbt.string(), from)
+      case pbt.tree_root(tree) == "" {
+        True -> from
+        False -> first_seed_drawing_empty(advanced, remaining - 1)
+      }
+    }
+  }
 }
 
 fn character_codes(value: String) -> List(Int) {

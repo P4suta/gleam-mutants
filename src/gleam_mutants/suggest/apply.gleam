@@ -23,6 +23,7 @@
 
 import glance
 import gleam/bit_array
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -112,6 +113,56 @@ pub fn write(
     list.map(changed, fn(resolution) { resolution.plan.file }),
   ))
   plans
+}
+
+// --- Where a verified kill came from -----------------------------------------
+
+/// What one mutant's death is owed to, once the generated tests are in place.
+///
+/// `--verify` is worth something only when it can tell a mutant the generated
+/// tests killed from one the reader's own suite was already killing. A test
+/// whose whole kill set was dead before it was written added nothing, however
+/// green the run that followed it; a mutant alive afterwards is the failure
+/// the flag exists to catch.
+pub type Attribution {
+  /// Alive, or never discovered, before the tests were written; dead now.
+  NewlyKilled
+  /// Dead before the tests were written, and dead now: the test added nothing.
+  AlreadyKilled
+  /// Alive after the tests were written, whatever it was before.
+  StillSurviving
+}
+
+/// What became of every mutant in `ids`, from the runs either side of the
+/// write.
+///
+/// `before` and `after` each map a mutant id to whether that run found it
+/// dead. A mutant no run discovered is absent from that map, which is not a
+/// kill: the file it came from was selected, so its absence is a finding
+/// rather than a pass. `after` decides first — a mutant alive now is
+/// surviving even if it was dead before the tests were written — and every id
+/// is answered in the order it was given.
+pub fn attribute(
+  ids: List(String),
+  before: dict.Dict(String, Bool),
+  after: dict.Dict(String, Bool),
+) -> List(#(String, Attribution)) {
+  list.map(ids, fn(id) {
+    case dict.get(after, id), dict.get(before, id) {
+      Ok(True), Ok(True) -> #(id, AlreadyKilled)
+      Ok(True), _ -> #(id, NewlyKilled)
+      _, _ -> #(id, StillSurviving)
+    }
+  })
+}
+
+/// The name one attribution carries in Apply JSON v1.
+pub fn attribution_name(value: Attribution) -> String {
+  case value {
+    NewlyKilled -> "new"
+    AlreadyKilled -> "already_killed"
+    StillSurviving -> "surviving"
+  }
 }
 
 // --- Resolving one test module -----------------------------------------------

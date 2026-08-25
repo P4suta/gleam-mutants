@@ -94,6 +94,14 @@ accept `--root`; without it, the nearest parent `gleam.toml` is selected. Run
 mutant with the input that separates it; both probe the workspace differentially
 and run on the Erlang target only.
 
+**The probe calls every public function of the selected modules for real**, with
+generated arguments, in the environment you ran it in — the snapshot isolates
+source, not effects, so a function that writes files, deletes directories or
+talks to the network does exactly that, hundreds of times. Name such functions
+in `exclude_functions`, or narrow the run with `--function` or `--include`, and
+see [side effects](docs/suggest.md#side-effects) before pointing `suggest` at
+code you do not know.
+
 `apply` writes those tests into your own test modules, one flat file per module
 under test: `src/app/util.gleam` is tested by `test/app_util_test.gleam`.
 Without `--yes` it is a dry run that only prints the files and tests it would
@@ -103,7 +111,13 @@ already binds it under, and running `gleam format` over what it touched.
 `--verify` implies `--yes` and then re-runs the mutation engine over those
 source files, exiting 1 if any mutant the new tests claim to kill is still
 alive; that run stores no
-report of its own, so `report latest` still answers from your last `run`.
+report of its own, so `report latest` still answers from your last `run`. It
+also grades the workspace before it writes, so each mutant is reported as
+newly killed, already killed by your own tests, or still surviving, and a
+generated test that added nothing is warned about — two mutation runs instead
+of one, unless your last stored `run` graded every mutant in question and
+started after the last write to `src/` or `test/`, which `--no-reuse`
+refuses.
 `run --suggest` prints the suggestions for that run's own survivors under the
 normal summary and never changes its exit code; it is refused with `--json`,
 which prints exactly one JSON value. A generated test pins the behaviour the
@@ -155,10 +169,17 @@ native history. Fixed project filenames remain `mutation.json` and
 
 The original source files are read only: the only normal project writes are the
 two report files above, plus the test modules `apply --yes` is explicitly asked
-to write. `gleam_mutants` creates a sorted disposable snapshot,
+to write. That covers what the tool writes, not what your code writes when
+`suggest`, `explain` or `apply` call it — see
+[side effects](docs/suggest.md#side-effects).
+`gleam_mutants` creates a sorted disposable snapshot,
 excludes the effective report directory from its manifest and cache fingerprint,
 rejects symlinks, junctions and special files, and performs all build and test
-work there. A bounded parallel worker pool uses independent snapshots,
+work there. A refused special file is reported as `GMU7004` and names the path
+and a way past it; a cache directory that cannot be created fails under
+`GMU7005`, and a report the tool cannot write under `GMU6002` (native history)
+or `GMU6003` (project reports) — each naming the path it failed at, rather
+than as a bare errno. A bounded parallel worker pool uses independent snapshots,
 reuses each worker's local build cache between mutant waves, and terminates full
 process trees on timeout or interruption. Generated runtime modules exist only
 in those snapshots. The tool performs no telemetry and no runtime network

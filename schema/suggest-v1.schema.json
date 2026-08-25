@@ -4,12 +4,13 @@
   "title": "gleam-mutants suggest output v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "suggestions", "indistinguishable", "unsupported", "skipped", "survivors_missing"],
+  "required": ["schema_version", "suggestions", "indistinguishable", "nondeterministic", "unsupported", "skipped", "survivors_missing"],
   "properties": {
     "schema_version": { "const": 1 },
     "workspace_digest": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
     "suggestions": { "type": "array", "items": { "$ref": "#/$defs/suggestion" } },
     "indistinguishable": { "type": "array", "items": { "$ref": "#/$defs/indistinguishable" } },
+    "nondeterministic": { "type": "array", "items": { "$ref": "#/$defs/nondeterministic" } },
     "unsupported": { "type": "array", "items": { "$ref": "#/$defs/unsupported" } },
     "skipped": { "type": "array", "items": { "$ref": "#/$defs/skipped" } },
     "survivors_missing": { "type": "array", "items": { "type": "string" } }
@@ -55,8 +56,20 @@
         "cases": { "type": "integer", "minimum": 0 }
       }
     },
+    "nondeterministic": {
+      "description": "Every selected mutant whose original disagreed with itself, so that no verdict was possible. A status of its own rather than a kind of `unsupported`: nothing is wrong with the mutant, the function under test simply does not answer the same way twice.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mutant_id", "display_id", "function", "reason"],
+      "properties": {
+        "mutant_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
+        "display_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{20,64}$" },
+        "function": { "type": "string" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
     "unsupported": {
-      "description": "Every selected mutant no test can be written for, and which wall was hit. A run reports each mutant it selected exactly once: here, in `indistinguishable`, or in the `kills` of a suggestion.",
+      "description": "Every selected mutant no test can be written for, and which wall was hit. A run reports each mutant it selected exactly once: here, in `indistinguishable`, in `nondeterministic`, or in the `kills` of a suggestion.",
       "type": "object",
       "additionalProperties": false,
       "required": ["mutant_id", "display_id", "function", "reason"],

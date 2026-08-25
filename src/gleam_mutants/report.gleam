@@ -293,17 +293,36 @@ fn run_directory(workspace: String) -> String {
   |> path.join("runs")
 }
 
+/// Stores `report` in the workspace's own run history, answering with its path.
+///
+/// Every failure here is a filesystem failure, and a bare errno tells a reader
+/// neither which of the several files a run writes went wrong nor where it
+/// was: a sandbox that leaves the cache directory read-only used to fail a
+/// whole mutation run with nothing but `Read-only file system`. So each one is
+/// reported under `GMU6002` and names the path it happened at.
 pub fn save(report: RunReport, workspace: String) -> Result(String, String) {
   let directory = run_directory(workspace)
   use _ <- result.try(
     simplifile.create_directory_all(directory)
-    |> result.map_error(simplifile.describe_error),
+    |> result.map_error(fn(error) {
+      history_error(directory, simplifile.describe_error(error))
+    }),
   )
   let target = path.join(directory, report.run_id <> ".json")
   let text = to_json(report) <> "\n"
-  use _ <- result.try(write_atomic(target, text))
-  use _ <- result.try(write_atomic(path.join(directory, "latest.json"), text))
+  use _ <- result.try(
+    write_atomic(target, text) |> result.map_error(history_error(target, _)),
+  )
+  let latest = path.join(directory, "latest.json")
+  use _ <- result.try(
+    write_atomic(latest, text) |> result.map_error(history_error(latest, _)),
+  )
   Ok(target)
+}
+
+/// One report-history failure, under its code and at the path it happened.
+fn history_error(target: String, reason: String) -> String {
+  "GMU6002: could not write report history " <> target <> ": " <> reason
 }
 
 pub fn latest(workspace: String) -> Result(String, String) {
@@ -338,6 +357,39 @@ pub fn covered_paths(json: String) -> Result(List(String), String) {
   graded
   |> list.map(fn(entry) { entry.2 })
   |> list.unique
+}
+
+/// Every mutant a stored Run Report v1 document graded, and whether it died.
+///
+/// `json` is the text of a native report, as `latest` answers with. A mutant
+/// is keyed by the id it ran under, which carries the digest of the source it
+/// was cut from, so a caller can tell a verdict about this source from one
+/// about an older copy of it. Dead means what the mutation score means by it:
+/// a mutant that hung the suite counts as detected, exactly as `--verify`
+/// counts one.
+pub fn graded_outcomes(json: String) -> Result(List(#(String, Bool)), String) {
+  use graded <- result.map(graded_mutants(json))
+  list.map(graded, fn(entry) {
+    #(entry.0, entry.1 == "killed" || entry.1 == "timed-out")
+  })
+}
+
+/// When the run a stored Run Report v1 document describes began.
+///
+/// `--verify` reuses a stored run as its baseline only where that run is
+/// still a verdict on the workspace in front of it, and the moment it started
+/// is what that is judged against: a source file or a test module written
+/// since is a file the run never saw. A document that names no start is
+/// refused rather than read as the epoch, which would make every stored run
+/// look older than everything.
+pub fn run_started_ms(json: String) -> Result(Int, String) {
+  json.parse(json, {
+    use started <- decode.field("started_ms", decode.int)
+    decode.success(started)
+  })
+  |> result.map_error(fn(error) {
+    "not a native Run Report v1 document: " <> string.inspect(error)
+  })
 }
 
 /// Every graded mutant of a stored report as `#(id, aggregate, path)`.

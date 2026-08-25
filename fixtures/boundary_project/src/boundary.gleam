@@ -6,6 +6,7 @@
 // different branch of the suggestion probe.
 
 import gleam/option.{type Option, None, Some}
+import gleam/string
 
 pub type Shape {
   Circle(radius: Int)
@@ -54,4 +55,16 @@ pub fn uses_helper(x: Int) -> Int {
 /// `+ 0` is what gives the function-typed parameter a mutant to report at all.
 pub fn applies(f: fn(Int) -> Int, x: Int) -> Int {
   f(x) + 0
+}
+
+/// Holds a mutant that does not type check, beside one that does.
+///
+/// Deleting the pipeline stage leaves `parts`, a `List(String)`, where the
+/// annotation promises a `String`: the compiler rejects it, exactly as `run`
+/// rejects it. Turning the separator into `""` is a perfectly good mutant on
+/// the very same line, and the one the probe has to keep reporting on — a
+/// single mutant nobody can build must not take the whole file down.
+pub fn join(parts: List(String)) -> String {
+  parts
+  |> string.join("; ")
 }

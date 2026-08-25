@@ -40,8 +40,11 @@ import simplifile
 /// the budgets, and the mutation `includes` supply the files. `changed`,
 /// `includes`, `function` and `mutant_prefix` each narrow the selection
 /// further, and `survivors_only` narrows it to the mutants the latest stored
-/// report saw survive. `budget_ms` bounds one whole probe process, and `style`
-/// picks the form the generated tests are written in.
+/// report saw survive. `operators` narrows the selection to the named mutation
+/// operators, exactly as `run --operator` and `list --operator` do, and an
+/// empty list leaves every configured operator in play. `budget_ms` bounds one
+/// whole probe process, and `style` picks the form the generated tests are
+/// written in.
 pub type SuggestOptions {
   SuggestOptions(
     changed: Option(String),
@@ -49,6 +52,7 @@ pub type SuggestOptions {
     function: Option(String),
     mutant_prefix: Option(String),
     survivors_only: Bool,
+    operators: List(operator.Operator),
     seed: Option(Int),
     max_cases: Option(Int),
     max_shrinks: Option(Int),
@@ -80,20 +84,24 @@ pub type Unsupported {
 ///
 /// Every mutant the run selected is accounted for exactly once: either a
 /// suggestion's `kills` names it, or `indistinguishable` says no input told it
-/// apart, or `unsupported` says why nothing can be written for it — a mutant
-/// outside every function of its module included, which no probe can call.
+/// apart, or `nondeterministic` says the original disagreed with itself, or
+/// `unsupported` says why nothing can be written for it — a mutant outside
+/// every function of its module included, which no probe can call.
 ///
 /// `suggestions` is the fewest tests that still kill every mutant any single
 /// test in the run could kill, so a suggestion's `kills` names more than the
 /// mutant it was found from. `indistinguishable` and `unsupported` name the
-/// mutants no suggestion covers and why, `skipped` the functions the probe
-/// walked past, and `survivors_missing` the selected files the latest report
-/// has nothing to say about — which is the difference between "this file has
-/// no survivors" and "this file was never run". `distinguishable` names every
-/// mutant an input told apart, writable test or not, so a caller can say how
-/// many of them the kept suggestions really kill. `style` is the form the tests
-/// are meant to be written in, resolved from the flag and the configuration
-/// once, so that every caller renders the same run the same way.
+/// mutants no suggestion covers and why, `nondeterministic` the mutants whose
+/// original disagreed with itself so that no verdict was possible at all,
+/// `skipped` the functions the probe walked past, and `survivors_missing` the
+/// selected files the latest report has nothing to say about — which is the
+/// difference between "this file has no survivors" and "this file was never
+/// run". `distinguishable` names every mutant an input told apart, writable
+/// test or not — the ones refused as unwritable, as inexpressible or as bound
+/// to this machine included — so a caller can say how many of them the kept
+/// suggestions really kill. `style` is the form the tests are meant to be written in,
+/// resolved from the flag and the configuration once, so that every caller
+/// renders the same run the same way.
 /// `snapshot_root` is the copy the run worked in, already deleted by the time
 /// the report is answered, and empty when there was nothing to probe.
 /// `unmatched_function` holds the `--function` name the probe never saw, which
@@ -103,6 +111,7 @@ pub type Report {
   Report(
     suggestions: List(render.Suggestion),
     indistinguishable: List(Indistinguishable),
+    nondeterministic: List(Unsupported),
     unsupported: List(Unsupported),
     skipped: List(diff_runner.Skipped),
     survivors_missing: List(String),
@@ -141,6 +150,7 @@ pub fn default_options() -> SuggestOptions {
     function: None,
     mutant_prefix: None,
     survivors_only: False,
+    operators: [],
     seed: None,
     max_cases: None,
     max_shrinks: None,
@@ -187,6 +197,7 @@ fn reported(probed: Probed) -> Report {
       survivors_missing: probed.survivors_missing,
       style: probed.style,
       snapshot_root: probed.snapshot_root,
+      machine: machine(),
     ),
     unmatched_function: probed.unmatched_function,
   )
@@ -207,20 +218,34 @@ pub fn summarise(
   survivors_missing survivors_missing: List(String),
   style style: render.AssertStyle,
   snapshot_root snapshot_root: String,
+  machine machine: render.Machine,
 ) -> Report {
   let judged = list.append(results, unreported(mutants, results))
   let known = index(mutants)
-  let candidates = candidates(judged, mutants)
+  // Every mutant an input told apart, before any of the walls below: a mutant
+  // separated by an input and then refused is still one the run separated, and
+  // a count that dropped it would flatter the run it is reporting on.
+  let separated = candidates(judged, mutants)
+  let #(statable, alike) = list.partition(judged, statable)
+  // A suggestion whose values only hold on this machine is not a suggestion:
+  // committed, it fails for everyone else.
+  let #(candidates, unportable) =
+    list.partition(candidates(statable, mutants), fn(candidate) {
+      !render.machine_specific(candidate, machine)
+    })
   Report(
     suggestions: minimal(candidates),
     indistinguishable: unseparated(judged, known),
-    unsupported: list.append(
-      unprobed(judged, known),
+    nondeterministic: unstable(judged, known),
+    unsupported: list.flatten([
+      unprobed(statable, known),
+      inexpressible(alike, known),
       unwritable(candidates, known, style),
-    ),
+      machine_bound(unportable, known),
+    ]),
     skipped: skipped,
     survivors_missing: survivors_missing,
-    distinguishable: list.map(candidates, fn(candidate) { candidate.mutant_id }),
+    distinguishable: list.map(separated, fn(candidate) { candidate.mutant_id }),
     style: style,
     snapshot_root: snapshot_root,
     unmatched_function: None,
@@ -245,10 +270,13 @@ pub fn explain(
   let known = index(probed.mutants)
   let judged =
     list.append(probed.results, unreported(probed.mutants, probed.results))
+  // Read once, and the same way `summarise` reads it: one command must not
+  // print the test the other refuses.
+  let here = machine()
   case
     list.filter_map(judged, fn(verdict) {
       dict.get(known, verdict.mutant)
-      |> result.map(explained(_, verdict, probed.style))
+      |> result.map(explained(_, verdict, probed.style, here))
     })
   {
     [explanation, ..] -> Ok(explanation)
@@ -439,7 +467,7 @@ fn probe(
       ))
     files -> {
       use output <- result.map(
-        diff_runner.run(request(workspace, files, configured, options))
+        diff_runner.run(request(workspace, files, chosen, configured, options))
         |> result.map_error(discarding),
       )
       let _ = platform.delete_tree(output.snapshot_root)
@@ -567,24 +595,40 @@ fn named_functions(
 }
 
 /// The mutation selection a suggest run asks the engine for.
+///
+/// `--operator` overrides the workspace's own operator list the way it does
+/// for `run` and `list`, so that the mutants this run accounts for and the
+/// mutants it probes are chosen by one rule rather than two.
 fn selection_options(options: SuggestOptions) -> engine.Options {
   engine.Options(
     ..engine.default_options(),
     changed: options.changed,
     includes: options.includes,
+    operators: case options.operators {
+      [] -> None
+      chosen -> Some(chosen)
+    },
   )
 }
 
 /// The differential request: the configured budgets, with the flags on top.
+///
+/// `chosen` is the selection itself rather than the flags that made it, so the
+/// probe instruments exactly the mutants this run is accountable for: a run
+/// narrowed to one mutant or to a report's survivors compiles that much and no
+/// more.
 fn request(
   workspace: String,
   files: List(String),
+  chosen: List(Mutant),
   configured: Config,
   options: SuggestOptions,
 ) -> diff_runner.Request {
   diff_runner.Request(
     ..diff_runner.defaults(workspace, files),
     function_filter: options.function,
+    operators: options.operators,
+    mutants: Some(list.map(chosen, fn(item) { item.id })),
     seed: option.unwrap(options.seed, configured.suggest.seed),
     max_cases: option.unwrap(options.max_cases, configured.suggest.max_cases),
     max_shrinks: option.unwrap(
@@ -713,11 +757,81 @@ fn unprobed(
 ) -> List(Unsupported) {
   list.filter_map(results, fn(verdict) {
     case verdict.status {
-      probe_result.Unsupported | probe_result.Nondeterministic ->
+      probe_result.Unsupported ->
         dict.get(known, verdict.mutant)
         |> result.map(Unsupported(_, verdict.function, wall(verdict)))
       _ -> Error(Nil)
     }
+  })
+}
+
+/// The mutants whose original disagreed with itself, so no verdict holds.
+///
+/// This is a status of its own rather than a kind of `unsupported`: nothing is
+/// wrong with the mutant, the function under test simply does not answer the
+/// same way twice, and a reader who has to string-match a reason to learn that
+/// is reading a report that never said it.
+fn unstable(
+  results: List(ProbeResult),
+  known: Dict(String, Mutant),
+) -> List(Unsupported) {
+  list.filter_map(results, fn(verdict) {
+    case verdict.status {
+      probe_result.Nondeterministic ->
+        dict.get(known, verdict.mutant)
+        |> result.map(Unsupported(_, verdict.function, wall(verdict)))
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// Whether a verdict's two sides are told apart by something a test could say.
+///
+/// The probe already refuses to call a rendering-identical pair a separation;
+/// this is the host refusing the same thing on its own account, because a
+/// suggestion built from one would assert something the mutant satisfies too.
+/// A call that never returned is left alone: it carries no rendering by
+/// contract, and `unwritable` is the one that has something to say about it.
+fn statable(verdict: ProbeResult) -> Bool {
+  verdict.status != probe_result.Distinguished
+  || verdict.expected_outcome != probe_result.Returned
+  || verdict.actual_outcome != probe_result.Returned
+  || verdict.expected_inspect != verdict.actual_inspect
+}
+
+/// The mutants an input divided from the original in a way nothing can state.
+fn inexpressible(
+  results: List(ProbeResult),
+  known: Dict(String, Mutant),
+) -> List(Unsupported) {
+  list.filter_map(results, fn(verdict) {
+    dict.get(known, verdict.mutant)
+    |> result.map(Unsupported(
+      _,
+      verdict.function,
+      probe_result.inexpressible_reason,
+    ))
+  })
+}
+
+/// The mutants whose separating values only hold on the machine that found
+/// them.
+///
+/// A generated test is committed and then run elsewhere, so an input or an
+/// expected value naming this machine's home, cache or temporary directory —
+/// or any absolute path — is a test that fails for everyone else. Reporting it
+/// beside the mutants nothing could be written for is the honest answer.
+fn machine_bound(
+  candidates: List(render.Suggestion),
+  known: Dict(String, Mutant),
+) -> List(Unsupported) {
+  list.filter_map(candidates, fn(candidate) {
+    dict.get(known, candidate.mutant_id)
+    |> result.map(Unsupported(
+      _,
+      candidate.function,
+      render.machine_specific_reason,
+    ))
   })
 }
 
@@ -746,19 +860,36 @@ fn unwritable(
 }
 
 /// One mutant written out for a reader, test source and all.
-fn explained(
+///
+/// Public because it is the whole of what `explain` decides once the probe has
+/// answered, and because it has to decide it exactly as `summarise` does: the
+/// same verdict must not be a refusal in one command and a test to paste in
+/// the other. `machine` is what the answer is measured against, so a test can
+/// hand it a machine of its own.
+pub fn explained(
   item: Mutant,
   verdict: ProbeResult,
   style: render.AssertStyle,
+  machine: render.Machine,
 ) -> Explanation {
   let found = suggestion(item, verdict, set.from_list([item.id]))
   // One explanation is one file's worth of generated test, so the names it
   // reports are settled against a scope holding exactly that one suggestion.
   let scope = render.scope([found], style)
   let candidate = render.rendered(scope, found)
-  let written = case verdict.status {
-    probe_result.Distinguished -> render.test_source(scope, candidate)
-    _ -> Error(wall(verdict))
+  // The same three walls `summarise` puts in front of a suggestion stand
+  // here: `explain` prints the test a reader is invited to paste, so a value
+  // only this machine holds has to be refused by both, or the two commands
+  // contradict each other about one mutant.
+  let written = case verdict.status, statable(verdict) {
+    probe_result.Distinguished, True ->
+      case render.machine_specific(candidate, machine) {
+        True -> Error(render.machine_specific_reason)
+        False -> render.test_source(scope, candidate)
+      }
+    probe_result.Distinguished, False ->
+      Error(probe_result.inexpressible_reason)
+    _, _ -> Error(wall(verdict))
   }
   Explanation(
     mutant: item,
@@ -797,6 +928,21 @@ fn wall(verdict: ProbeResult) -> String {
 }
 
 // --- Helpers -----------------------------------------------------------------
+
+/// The directories of the machine this run is happening on.
+///
+/// A generated test that names one of them passes here and fails everywhere
+/// else, so `summarise` is told what they are and refuses to write one.
+fn machine() -> render.Machine {
+  render.Machine(
+    home: case platform.env("HOME") {
+      "" -> platform.env("USERPROFILE")
+      value -> value
+    },
+    cache: platform.cache_directory(),
+    temporary: platform.temporary_directory(),
+  )
+}
 
 /// The discovered mutants by id, so a verdict is matched in one lookup.
 fn index(mutants: List(Mutant)) -> Dict(String, Mutant) {

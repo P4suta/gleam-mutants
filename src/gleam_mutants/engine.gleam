@@ -348,12 +348,15 @@ fn list_snapshot(
         snapshot.digest(snapshot),
       ))
       use _ <- result.try(build_targets(snapshot.root(snapshot), runtimes))
+      // The build above is what makes `True` true: the snapshot compiles with
+      // nothing mutated in it, so a batch that fails fails over a mutant.
       use validation <- result.try(delta_validate(
         snapshot,
         catalogs,
         candidates,
         runtimes,
         runtime_module,
+        True,
       ))
       let #(valid, rejected) = validation
       use mutation_plan <- result.try(plan.build(
@@ -628,12 +631,15 @@ fn prepare(
     snapshot.root(snapshot),
     snapshot.digest(snapshot),
   ))
+  // The baseline above built the snapshot and ran its tests in it, so the
+  // copy is known to compile with nothing mutated in it.
   use validation <- result.try(delta_validate(
     snapshot,
     catalogs,
     candidates,
     runtimes,
     runtime_module,
+    True,
   ))
   let #(valid, rejected) = validation
   use _ <- result.try(case candidates != [] && valid == [] {
@@ -1009,12 +1015,47 @@ fn run_instrumented_baseline(
   }
 }
 
+/// Compile-checks `mutants` against `base`, splitting them into the ones that
+/// build and the ones that do not.
+///
+/// This is the check `run` and `list --validate` already make, exposed so that
+/// the differential probe can make it too: a probe instruments a whole file's
+/// mutants at once, and a single type-invalid one — a pipeline stage deletion,
+/// almost always — otherwise takes the entire file down with it. The cost is
+/// one extra build when everything is valid; only a failure pays for the
+/// bisect that isolates which mutants are to blame.
+///
+/// Unlike `run` and `list --validate`, the caller here has not built `base`
+/// yet, so `base_compiles` is `False`: a workspace that does not compile makes
+/// every batch of it invalid, and a bisect told only that a batch failed would
+/// blame each mutant of that workspace in turn — one full copy and one cold
+/// build each — for a fault none of them has.
+pub fn validate_mutants(
+  base: Snapshot,
+  catalogs: List(SourceCatalog),
+  mutants: List(Mutant),
+  runtimes: List(Runtime),
+  runtime_module: RuntimeModule,
+) -> Result(#(List(Mutant), List(RejectedMutant)), String) {
+  delta_validate(base, catalogs, mutants, runtimes, runtime_module, False)
+}
+
+/// Splits `mutants` into the ones that build and the ones that do not.
+///
+/// `base_compiles` says whether the copy is known to compile with nothing
+/// mutated in it. A caller that has already built it — `run` after its
+/// baseline, `list --validate` after its build — says `True` and pays nothing;
+/// a caller that has not says `False`, and the first batch that fails buys one
+/// pristine build to find out whose fault it is before any bisecting begins.
+/// Below that first split the answer is known either way, so the recursion
+/// carries `True`.
 fn delta_validate(
   base: Snapshot,
   catalogs: List(SourceCatalog),
   mutants: List(Mutant),
   runtimes: List(Runtime),
   runtime_module: RuntimeModule,
+  base_compiles: Bool,
 ) -> Result(#(List(Mutant), List(RejectedMutant)), String) {
   case mutants {
     [] -> Ok(#([], []))
@@ -1035,6 +1076,10 @@ fn delta_validate(
             [mutant] ->
               Ok(#([], [RejectedMutant(mutant, "compile-invalid", diagnostic)]))
             _ -> {
+              use _ <- result.try(case base_compiles {
+                True -> Ok(Nil)
+                False -> validate_base(base, catalogs, runtimes, runtime_module)
+              })
               let middle = list.length(mutants) / 2
               let left = list.take(mutants, middle)
               let right = list.drop(mutants, middle)
@@ -1044,6 +1089,7 @@ fn delta_validate(
                 left,
                 runtimes,
                 runtime_module,
+                True,
               ))
               use right_result <- result.try(delta_validate(
                 base,
@@ -1051,6 +1097,7 @@ fn delta_validate(
                 right,
                 runtimes,
                 runtime_module,
+                True,
               ))
               Ok(#(
                 list.append(left_result.0, right_result.0),
@@ -1059,6 +1106,32 @@ fn delta_validate(
             }
           }
       }
+  }
+}
+
+/// Compile-checks the copy with nothing mutated in it at all.
+///
+/// An empty mutant list leaves `instrument` nothing to write, so this builds
+/// the workspace exactly as it stands. One build, bought only once a batch has
+/// already failed, and it answers the question a bisect cannot: whether the
+/// compiler is objecting to a mutant or to the workspace the mutants were
+/// taken from.
+fn validate_base(
+  base: Snapshot,
+  catalogs: List(SourceCatalog),
+  runtimes: List(Runtime),
+  runtime_module: RuntimeModule,
+) -> Result(Nil, String) {
+  case
+    validate_batch(base, catalogs, [], runtimes, runtime.name(runtime_module))
+  {
+    Ok(Nil) -> Ok(Nil)
+    Error(ValidationInfrastructure(error)) -> Error(error)
+    Error(CandidateInvalid(diagnostic)) ->
+      Error(
+        "the snapshot does not compile before anything is mutated:\n"
+        <> diagnostic,
+      )
   }
 }
 

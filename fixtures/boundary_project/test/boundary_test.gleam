@@ -37,3 +37,8 @@ pub fn uses_helper_test() {
 pub fn applies_test() {
   assert boundary.applies(fn(x) { x * 2 }, 3) == 6
 }
+
+/// One part, so the separator is never printed and `"; " -> ""` survives.
+pub fn join_test() {
+  assert boundary.join(["only"]) == "only"
+}

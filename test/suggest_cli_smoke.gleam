@@ -9,16 +9,22 @@
 // `fixtures/boundary_project`. This one pins what reaches the terminal: that
 // Suggest JSON v1 carries the boundary test a reader can paste, that the
 // mutants no input told apart and the functions the probe could not call are
-// still reported, that every mutant `list` discovers is accounted for, that a
-// run narrowed to one mutant counts only that mutant, that the import hints
+// still reported, that the one mutant nobody can build is reported beside the
+// good one on its own line rather than taking the file down, that every mutant
+// `list` discovers is accounted for, that a run narrowed to one mutant counts
+// only that mutant, that a `--function` name the selection narrowed away is
+// reported as the empty selection it is rather than as an empty file, that
+// `--operator` narrows a run the way it narrows `run`, that the import hints
 // merge into one line per module, that text mode says how many suggestions
-// there are, and that `explain` can name one mutant and show the input that
-// kills it.
+// there are, that `explain` can name one mutant and show the input that kills
+// it, and that a `run --suggest` whose suggestions are refused says why once
+// beside a run that still succeeded.
 //
-// Three legs work on a throwaway copy of the fixture rather than on the
-// fixture itself: `--survivors`, which needs a stored report and so needs a
-// run to store one, the exclusion the workspace's own configuration asks for,
-// and the module a stored report never covered. Run it with
+// Four legs work on a throwaway copy of the fixture rather than on the fixture
+// itself: `--survivors`, which needs a stored report and so needs a run to
+// store one, the exclusion the workspace's own configuration asks for, the
+// module a stored report never covered, and the JavaScript test target that
+// leaves `run --suggest` with nothing to suggest. Run it with
 //
 //     gleam run -m suggest_cli_smoke --target erlang
 
@@ -60,7 +66,7 @@ pub fn main() {
   }
   let narrowed = case boundary_id {
     "" -> []
-    id -> narrowed_problems(id)
+    id -> list.append(narrowed_problems(id), crossed_filter_problems(id))
   }
   let explained = case boundary_id {
     "" -> [
@@ -85,8 +91,10 @@ pub fn main() {
       explained,
       equivalent,
       unknown_function_problems(),
+      operator_problems(),
       exclusion_problems(),
       survivors_problems(),
+      javascript_target_problems(),
     ])
 
   list.each(found, io.println)
@@ -127,6 +135,16 @@ fn report_problems(output: SuggestOutput) -> List(String) {
     boundary_problems(output),
     indistinguishable_problems(output),
     unsupported_problems(output),
+    uncompilable_problems(output),
+    expect(
+      output.nondeterministic == [],
+      "nondeterministic is "
+        <> string.inspect(
+        list.map(output.nondeterministic, fn(entry) { entry.function }),
+      )
+        <> ", expected nothing: every function of the fixture is a function of "
+        <> "its arguments",
+    ),
     expect(
       output.survivors_missing == [],
       "survivors_missing is "
@@ -192,10 +210,10 @@ fn boundary_problems(output: SuggestOutput) -> List(String) {
             <> ", which never mention the mutant it was found from",
         ),
         expect(
-          suggestion.location == "src/boundary.gleam:17:3",
+          suggestion.location == "src/boundary.gleam:18:3",
           "the suggestion is located at "
             <> suggestion.location
-            <> ", expected src/boundary.gleam:17:3",
+            <> ", expected src/boundary.gleam:18:3",
         ),
         expect(
           suggestion.original == "value > 0"
@@ -243,6 +261,81 @@ fn unsupported_problems(output: SuggestOutput) -> List(String) {
         <> string.inspect(list.map(applies, fn(entry) { entry.reason })),
     ),
   ])
+}
+
+/// The one mutant nobody can build is a verdict, not the end of the file.
+///
+/// Deleting the pipeline stage of `join` leaves a `List(String)` where the
+/// annotation promises a `String`. It used to take every mutant of
+/// `src/boundary.gleam` down with it and exit 2 with GMU8003; what has to reach
+/// the reader instead is one unsupported entry saying why, with the perfectly
+/// good string-neutral mutant on the very same line still proposed as a test.
+fn uncompilable_problems(output: SuggestOutput) -> List(String) {
+  let rejected =
+    list.filter(output.unsupported, fn(entry) { entry.function == "join" })
+  list.flatten([
+    expect(
+      rejected != [],
+      "no `join` mutant was reported as unsupported; the unsupported "
+        <> "functions are "
+        <> string.inspect(
+        list.map(output.unsupported, fn(entry) { entry.function }),
+      ),
+    ),
+    expect(
+      list.all(rejected, fn(entry) {
+        string.contains(entry.reason, "does not compile")
+      }),
+      "a rejected `join` mutant gives a reason that never says it does not "
+        <> "compile: "
+        <> string.inspect(list.map(rejected, fn(entry) { entry.reason })),
+    ),
+    expect(
+      list.any(output.suggestions, fn(one) {
+        one.function == "join" && one.operator == "string-neutral"
+      }),
+      "nothing was proposed for the string-neutral mutant of `join`, so the "
+        <> "one mutant nobody can build took its neighbour with it",
+    ),
+  ])
+}
+
+/// `--operator` narrows a probe the way it narrows `run` and `list`.
+///
+/// It is the flag the dogfood report had to reach for as a workaround and
+/// could not find; it is worth having on its own, so that a slow probe can be
+/// pointed at one operator without weakening `run` through the manifest.
+fn operator_problems() -> List(String) {
+  let run =
+    run_cli([
+      "suggest", "--root", workspace, "--operator", "string-neutral", "--json",
+    ])
+  case decode_output(extract_json(run.stdout)) {
+    Error(reason) -> [reason]
+    Ok(output) -> {
+      let proposed =
+        list.map(output.suggestions, fn(one) { one.operator })
+        |> list.unique
+      list.flatten([
+        status_problems("suggest --operator string-neutral", run),
+        expect(
+          output.suggestions != [],
+          "a run narrowed to string-neutral proposed nothing at all",
+        ),
+        expect(
+          proposed == ["string-neutral"],
+          "a run narrowed to string-neutral proposed tests for "
+            <> string.inspect(proposed),
+        ),
+        expect(
+          list.all(output.unsupported, fn(entry) { entry.function != "join" }),
+          "a run narrowed to string-neutral still reported the "
+            <> "pipeline-stage-deletion mutant of `join`, which it never "
+            <> "selected",
+        ),
+      ])
+    }
+  }
 }
 
 /// Every mutant `list` discovers is accounted for, and nothing else is.
@@ -325,6 +418,34 @@ fn narrowed_problems(display_id: String) -> List(String) {
         ),
       ])
   }
+}
+
+/// `--function` and `--mutant` naming different functions leave nothing to
+/// probe, and what the run says about that has to be true.
+///
+/// `abs` has mutants in the selected file, and `--mutant` narrowed every one
+/// of them away: the probe therefore never reports a verdict about `abs`, and
+/// a warning built from those verdicts must not turn that silence into a claim
+/// about the file. It is the selection that holds no `abs` mutant, so the
+/// selection is what the warning is about.
+fn crossed_filter_problems(display_id: String) -> List(String) {
+  let run =
+    run_cli([
+      "suggest", "--root", workspace, "--function", "abs", "--mutant",
+      display_id,
+    ])
+  list.flatten([
+    status_problems("suggest --function abs --mutant " <> display_id, run),
+    expect(
+      string.contains(
+        output(run),
+        "GMU8012: this run selected no mutant inside a function named `abs`",
+      ),
+      "a --function name the selection narrowed away was reported as "
+        <> "something else:\n"
+        <> output(run),
+    ),
+  ])
 }
 
 /// The import hints merge into one line per module, naming every token used.
@@ -436,8 +557,12 @@ fn unknown_function_problems() -> List(String) {
   list.flatten([
     status_problems("suggest --function nope", run),
     expect(
-      string.contains(output(run), "no function named `nope`"),
-      "a --function name no mutant belongs to was never reported:\n"
+      string.contains(
+        output(run),
+        "GMU8012: this run selected no mutant inside a function named `nope`",
+      ),
+      "a --function name no mutant belongs to was never reported under its "
+        <> "code:\n"
         <> output(run),
     ),
     expect(
@@ -600,6 +725,50 @@ fn survivor_problems(
   }
 }
 
+/// A run that asks for suggestions it cannot have says so once, and succeeds.
+///
+/// `run --suggest` on a workspace whose tests run on JavaScript grades its
+/// mutants normally and is refused only the suggestions, so the refusal is a
+/// warning beside a successful run rather than the run's failure. The suggest
+/// error carries its own `GMU8001` in front of its message, and the warning
+/// line must not put a second one there: it used to print
+///
+///     gleam-mutants: GMU8001: GMU8001: suggest supports the Erlang target only
+///
+/// which reads like two failures and matches no code a reader can grep for.
+fn javascript_target_problems() -> List(String) {
+  let root =
+    copy_fixture("\n[tools.gleam_mutants.test]\ntarget = \"javascript\"\n")
+  let ran =
+    run_cli([
+      "run", "--root", root, "--report", "none", "--no-strict", "--suggest",
+    ])
+  let text = output(ran)
+  let found =
+    list.flatten([
+      expect(
+        ran.status == 0,
+        "run --suggest on a JavaScript workspace exited "
+          <> int.to_string(ran.status)
+          <> ", expected 0\n"
+          <> text,
+      ),
+      expect(
+        string.contains(
+          text,
+          "GMU8001: suggest supports the Erlang target only",
+        ),
+        "the run never said why it had no suggestions:\n" <> text,
+      ),
+      expect(
+        list.length(string.split(text, "GMU8001")) == 2,
+        "the warning named GMU8001 more than once:\n" <> text,
+      ),
+    ])
+  discard_workspace(root)
+  found
+}
+
 // --- A workspace of one's own ------------------------------------------------
 
 /// The files a copy of the fixture is made of.
@@ -696,6 +865,7 @@ type SuggestOutput {
     schema_version: Int,
     suggestions: List(Suggestion),
     indistinguishable: List(Entry),
+    nondeterministic: List(Unsupported),
     unsupported: List(Unsupported),
     skipped: List(Skipped),
     survivors_missing: List(String),
@@ -755,6 +925,10 @@ fn output_decoder() -> decode.Decoder(SuggestOutput) {
     "indistinguishable",
     decode.list(entry_decoder()),
   )
+  use nondeterministic <- decode.field(
+    "nondeterministic",
+    decode.list(unsupported_decoder()),
+  )
   use unsupported <- decode.field(
     "unsupported",
     decode.list(unsupported_decoder()),
@@ -768,6 +942,7 @@ fn output_decoder() -> decode.Decoder(SuggestOutput) {
     schema_version: schema_version,
     suggestions: suggestions,
     indistinguishable: indistinguishable,
+    nondeterministic: nondeterministic,
     unsupported: unsupported,
     skipped: skipped,
     survivors_missing: survivors_missing,
@@ -872,6 +1047,7 @@ fn accounted_ids(output: SuggestOutput) -> List(String) {
   list.flatten([
     list.flat_map(output.suggestions, fn(suggestion) { suggestion.kills }),
     list.map(output.indistinguishable, fn(entry) { entry.mutant_id }),
+    list.map(output.nondeterministic, fn(entry) { entry.mutant_id }),
     list.map(output.unsupported, fn(entry) { entry.mutant_id }),
   ])
   |> list.unique

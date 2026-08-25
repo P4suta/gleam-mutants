@@ -14,7 +14,13 @@
 //
 // The write half runs `gleam format` in the workspace, so it is Erlang-only;
 // planning touches nothing but the file system and runs on both targets.
+//
+// Attribution is the third half: what `--verify` makes of the two mutation
+// runs either side of a write. It is pure over those two outcome maps, so it
+// is settled here in microseconds rather than in the minutes a real
+// verification costs.
 
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 @target(erlang)
@@ -315,6 +321,68 @@ pub fn maybe_double_kills_6419cb7b_test() {
 const header = "// SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 "
+
+// --- Where a verified kill came from -----------------------------------------
+
+/// `--verify` has to say which of the two runs around the write did the
+/// killing.
+///
+/// Verification re-runs the whole suite, so a mutant the reader's own tests
+/// were already killing comes back dead whether or not the generated test
+/// that claims it kills anything at all. Attribution is what separates them,
+/// and it is settled from the two outcome maps alone — no engine, no
+/// workspace, no clock — so every case is pinned here rather than inferred
+/// from a run that takes minutes.
+pub fn attribution_tells_a_new_kill_from_an_old_one_test() {
+  let before =
+    dict.from_list([
+      #("survived-then-killed", False),
+      #("killed-all-along", True),
+      #("killed-then-broken", True),
+      #("survived-throughout", False),
+    ])
+  let after =
+    dict.from_list([
+      #("survived-then-killed", True),
+      #("killed-all-along", True),
+      #("killed-then-broken", False),
+      #("survived-throughout", False),
+      #("unseen-before", True),
+    ])
+
+  assert apply.attribute(
+      [
+        "survived-then-killed", "killed-all-along", "killed-then-broken",
+        "survived-throughout", "unseen-before", "unseen-by-either",
+      ],
+      before,
+      after,
+    )
+    == [
+      // The generated test did this one, and nothing else had.
+      #("survived-then-killed", apply.NewlyKilled),
+      // Dead before anybody generated anything: the test added nothing.
+      #("killed-all-along", apply.AlreadyKilled),
+      // Dead before and alive now — a regression is still a failure.
+      #("killed-then-broken", apply.StillSurviving),
+      #("survived-throughout", apply.StillSurviving),
+      // A mutant the first run never discovered was not dead: it was unseen,
+      // which is the same standing as alive.
+      #("unseen-before", apply.NewlyKilled),
+      // A mutant neither run discovered cannot be called dead.
+      #("unseen-by-either", apply.StillSurviving),
+    ]
+}
+
+/// The names Apply JSON v1 carries for the three attributions.
+///
+/// A consumer reads these strings and nothing else, so they are part of the
+/// schema rather than of the prose.
+pub fn every_attribution_carries_the_name_the_json_uses_test() {
+  assert apply.attribution_name(apply.NewlyKilled) == "new"
+  assert apply.attribution_name(apply.AlreadyKilled) == "already_killed"
+  assert apply.attribution_name(apply.StillSurviving) == "surviving"
+}
 
 // --- Planning ----------------------------------------------------------------
 

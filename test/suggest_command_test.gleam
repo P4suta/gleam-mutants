@@ -356,6 +356,7 @@ pub fn summarise_puts_every_selected_mutant_in_exactly_one_bucket_test() {
       survivors_missing: ["src/other.gleam"],
       style: render.AssertKeyword,
       snapshot_root: "/tmp/snapshot",
+      machine: render.no_machine(),
     )
 
   assert list.map(found.suggestions, fn(suggestion) { suggestion.mutant_id })
@@ -378,6 +379,237 @@ pub fn summarise_puts_every_selected_mutant_in_exactly_one_bucket_test() {
       [boundary.id, redundant.id, equivalent.id, outside.id],
       string.compare,
     )
+}
+
+// --- Values that only hold on the machine that found them ---------------------
+//
+// Measured on real code: `assert cache.status("") == "cache: empty\nworkspace:
+// 5EE2D07D...\npath: /home/yasunobu/.cache/gleam-mutants/v1/..."`. Committed,
+// that test fails for every other developer and in CI, and `apply --verify`
+// passes it here. A suggestion carrying such a value is reported as
+// unsupported rather than written.
+
+/// The machine the probe is pretending to have run on.
+fn this_machine() -> render.Machine {
+  render.Machine(
+    home: "/home/dev",
+    cache: "/home/dev/.cache",
+    temporary: "/var/tmp/build-7f3a",
+  )
+}
+
+fn summarised(
+  results: List(ProbeResult),
+  mutants: List(Mutant),
+  machine: render.Machine,
+) -> command.Report {
+  command.summarise(
+    results: results,
+    mutants: mutants,
+    skipped: [],
+    survivors_missing: [],
+    style: render.AssertKeyword,
+    snapshot_root: "",
+    machine: machine,
+  )
+}
+
+pub fn summarise_refuses_an_expected_value_naming_this_machine_test() {
+  let bound = boundary_mutant()
+  let cached = "\"/home/dev/.cache/gleam-mutants/v1/workspaces\""
+  let found =
+    summarised(
+      [
+        distinguished("status", bound, ["\"\""], Some(cached), cached, "\"\"", [
+          bound.id,
+        ]),
+      ],
+      [bound],
+      this_machine(),
+    )
+
+  assert found.suggestions == []
+  let assert [refused] = found.unsupported
+  assert refused.mutant == bound
+  assert refused.function == "status"
+  assert refused.reason == "expected value depends on this machine"
+  // The mutant is still accounted for exactly once.
+  assert accounted(found) == [bound.id]
+}
+
+pub fn summarise_refuses_an_input_naming_an_absolute_path_test() {
+  let bound = boundary_mutant()
+  let found =
+    summarised(
+      [
+        distinguished(
+          "reads",
+          bound,
+          ["\"/tmp/gleam-mutants-ab12/src\""],
+          Some("True"),
+          "True",
+          "False",
+          [bound.id],
+        ),
+      ],
+      [bound],
+      render.no_machine(),
+    )
+
+  assert found.suggestions == []
+  let assert [refused] = found.unsupported
+  assert refused.reason == "expected value depends on this machine"
+}
+
+/// A value naming nothing of this machine is written exactly as before.
+pub fn summarise_keeps_a_portable_suggestion_test() {
+  let bound = boundary_mutant()
+  let found =
+    summarised(
+      [
+        distinguished(
+          "is_positive",
+          bound,
+          ["0"],
+          Some("False"),
+          "False",
+          "True",
+          [
+            bound.id,
+          ],
+        ),
+      ],
+      [bound],
+      this_machine(),
+    )
+
+  assert list.map(found.suggestions, fn(entry) { entry.mutant_id })
+    == [bound.id]
+  assert found.unsupported == []
+}
+
+/// Every mutant an input told apart is counted, writable test or not.
+///
+/// `distinguishable` is what the summary line divides the kills by, and its
+/// contract is the wall a mutant hit *after* it was separated: a mutant no
+/// test can be written for is still one an input told apart, and dropping it
+/// would quietly flatter the run — `0 of 0` where five mutants were in fact
+/// separated is a report that hides its own gap.
+pub fn summarise_counts_every_separated_mutant_as_distinguishable_test() {
+  let portable = boundary_mutant()
+  let bound = redundant_mutant()
+  let unstatable = abs_mutant()
+  let cached = "\"/home/dev/.cache/gleam-mutants/v1\""
+  let held = "//fn(a) { ... }"
+  let found =
+    summarised(
+      [
+        distinguished(
+          "is_positive",
+          portable,
+          ["0"],
+          Some("False"),
+          "False",
+          "True",
+          [
+            portable.id,
+          ],
+        ),
+        distinguished("status", bound, ["\"\""], Some(cached), cached, "\"\"", [
+          bound.id,
+        ]),
+        distinguished("held", unstatable, ["0"], None, held, held, [
+          unstatable.id,
+        ]),
+      ],
+      [portable, bound, unstatable],
+      this_machine(),
+    )
+
+  assert found.distinguishable == [portable.id, bound.id, unstatable.id]
+  assert list.map(found.suggestions, fn(entry) { entry.mutant_id })
+    == [portable.id]
+  assert list.map(found.unsupported, fn(entry) { entry.reason })
+    == [
+      probe_result.inexpressible_reason,
+      "expected value depends on this machine",
+    ]
+  assert accounted(found) == [portable.id, unstatable.id, bound.id]
+}
+
+// --- `explain` refuses what `suggest` refuses ---------------------------------
+//
+// The two commands print the same generated test, so a value only this machine
+// holds has to be refused by both: `explain` inviting a paste of
+// `assert cache.status("a") == "...path: /home/dev/.cache/..."` while `suggest`
+// and `apply` refuse the very same mutant is the report contradicting itself.
+
+fn explanation(verdict: ProbeResult, item: Mutant) -> command.Explanation {
+  command.explained(item, verdict, render.AssertKeyword, this_machine())
+}
+
+pub fn explained_refuses_an_expected_value_naming_this_machine_test() {
+  let bound = boundary_mutant()
+  let cached = "\"/home/dev/.cache/gleam-mutants/v1/workspaces\""
+  let found =
+    explanation(
+      distinguished("status", bound, ["\"\""], Some(cached), cached, "\"\"", [
+        bound.id,
+      ]),
+      bound,
+    )
+
+  assert found.test_source == None
+  assert found.reason == "expected value depends on this machine"
+  // The verdict itself is unchanged: an input did tell the mutant apart, and
+  // the two answers are still reported for a reader to judge.
+  assert found.status == Distinguished
+  assert found.expected == Some(cached)
+  assert found.actual_inspect == "\"\""
+}
+
+pub fn explained_refuses_an_input_naming_an_absolute_path_test() {
+  let bound = boundary_mutant()
+  let found =
+    explanation(
+      distinguished(
+        "reads",
+        bound,
+        ["\"/tmp/gleam-mutants-ab12/src\""],
+        Some("True"),
+        "True",
+        "False",
+        [bound.id],
+      ),
+      bound,
+    )
+
+  assert found.test_source == None
+  assert found.reason == "expected value depends on this machine"
+}
+
+/// A portable value is written exactly as it always was.
+pub fn explained_writes_a_portable_test_test() {
+  let bound = boundary_mutant()
+  let found =
+    explanation(
+      distinguished(
+        "is_positive",
+        bound,
+        ["0"],
+        Some("False"),
+        "False",
+        "True",
+        [
+          bound.id,
+        ],
+      ),
+      bound,
+    )
+
+  let assert Some(source) = found.test_source
+  assert string.contains(source, "boundary.is_positive(0) == False")
+  assert found.reason == ""
 }
 
 // --- A --function name the probe never saw -----------------------------------

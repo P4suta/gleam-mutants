@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import child_process
+import gleam/dict
 import gleam/float
 import gleam/int
 import gleam/io
@@ -58,6 +59,7 @@ pub type Command {
     suggest: suggest_command.SuggestOptions,
     yes: Bool,
     verify: Bool,
+    reuse: Bool,
     json: Bool,
   )
   HelpCommand
@@ -308,22 +310,25 @@ fn extract_suggest(
   }
 }
 
-/// `apply [the flags suggest takes] [--yes] [--verify] [--json]`.
+/// `apply [the flags suggest takes] [--yes] [--verify] [--no-reuse] [--json]`.
 ///
 /// `--verify` writes and then checks what it wrote, so it implies `--yes`:
-/// there is nothing to verify about a run that changed no file.
+/// there is nothing to verify about a run that changed no file. `--no-reuse`
+/// is about the run `--verify` takes *before* the write: it refuses the
+/// workspace's last stored run as a baseline and measures one instead.
 fn parse_apply(
   arguments: List(String),
   options: Options,
 ) -> Result(Command, String) {
-  let #(rest, yes, verify) = extract_apply(arguments, [], False, False)
+  let #(rest, yes, verify, reuse) =
+    extract_apply(arguments, [], False, False, True)
   use parsed <- result.map(parse_suggest_options(
     rest,
     "apply",
     suggest_command.default_options(),
     False,
   ))
-  ApplyCommand(options, parsed.0, yes || verify, verify, parsed.1)
+  ApplyCommand(options, parsed.0, yes || verify, verify, reuse, parsed.1)
 }
 
 fn extract_apply(
@@ -331,12 +336,15 @@ fn extract_apply(
   kept: List(String),
   yes: Bool,
   verify: Bool,
-) -> #(List(String), Bool, Bool) {
+  reuse: Bool,
+) -> #(List(String), Bool, Bool, Bool) {
   case arguments {
-    [] -> #(list.reverse(kept), yes, verify)
-    ["--yes", ..rest] -> extract_apply(rest, kept, True, verify)
-    ["--verify", ..rest] -> extract_apply(rest, kept, yes, True)
-    [argument, ..rest] -> extract_apply(rest, [argument, ..kept], yes, verify)
+    [] -> #(list.reverse(kept), yes, verify, reuse)
+    ["--yes", ..rest] -> extract_apply(rest, kept, True, verify, reuse)
+    ["--verify", ..rest] -> extract_apply(rest, kept, yes, True, reuse)
+    ["--no-reuse", ..rest] -> extract_apply(rest, kept, yes, verify, False)
+    [argument, ..rest] ->
+      extract_apply(rest, [argument, ..kept], yes, verify, reuse)
   }
 }
 
@@ -349,8 +357,8 @@ const explain_owns_its_mutant = "GMU1002: explain takes its mutant id as an argu
 /// The flags that take a value, so that a missing one is named as missing
 /// rather than reported as an option nobody has heard of.
 const suggest_value_flags = [
-  "--changed", "--include", "--function", "--mutant", "--seed", "--max-cases",
-  "--max-shrinks", "--budget", "--style",
+  "--changed", "--include", "--function", "--mutant", "--operator", "--seed",
+  "--max-cases", "--max-shrinks", "--budget", "--style",
 ]
 
 /// Parses the flags `suggest` and `explain` share, with the request so far.
@@ -404,6 +412,21 @@ fn parse_suggest_options(
         suggest_command.SuggestOptions(..suggest, mutant_prefix: Some(value)),
         json,
       )
+    ["--operator", value, ..rest] -> {
+      use selected <- result.try(
+        operator.from_name(value)
+        |> result.replace_error("unknown mutation operator " <> value),
+      )
+      parse_suggest_options(
+        rest,
+        command,
+        suggest_command.SuggestOptions(
+          ..suggest,
+          operators: list.append(suggest.operators, [selected]),
+        ),
+        json,
+      )
+    }
     ["--seed", value, ..rest] -> {
       use seed <- result.try(parse_seed(value))
       parse_suggest_options(
@@ -721,9 +744,9 @@ fn execute(command: Command) -> Nil {
             }
         }
       })
-    ApplyCommand(options, suggest, yes, verify, json) ->
+    ApplyCommand(options, suggest, yes, verify, reuse, json) ->
       with_workspace(options, fn(workspace) {
-        apply_suggestions(workspace, options, suggest, yes, verify, json)
+        apply_suggestions(workspace, options, suggest, yes, verify, reuse, json)
       })
     HelpCommand -> io.println(help_text())
     VersionCommand -> io.println("gleam-mutants " <> version.current)
@@ -871,9 +894,28 @@ fn execute(command: Command) -> Nil {
 /// says whether it counts as dead. A mutant that hangs the suite is as dead as
 /// one a failing assertion caught, which is how the mutation score counts it
 /// too, so a timeout is reported as detected under its own name.
+///
+/// `attribution` says which side of the write did the killing. `killed` alone
+/// cannot: the verification run re-runs the whole suite, so a mutant the
+/// reader's own tests were already killing comes back dead whatever the
+/// generated test beside them does.
 type Verified {
-  Verified(mutant_id: String, display_id: String, outcome: String, killed: Bool)
+  Verified(
+    mutant_id: String,
+    display_id: String,
+    outcome: String,
+    killed: Bool,
+    attribution: apply.Attribution,
+  )
 }
+
+/// What one mutation run made of every mutant it graded.
+///
+/// A mutant is keyed by the id it ran under and carries the display id the
+/// reader saw, the name of its outcome, and whether that outcome counts it
+/// dead.
+type Graded =
+  dict.Dict(String, #(String, String, Bool))
 
 /// Plans the generated tests, writes them when asked, and checks what it wrote.
 ///
@@ -887,6 +929,7 @@ fn apply_suggestions(
   suggest: suggest_command.SuggestOptions,
   yes: Bool,
   verify: Bool,
+  reuse: Bool,
   json: Bool,
 ) -> Nil {
   case suggest_command.suggest(workspace, suggest) {
@@ -896,35 +939,26 @@ fn apply_suggestions(
       case apply.plan(workspace, found.suggestions, found.style) {
         Error(error) -> fail(error)
         Ok(plans) ->
-          case yes {
-            False -> emit_apply(plans, None, json, False)
-            True ->
+          case yes, verify {
+            False, _ -> emit_apply(plans, None, None, json, False)
+            True, False ->
               case
                 apply.write(workspace, plans, found.suggestions, found.style)
               {
                 Error(error) -> fail(error)
-                Ok(written) ->
-                  case verify {
-                    False -> emit_apply(written, None, json, True)
-                    True ->
-                      case
-                        verify_applied(
-                          workspace,
-                          options,
-                          found.suggestions,
-                          written,
-                        )
-                      {
-                        Error(error) -> fail(error)
-                        Ok(checked) -> {
-                          emit_apply(written, Some(checked), json, True)
-                          case list.all(checked, fn(entry) { entry.killed }) {
-                            True -> Nil
-                            False -> platform.exit(1)
-                          }
-                        }
-                      }
+                Ok(written) -> emit_apply(written, None, None, json, True)
+              }
+            True, True ->
+              case write_and_verify(workspace, options, found, plans, reuse) {
+                Error(error) -> fail(error)
+                Ok(#(written, checked, baseline)) -> {
+                  warn_idle_tests(options, found.suggestions, written, checked)
+                  emit_apply(written, Some(checked), baseline, json, True)
+                  case list.any(checked, surviving) {
+                    True -> platform.exit(1)
+                    False -> Nil
                   }
+                }
               }
           }
       }
@@ -932,65 +966,323 @@ fn apply_suggestions(
   }
 }
 
-/// Runs the mutation engine over the files the applied suggestions came from.
+/// Whether one verified mutant is the failure `--verify` exists to catch.
+fn surviving(entry: Verified) -> Bool {
+  entry.attribution == apply.StillSurviving
+}
+
+/// Grades the workspace, writes the generated tests, and grades it again.
 ///
-/// Every mutant an applied suggestion claims to kill is looked up in that
-/// run, its own and everything in its kill set alike: a suggestion that only
-/// killed the mutant it was found from has not done what it said it would.
-/// The run reports nothing and stores no project report — the reader asked to
-/// have their tests checked, not to have a second report written.
+/// Every mutant an applied suggestion claims to kill is looked up in the run
+/// that follows the write, its own and everything in its kill set alike: a
+/// suggestion that only killed the mutant it was found from has not done what
+/// it said it would. Neither run reports anything or stores a project report —
+/// the reader asked to have their tests checked, not to have a second report
+/// written.
+///
+/// The run *before* the write is what makes the answer worth anything.
+/// Verification re-runs the whole suite, so a mutant the reader's own tests
+/// were already killing comes back dead whether or not the generated test
+/// beside them does a thing, and a `--verify` that only looked afterwards
+/// handed out green lights to tests that add nothing. That costs two mutation
+/// runs where it used to cost one, unless the workspace's last stored run
+/// already graded every mutant in question.
 ///
 /// A test this run skipped because the module already defined it is checked
 /// alongside the ones it wrote. `--verify` is then a standing gate rather than
 /// a one-off: run twice over the same workspace it re-checks the generated
 /// tests instead of reporting that it had nothing to do.
-fn verify_applied(
+fn write_and_verify(
   workspace: String,
   options: Options,
+  found: suggest_command.Report,
+  plans: List(apply.Plan),
+  reuse: Bool,
+) -> Result(#(List(apply.Plan), List(Verified), Option(Baseline)), String) {
+  let applied = applied_suggestions(found.suggestions, plans)
+  case verified_ids(applied) {
+    [] -> {
+      use written <- result.map(apply.write(
+        workspace,
+        plans,
+        found.suggestions,
+        found.style,
+      ))
+      #(written, [], None)
+    }
+    ids -> {
+      use baseline <- result.try(baseline_outcomes(
+        workspace,
+        options,
+        applied,
+        ids,
+        reuse,
+      ))
+      let #(source, before) = baseline
+      use written <- result.try(apply.write(
+        workspace,
+        plans,
+        found.suggestions,
+        found.style,
+      ))
+      use after <- result.map(measured_outcomes(workspace, options, applied))
+      #(written, verified_entries(ids, before, after), Some(source))
+    }
+  }
+}
+
+/// Which run the kills `--verify` reports were attributed against.
+///
+/// Both answers grade the same thing — the workspace as it stood before the
+/// generated tests were written — but only one of them was taken just now, so
+/// the reader is told which one they are reading.
+type Baseline {
+  /// A mutation run taken over these files before the write.
+  Measured
+  /// The workspace's last stored run, which still describes this tree.
+  Reused
+}
+
+/// The suggestions whose tests one set of plans put in the workspace.
+fn applied_suggestions(
   suggestions: List(render.Suggestion),
   plans: List(apply.Plan),
-) -> Result(List(Verified), String) {
+) -> List(render.Suggestion) {
   let written =
     set.from_list(
       list.flat_map(plans, fn(plan) {
         list.append(plan.tests_added, plan.tests_skipped)
       }),
     )
-  let applied =
-    list.filter(suggestions, fn(suggestion) {
-      set.contains(written, render.test_name(suggestion))
-    })
-  case applied {
-    [] -> Ok([])
-    _ -> {
-      use output <- result.map(engine.run(
-        workspace,
-        verification_options(options, applied),
-      ))
-      let outcomes =
-        list.map(output.report.results, fn(result_) {
-          #(
-            result_.mutant.id,
-            #(result_.mutant.display_id, verified_outcome(result_.aggregate)),
-          )
-        })
-      applied
-      |> list.flat_map(fn(suggestion) {
-        [suggestion.mutant_id, ..suggestion.kills]
-      })
-      |> list.unique
-      |> list.map(fn(id) {
-        case list.key_find(outcomes, id) {
-          Ok(#(display_id, #(name, killed))) ->
-            Verified(id, display_id, name, killed)
-          // A mutant the verification run never discovered cannot be called
-          // dead: the source it came from was selected, so its absence is a
-          // finding rather than a pass.
-          Error(Nil) -> Verified(id, "", "missing", False)
-        }
-      })
+  list.filter(suggestions, fn(suggestion) {
+    set.contains(written, render.test_name(suggestion))
+  })
+}
+
+/// Every mutant those suggestions claim, each named once.
+fn verified_ids(applied: List(render.Suggestion)) -> List(String) {
+  applied
+  |> list.flat_map(fn(suggestion) { [suggestion.mutant_id, ..suggestion.kills] })
+  |> list.unique
+}
+
+/// What the workspace killed before the generated tests were written.
+///
+/// The stored run is preferred where it is still a verdict on this workspace,
+/// which halves what `--verify` costs. `--no-reuse` refuses it and measures
+/// the baseline whatever the tree says, which is the answer for a checkout
+/// whose modification times say nothing true.
+fn baseline_outcomes(
+  workspace: String,
+  options: Options,
+  applied: List(render.Suggestion),
+  ids: List(String),
+  reuse: Bool,
+) -> Result(#(Baseline, dict.Dict(String, Bool)), String) {
+  let stored = case reuse {
+    True -> stored_outcomes(workspace, ids)
+    False -> None
+  }
+  case stored {
+    Some(outcomes) -> Ok(#(Reused, outcomes))
+    None -> {
+      use graded <- result.map(measured_outcomes(workspace, options, applied))
+      #(Measured, killed_map(graded))
     }
   }
+}
+
+/// The workspace's last stored run, when it still describes this workspace.
+///
+/// Two things have to hold. The run must have graded every mutant in
+/// question: a mutant id carries the digest of the source it was cut from, so
+/// an id that run named is a verdict on exactly this source, and nothing
+/// partial is accepted because a baseline missing a mutant would credit the
+/// generated tests with a kill nobody measured.
+///
+/// The id says nothing about the *tests*, though, which are the other half of
+/// every kill — so the run must also predate everything the suite is made of.
+/// Without that second half a run taken before a test was deleted still calls
+/// its mutants dead, and `--verify` would report the generated test that now
+/// kills one as adding nothing and name it under `GMU8017`: advice that
+/// deletes the only test standing.
+fn stored_outcomes(
+  workspace: String,
+  ids: List(String),
+) -> Option(dict.Dict(String, Bool)) {
+  case report.latest(workspace) {
+    Error(_) -> None
+    Ok(stored) ->
+      case report.graded_outcomes(stored), report.run_started_ms(stored) {
+        Ok(graded), Ok(started_ms) ->
+          case suite_predates(workspace, started_ms) {
+            True -> reusable_outcomes(graded, ids)
+            False -> None
+          }
+        _, _ -> None
+      }
+  }
+}
+
+/// A stored run's verdicts as a baseline, when it graded every id wanted.
+///
+/// `graded` is what `report.graded_outcomes` answered for the stored run and
+/// `ids` is every mutant the applied suggestions claim. One missing id is the
+/// end of the shortcut: half a baseline attributes half the kills to nobody.
+pub fn reusable_outcomes(
+  graded: List(#(String, Bool)),
+  ids: List(String),
+) -> Option(dict.Dict(String, Bool)) {
+  let stored = dict.from_list(graded)
+  case list.all(ids, dict.has_key(stored, _)) {
+    False -> None
+    True -> Some(stored)
+  }
+}
+
+/// Whether everything a kill depends on was last written before `started_ms`.
+///
+/// A stored run is a verdict about the sources *and* the tests it ran over,
+/// but a mutant id pins only the source. What is left is settled the way
+/// `make` settles it: `src/`, `test/`, `gleam.toml` and `manifest.toml` are
+/// walked, directories included, and the stored run is trusted only where it
+/// started after the last of them was written. A directory's own time is what
+/// catches a deleted test module, which is the change that would otherwise
+/// have `--verify` blame the test that replaced it.
+///
+/// A run that started inside the same second as a write is not trusted to
+/// have seen it, and an entry that cannot be read at all is treated as
+/// changed: the cost of refusing the shortcut is one more mutation run, and
+/// the cost of taking it wrongly is a wrong answer.
+pub fn suite_predates(workspace: String, started_ms: Int) -> Bool {
+  ["src", "test", "gleam.toml", "manifest.toml"]
+  |> list.all(fn(relative) {
+    entry_predates(path.join(workspace, relative), started_ms)
+  })
+}
+
+fn entry_predates(target: String, started_ms: Int) -> Bool {
+  case simplifile.link_info(target) {
+    // Nothing there is nothing that can have changed since.
+    Error(simplifile.Enoent) -> True
+    Error(_) -> False
+    Ok(info) ->
+      case { info.mtime_seconds + 1 } * 1000 <= started_ms {
+        False -> False
+        True ->
+          case simplifile.file_info_type(info) {
+            simplifile.Directory -> children_predate(target, started_ms)
+            _ -> True
+          }
+      }
+  }
+}
+
+fn children_predate(directory: String, started_ms: Int) -> Bool {
+  case simplifile.read_directory(directory) {
+    Error(_) -> False
+    Ok(names) ->
+      list.all(names, fn(name) {
+        entry_predates(path.join(directory, name), started_ms)
+      })
+  }
+}
+
+/// Runs the mutation engine over the files the applied suggestions came from.
+fn measured_outcomes(
+  workspace: String,
+  options: Options,
+  applied: List(render.Suggestion),
+) -> Result(Graded, String) {
+  use output <- result.map(engine.run(
+    workspace,
+    verification_options(options, applied),
+  ))
+  output.report.results
+  |> list.map(fn(result_) {
+    let #(name, killed) = verified_outcome(result_.aggregate)
+    #(result_.mutant.id, #(result_.mutant.display_id, name, killed))
+  })
+  |> dict.from_list
+}
+
+/// One run's verdicts reduced to the dead-or-alive `attribute` reads.
+fn killed_map(graded: Graded) -> dict.Dict(String, Bool) {
+  dict.map_values(graded, fn(_, verdict) { verdict.2 })
+}
+
+/// What became of every claimed mutant, and which run is owed the kill.
+fn verified_entries(
+  ids: List(String),
+  before: dict.Dict(String, Bool),
+  after: Graded,
+) -> List(Verified) {
+  apply.attribute(ids, before, killed_map(after))
+  |> list.map(fn(entry) {
+    let #(id, attribution) = entry
+    case dict.get(after, id) {
+      Ok(#(display_id, name, killed)) ->
+        Verified(id, display_id, name, killed, attribution)
+      // A mutant the verification run never discovered cannot be called
+      // dead: the source it came from was selected, so its absence is a
+      // finding rather than a pass.
+      Error(Nil) -> Verified(id, "", "missing", False, attribution)
+    }
+  })
+}
+
+/// Says on stderr which generated tests killed nothing that was still alive.
+///
+/// A test whose every claimed mutant was already dead adds no coverage: the
+/// reader's own suite was catching all of it, and the run that followed the
+/// write would have been just as green without the new file. That is the case
+/// `--verify` used to pass silently, so it is now said out loud — as a
+/// warning, because a redundant test is a quality finding and not a failure.
+///
+/// Only the tests this run wrote are judged. A test the module already held
+/// was in the suite while the baseline ran, so the baseline has nothing to say
+/// about what it adds; calling it redundant on the strength of that would
+/// libel every test a second `--verify` re-checks.
+fn warn_idle_tests(
+  options: Options,
+  suggestions: List(render.Suggestion),
+  plans: List(apply.Plan),
+  checked: List(Verified),
+) -> Nil {
+  let added = set.from_list(list.flat_map(plans, fn(plan) { plan.tests_added }))
+  let attributions =
+    list.map(checked, fn(entry) { #(entry.mutant_id, entry.attribution) })
+  suggestions
+  |> list.filter(fn(suggestion) {
+    set.contains(added, render.test_name(suggestion))
+    && idle(suggestion, attributions)
+  })
+  |> list.each(fn(suggestion) {
+    let message =
+      "`"
+      <> render.test_name(suggestion)
+      <> "` adds nothing: every mutant it claims was already dead before it "
+      <> "was written"
+    write_diagnostic(
+      options.log_format == "json",
+      "warning",
+      "GMU8017",
+      message,
+      None,
+    )
+  })
+}
+
+/// Whether every mutant `suggestion` claims was dead before it was written.
+fn idle(
+  suggestion: render.Suggestion,
+  attributions: List(#(String, apply.Attribution)),
+) -> Bool {
+  [suggestion.mutant_id, ..suggestion.kills]
+  |> list.unique
+  |> list.all(fn(id) {
+    list.key_find(attributions, id) == Ok(apply.AlreadyKilled)
+  })
 }
 
 /// What one outcome is called, and whether it counts the mutant as dead.
@@ -1050,12 +1342,13 @@ fn source_path(location: String) -> String {
 fn emit_apply(
   plans: List(apply.Plan),
   verification: Option(List(Verified)),
+  baseline: Option(Baseline),
   json: Bool,
   applied: Bool,
 ) -> Nil {
   case json {
     True -> io.println(apply_json(plans, verification))
-    False -> io.print(render_plans(plans, verification, applied))
+    False -> io.print(render_plans(plans, verification, baseline, applied))
   }
 }
 
@@ -1087,6 +1380,10 @@ fn apply_json(
             #("display_id", json.string(entry.display_id)),
             #("outcome", json.string(entry.outcome)),
             #("killed", json.bool(entry.killed)),
+            #(
+              "attribution",
+              json.string(apply.attribution_name(entry.attribution)),
+            ),
           ])
         })
       }),
@@ -1099,6 +1396,7 @@ fn apply_json(
 fn render_plans(
   plans: List(apply.Plan),
   verification: Option(List(Verified)),
+  baseline: Option(Baseline),
   applied: Bool,
 ) -> String {
   case plans {
@@ -1107,6 +1405,25 @@ fn render_plans(
       string.concat(list.map(plans, render_plan(_, applied)))
       <> apply_summary(plans, applied)
       <> render_verification(verification)
+      <> render_baseline(baseline)
+  }
+}
+
+/// Which run the attributions above were graded against.
+///
+/// `newly killed` and `already killed` are claims about a run the reader never
+/// saw, and the two baselines are not equally fresh: a measured one was taken
+/// moments ago, a reused one is the workspace's last stored run, trusted only
+/// because nothing the suite is made of has been written since. Naming it is
+/// what lets a reader who knows better disagree — with `--no-reuse`.
+fn render_baseline(baseline: Option(Baseline)) -> String {
+  case baseline {
+    None -> ""
+    Some(Measured) ->
+      "Baseline: a run of those files taken before the tests were written.\n"
+    Some(Reused) ->
+      "Baseline: the last stored run, which started after everything in src/\n"
+      <> "and test/ was last written; --no-reuse measures one instead.\n"
   }
 }
 
@@ -1159,11 +1476,13 @@ fn render_verification(verification: Option(List(Verified))) -> String {
     Some([]) ->
       "No generated test was found in those modules, so nothing was verified.\n"
     Some(entries) ->
-      case list.filter(entries, fn(entry) { !entry.killed }) {
+      case list.filter(entries, surviving) {
         [] ->
           "Verified "
           <> int.to_string(list.length(entries))
-          <> " mutant(s): every one of them is dead.\n"
+          <> " mutant(s): every one of them is dead"
+          <> already_killed_note(entries)
+          <> ".\n"
         alive ->
           int.to_string(list.length(alive))
           <> " of "
@@ -1173,6 +1492,27 @@ fn render_verification(verification: Option(List(Verified))) -> String {
           <> "\n"
       }
   }
+}
+
+/// How the dead ones split between the new tests and the suite already there.
+///
+/// Said only when some of them were dead already, because that is the number
+/// the reader cannot see any other way: the run that followed the write counts
+/// both alike.
+fn already_killed_note(entries: List(Verified)) -> String {
+  case counted(entries, apply.AlreadyKilled) {
+    0 -> ""
+    old ->
+      " ("
+      <> int.to_string(counted(entries, apply.NewlyKilled))
+      <> " newly killed, "
+      <> int.to_string(old)
+      <> " already killed by your own tests)"
+  }
+}
+
+fn counted(entries: List(Verified), attribution: apply.Attribution) -> Int {
+  list.count(entries, fn(entry) { entry.attribution == attribution })
 }
 
 /// One surviving mutant, named the way the reader saw it, with its outcome.
@@ -1240,12 +1580,18 @@ fn suggest_after_run(
   }
 }
 
-/// Says on stderr that `--function` named something the run never found.
+/// Says on stderr that `--function` named something the run never probed.
 ///
 /// The run itself succeeded — a selection with nothing to kill in it is not a
 /// failure — but every count of the summary is then zero, which reads exactly
 /// like a function whose mutants are all dead already. `--quiet` does not
 /// silence it: it reports a probable mistake in the command, not progress.
+///
+/// What it can say is bounded by what it knows. The name is missing from the
+/// probe's verdicts, and `--mutant` or `--survivors` narrowing every mutant of
+/// a real function away is as good a way to get there as a typo is; so the
+/// warning is about this run's selection, which is the thing that is certainly
+/// empty, rather than about the files, which may well hold the function.
 fn warn_unmatched_function(
   options: Options,
   report: suggest_command.Report,
@@ -1257,9 +1603,7 @@ fn warn_unmatched_function(
         options.log_format == "json",
         "warning",
         "GMU8012",
-        "no function named `"
-          <> name
-          <> "` has a mutant in the files this run selected",
+        "this run selected no mutant inside a function named `" <> name <> "`",
         None,
       )
   }
@@ -1315,20 +1659,37 @@ fn write_diagnostic(
         ])
         |> json.to_string,
       )
-    False -> {
-      let prefix = case level {
-        "error" -> "gleam-mutants: "
-        _ -> "gleam-mutants: "
-      }
-      io.println_error(
-        prefix
-        <> message
-        <> case usage {
-          Some(value) -> "\n\n" <> value
-          None -> ""
-        },
-      )
-    }
+    False -> io.println_error(diagnostic_line(level, code, message, usage))
+  }
+}
+
+/// The stderr line one diagnostic is printed as.
+///
+/// An error carries its code inside its own message, because that is the text
+/// `diagnostic_code` reads it back out of, and so does every warning built out
+/// of one — `run --suggest` reports a probe it could not make as a warning
+/// under the suggest error's own code. A warning raised here rather than
+/// forwarded carries a plain sentence and nothing else, so the code is put in
+/// front of it. Either way the line names its code exactly once.
+///
+/// Pure, and public, because the line is a contract: `docs/suggest.md` tells a
+/// reader that a warning names its code once, and that is checkable here
+/// without a run to print one.
+pub fn diagnostic_line(
+  level: String,
+  code: String,
+  message: String,
+  usage: Option(String),
+) -> String {
+  let prefix = case level, string.starts_with(message, code <> ": ") {
+    "warning", False -> "gleam-mutants: " <> code <> ": "
+    _, _ -> "gleam-mutants: "
+  }
+  prefix
+  <> message
+  <> case usage {
+    Some(value) -> "\n\n" <> value
+    None -> ""
   }
 }
 
@@ -1869,6 +2230,8 @@ fn suggest_summary(report: suggest_command.Report) -> String {
   <> " distinguishable mutant(s); "
   <> int.to_string(list.length(report.indistinguishable))
   <> " indistinguishable (possibly equivalent); "
+  <> int.to_string(list.length(report.nondeterministic))
+  <> " nondeterministic; "
   <> int.to_string(list.length(report.unsupported))
   <> " unsupported; "
   <> int.to_string(list.length(report.skipped))
@@ -1902,17 +2265,8 @@ fn suggest_json(report: suggest_command.Report) -> String {
         ])
       }),
     ),
-    #(
-      "unsupported",
-      json.array(report.unsupported, fn(entry) {
-        json.object([
-          #("mutant_id", json.string(entry.mutant.id)),
-          #("display_id", json.string(entry.mutant.display_id)),
-          #("function", json.string(entry.function)),
-          #("reason", json.string(entry.reason)),
-        ])
-      }),
-    ),
+    #("nondeterministic", json.array(report.nondeterministic, unsupported_json)),
+    #("unsupported", json.array(report.unsupported, unsupported_json)),
     #(
       "skipped",
       json.array(report.skipped, fn(entry) {
@@ -1926,6 +2280,21 @@ fn suggest_json(report: suggest_command.Report) -> String {
     #("survivors_missing", json.array(report.survivors_missing, json.string)),
   ])
   |> json.to_string
+}
+
+/// One mutant of a Suggest JSON v1 document that has no test to show for it.
+///
+/// `nondeterministic` and `unsupported` are separate buckets carrying the same
+/// four fields: one names the mutants whose original disagreed with itself,
+/// the other the mutants a wall stopped, and a reader tells them apart by
+/// which array they are in rather than by reading a reason.
+fn unsupported_json(entry: suggest_command.Unsupported) -> json.Json {
+  json.object([
+    #("mutant_id", json.string(entry.mutant.id)),
+    #("display_id", json.string(entry.mutant.display_id)),
+    #("function", json.string(entry.function)),
+    #("reason", json.string(entry.reason)),
+  ])
 }
 
 /// One suggestion of a Suggest JSON v1 document.
@@ -2172,6 +2541,7 @@ fn help_text() -> String {
   <> "  --function <name>     probe only the function of that name\n"
   <> "  --mutant <id-prefix>  probe exactly one unambiguous mutant\n"
   <> "  --survivors           keep only the latest report's survivors\n"
+  <> "  --operator <name>     select an operator (repeatable)\n"
   <> "  --seed <n>            fix the input search\n"
   <> "  --max-cases <n>       inputs tried per mutant (1-100000)\n"
   <> "  --max-shrinks <n>     shrinking steps taken (0-100000)\n"
@@ -2181,6 +2551,7 @@ fn help_text() -> String {
   <> "\nApply options (every suggest flag above, and):\n"
   <> "  --yes                 write the tests; without it nothing is written\n"
   <> "  --verify              write, then re-run the engine over those files\n"
+  <> "  --no-reuse            measure --verify's baseline, never reuse a run\n"
   <> "  --json                emit one Apply JSON v1 value\n"
   <> "\nInit options:\n"
   <> "  --dry-run | --check   preview migration or check it is current\n"

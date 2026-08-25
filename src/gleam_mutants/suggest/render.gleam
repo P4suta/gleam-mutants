@@ -105,6 +105,92 @@ fn observed(suggestion: Suggestion) -> Bool {
   suggestion.expected != None || suggestion.expected_inspect != ""
 }
 
+/// The directories of the machine a probe ran on.
+///
+/// A generated test travels: it is committed, and then run on someone else's
+/// laptop and in CI. A value naming one of these directories only holds where
+/// it was found, so a suggestion carrying one is refused rather than written.
+/// A field naming no place below a root — an empty one, `/`, or a relative
+/// path — matches nothing, because it says nothing about this machine that is
+/// not equally true of every other.
+pub type Machine {
+  Machine(home: String, cache: String, temporary: String)
+}
+
+/// A machine whose directories are unknown, which nothing is measured against.
+pub fn no_machine() -> Machine {
+  Machine(home: "", cache: "", temporary: "")
+}
+
+/// Why a suggestion that names a directory of this machine has no test.
+pub const machine_specific_reason = "expected value depends on this machine"
+
+/// The absolute-path shapes a rendered value must not hold, whatever machine
+/// this is: the roots every common platform puts a home, a temporary file or a
+/// drive under.
+const absolute_markers = [
+  "/home/",
+  "/Users/",
+  "/root/",
+  "/tmp/",
+  "/var/folders/",
+  "C:\\",
+]
+
+/// Whether a suggestion's values only mean anything on the machine that found
+/// them.
+///
+/// Both the inputs and the answer are read: an input naming an absolute path
+/// makes the call itself unportable, and an expected value naming one makes
+/// the assertion fail everywhere else. The inspect fallback counts as an
+/// expected value, because that is the literal the generated test compares
+/// against when there is no source form.
+pub fn machine_specific(suggestion: Suggestion, machine: Machine) -> Bool {
+  let values = [
+    option.unwrap(suggestion.expected, ""),
+    suggestion.expected_inspect,
+    ..suggestion.inputs
+  ]
+  let markers =
+    [machine.home, machine.cache, machine.temporary]
+    |> list.map(without_trailing_separator)
+    |> list.filter(fingerprint)
+    |> list.append(absolute_markers)
+  list.any(values, fn(value) {
+    list.any(markers, fn(marker) { string.contains(value, marker) })
+  })
+}
+
+/// Whether a directory names a place of this machine's, rather than a root.
+///
+/// The three directories come out of the environment, and an environment can
+/// answer anything: a `HOME` of `/` taken as a marker would refuse every
+/// rendered path in the world, an empty one would refuse every value at all,
+/// and a relative one — `HOME=dev` — would refuse every value holding those
+/// three letters anywhere. A directory earns its place only when it is
+/// absolute *and* names something below its root; the roots themselves are
+/// what `absolute_markers` is for, and it holds them whatever the environment
+/// says.
+fn fingerprint(directory: String) -> Bool {
+  case directory {
+    "/" <> below -> below != ""
+    other ->
+      case string.split(other, ":\\") {
+        [drive, below] -> string.length(drive) <= 2 && below != ""
+        _ -> False
+      }
+  }
+}
+
+/// `directory` without the separators it ends in, so that a `HOME` written
+/// with a trailing slash is the same marker as one written without.
+fn without_trailing_separator(directory: String) -> String {
+  case string.ends_with(directory, "/") || string.ends_with(directory, "\\") {
+    True -> without_trailing_separator(string.drop_end(directory, 1))
+    False -> directory
+  }
+}
+
 /// The name of the generated test: `<function>_kills_<display id>_test`.
 ///
 /// The display id is cut to its first eight characters and everything that

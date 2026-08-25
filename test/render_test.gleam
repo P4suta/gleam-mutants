@@ -4,7 +4,7 @@
 @target(erlang)
 import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 @target(erlang)
 import gleam_mutants/core/path
@@ -346,6 +346,154 @@ pub fn a_probe_result_maps_onto_a_suggestion_test() {
       kills: reported.kills,
     )
     == is_positive()
+}
+
+// --- values that only hold on one machine ------------------------------------
+//
+// Measured on real code: `assert cache.status("") == "cache: empty\nworkspace:
+// 5EE2D07D...\npath: /home/yasunobu/.cache/gleam-mutants/..."`. Committed, that
+// test fails for every other developer and in CI. A rendered value naming an
+// absolute path, or one of this machine's own directories, is refused rather
+// than written.
+
+/// A machine with the three directories a test must not name.
+fn this_machine() -> render.Machine {
+  render.Machine(
+    home: "/home/dev",
+    cache: "/home/dev/.cache",
+    temporary: "/var/tmp/build-7f3a",
+  )
+}
+
+/// `is_positive` with its inputs and its answer replaced.
+fn with_values(
+  inputs: List(String),
+  expected: Option(String),
+  expected_inspect: String,
+) -> render.Suggestion {
+  Suggestion(
+    ..is_positive(),
+    inputs: inputs,
+    expected: expected,
+    expected_inspect: expected_inspect,
+  )
+}
+
+pub fn machine_specific_refuses_an_absolute_path_in_the_expected_value_test() {
+  let paths = [
+    "\"/home/dev/.cache/gleam-mutants/v1\"", "\"/Users/dev/Library/Caches\"",
+    "\"/root/.config\"", "\"/tmp/gleam-mutants-ab12\"",
+    "\"/var/folders/xy/T/probe\"", "\"C:\\\\Users\\\\dev\\\\AppData\"",
+  ]
+  assert list.filter(paths, fn(path) {
+      !render.machine_specific(
+        with_values(["0"], Some(path), path),
+        render.no_machine(),
+      )
+    })
+    == []
+}
+
+pub fn machine_specific_refuses_an_absolute_path_in_an_input_test() {
+  assert render.machine_specific(
+    with_values(["\"/home/dev/project\"", "0"], Some("True"), "True"),
+    render.no_machine(),
+  )
+}
+
+/// The inspect fallback is the literal a generated test compares against when
+/// there is no source form, so it counts as an expected value.
+pub fn machine_specific_refuses_a_path_in_the_inspect_fallback_test() {
+  assert render.machine_specific(
+    with_values(["0"], None, "Config(\"/tmp/gleam-mutants-ab12\")"),
+    render.no_machine(),
+  )
+}
+
+/// This machine's own directories are refused wherever they live, even when
+/// they are nowhere near the fixed list of absolute-path shapes.
+pub fn machine_specific_refuses_this_machines_own_directories_test() {
+  let cases = [
+    "\"/home/dev\"", "\"/home/dev/.cache/gleam-mutants\"",
+    "\"/var/tmp/build-7f3a/snapshot\"",
+  ]
+  assert list.filter(cases, fn(value) {
+      !render.machine_specific(
+        with_values(["0"], Some(value), value),
+        this_machine(),
+      )
+    })
+    == []
+}
+
+/// A directory this machine does not have is not this machine's.
+pub fn machine_specific_accepts_a_value_naming_no_machine_at_all_test() {
+  assert !render.machine_specific(is_positive(), this_machine())
+  assert !render.machine_specific(
+    with_values(["\"src/boundary.gleam\""], Some("\"a/b\""), "\"a/b\""),
+    this_machine(),
+  )
+  // A relative path is portable, and so is a bare separator.
+  assert !render.machine_specific(
+    with_values(["\"./x\""], Some("\"/\""), "\"/\""),
+    this_machine(),
+  )
+}
+
+/// An unknown directory matches nothing: an empty field is not a prefix of
+/// every string in the world.
+pub fn machine_specific_ignores_an_unknown_directory_test() {
+  assert !render.machine_specific(
+    with_values(["\"\""], Some("\"a\""), "\"a\""),
+    render.Machine(home: "", cache: "", temporary: ""),
+  )
+  assert render.no_machine()
+    == render.Machine(home: "", cache: "", temporary: "")
+}
+
+pub fn machine_specific_reason_is_the_one_the_report_prints_test() {
+  assert render.machine_specific_reason
+    == "expected value depends on this machine"
+}
+
+/// A directory that names nothing below a root is not a fingerprint.
+///
+/// The three directories come from the environment, and an environment can
+/// answer anything: a `HOME` of `/`, of `.` or of an empty string is not a
+/// place a value could belong to, and taken as a marker it would refuse every
+/// suggestion the tool ever makes — `/` alone is a substring of most rendered
+/// paths. Such a directory is ignored, and the fixed list of absolute-path
+/// shapes still holds.
+pub fn machine_specific_ignores_a_directory_naming_only_a_root_test() {
+  let degenerate = render.Machine(home: "/", cache: ".", temporary: "C:\\")
+  let cases = ["\"a/b\"", "\"./x\"", "\"src/boundary.gleam\"", "\"/\"", "\"a\""]
+  assert list.filter(cases, fn(value) {
+      render.machine_specific(
+        with_values([value], Some(value), value),
+        degenerate,
+      )
+    })
+    == []
+  // A relative directory is no marker either: `HOME=dev` must not refuse
+  // every value that happens to hold those three letters.
+  assert !render.machine_specific(
+    with_values(["\"dev/notes\""], Some("\"dev\""), "\"dev\""),
+    render.Machine(home: "dev", cache: "", temporary: ""),
+  )
+}
+
+/// A directory below a root still counts, trailing separator or not.
+pub fn machine_specific_reads_a_directory_with_a_trailing_separator_test() {
+  let trailing = render.Machine(home: "/data/dev/", cache: "", temporary: "")
+  assert render.machine_specific(
+    with_values(["0"], Some("\"/data/dev/project\""), "\"/data/dev/project\""),
+    trailing,
+  )
+  // One segment below the root is a real directory: `/root` is a home.
+  assert render.machine_specific(
+    with_values(["0"], Some("\"/srv/cache\""), "\"/srv/cache\""),
+    render.Machine(home: "", cache: "/srv", temporary: ""),
+  )
 }
 
 // --- test_name ---------------------------------------------------------------

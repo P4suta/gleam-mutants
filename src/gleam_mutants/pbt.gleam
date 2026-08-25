@@ -10,6 +10,7 @@
 // targets produce exactly the same values.
 
 import gleam/bit_array
+import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -48,6 +49,19 @@ const split_offset = 1_234_567_891
 /// how far up a draw sits keeps it in the high bits, where a linear
 /// congruential generator keeps its quality.
 const interesting_bucket = 536_870_912
+
+/// The width of the bucket that makes a draw a *hinted* one, namely half of
+/// `interesting_bucket`.
+///
+/// It sits directly above the interesting bucket rather than inside it: the
+/// edges of a range are what separates a boundary mutant, and a function that
+/// writes a literal down is exactly the kind that also has one, so paying for
+/// its hints out of its own edge coverage would have halved the thing the
+/// hints were added to help. A hinted generator therefore spends a quarter of
+/// its draws on the built-in interesting values exactly as an unhinted one
+/// does, an eighth more on the hints, and the remaining five eighths on the
+/// uniform draw.
+const hint_bucket = 268_435_456
 
 /// A pseudo-random number generator state.
 pub opaque type Seed {
@@ -280,15 +294,23 @@ pub fn one_of(first: Generator(a), rest: List(Generator(a))) -> Generator(a) {
 /// reachable. A range wider than that, which is 2^53 - 2^23 and past what
 /// either target draws exactly, would keep its top out of reach.
 ///
-/// Values shrink exactly as an unbiased draw would, towards the value of the
-/// range closest to zero using binary-search candidates: the target first,
-/// then the halfway points, ending at the neighbour of the value itself.
+/// Values shrink towards the value of the range closest to zero using
+/// binary-search candidates: the target first, then — for a negative value the
+/// range holds the mirror of — that mirror, then the halfway points, ending at
+/// the neighbour of the value itself. The mirror is offered before the
+/// halvings because at equal magnitude `1` and `-1` separate exactly the same
+/// mutants and only one of them reads as a value anybody meant.
 pub fn int(lo: Int, hi: Int) -> Generator(Int) {
-  let #(low, high) = case lo <= hi {
+  let #(low, high) = ordered(lo, hi)
+  biased_towards(low, high, interesting_values(low, high), [])
+}
+
+/// The bounds in the order the generators read them.
+fn ordered(lo: Int, hi: Int) -> #(Int, Int) {
+  case lo <= hi {
     True -> #(lo, hi)
     False -> #(hi, lo)
   }
-  biased_towards(low, high, zero_closest(low, high))
 }
 
 /// An integer in `-100..100`, biased towards the edges the way `int` is.
@@ -324,15 +346,133 @@ pub fn float() -> Generator(Float) {
 /// mutant apart.
 ///
 /// The length shrinks first (characters are dropped), then each character
-/// shrinks towards `"a"`.
+/// shrinks towards `"a"`. The floor is one character: `""` is reached only by
+/// being drawn, because a test asserting on the empty string pins an accident
+/// of an empty input rather than a behaviour.
 pub fn string() -> Generator(String) {
+  drawn_string([], [])
+}
+
+/// The strings the search draws on purpose whatever the code under test says.
+///
+/// Each one carries a shape a uniform draw over printable ASCII practically
+/// never produces: a single letter, a two-letter word, a word, a digit, the
+/// three whitespace characters a line ending is made of, and the four path
+/// shapes a string is split, joined or prefixed on.
+pub const interesting_strings = [
+  "a", "ab", "hello", "0", " ", "\n", "\r\n", "/", "./", "\\",
+]
+
+/// `int` with `hints` among the values it draws on purpose.
+///
+/// One draw in four goes to the built-in interesting values, exactly as `int`
+/// spends it, and one draw in eight more goes to the hints the caller
+/// supplied, hints outside `lo..hi` dropped. The hints are added to the search
+/// rather than traded against the edges: a couple of them are reached within
+/// the first tens of cases, and a boundary mutant of the same function still
+/// meets its edge as often as it ever did. A hinted value shrinks exactly as
+/// any other value of the range does.
+pub fn int_with_hints(lo: Int, hi: Int, hints: List(Int)) -> Generator(Int) {
+  let #(low, high) = ordered(lo, hi)
+  biased_towards(
+    low,
+    high,
+    interesting_values(low, high),
+    held(hints, low, high),
+  )
+}
+
+/// The hints a range holds, each kept once.
+///
+/// A hint the built-in set already offers is kept all the same: it costs
+/// nothing to draw the same value from two buckets, and dropping it would make
+/// the hinted eighth narrower the closer a function's literals are to the
+/// edges it is already searched at.
+fn held(hints: List(Int), low: Int, high: Int) -> List(Int) {
+  hints
+  |> list.filter(fn(value) { value >= low && value <= high })
+  |> list.unique
+}
+
+/// `float` with `hints` among the values it draws on purpose.
+///
+/// A float is drawn as a thousandth, so a hint is offered as the nearest one:
+/// `2.5` is `2500` to the integer the draw comes out of, and everything past
+/// three decimals is a value this generator has no way to produce anyway.
+pub fn float_with_hints(hints: List(Float)) -> Generator(Float) {
+  map(
+    int_with_hints(-1_000_000, 1_000_000, list.map(hints, thousandths)),
+    fn(value) { int.to_float(value) /. 1000.0 },
+  )
+}
+
+/// The thousandths a float is worth, which is what `float` draws.
+fn thousandths(value: Float) -> Int {
+  float.round(value *. 1000.0)
+}
+
+/// `string` with `hints` and `interesting_strings` among the values it draws
+/// on purpose.
+///
+/// One draw in four goes to the built-in set and one in eight to the hints, so
+/// a literal the code under test compares against is reached in a handful of
+/// cases rather than never, and the shapes a uniform draw never makes are
+/// reached as often as they would be without hints. A hinted value shrinks
+/// exactly as any other string does, the floor of one character included.
+pub fn string_with_hints(hints: List(String)) -> Generator(String) {
+  drawn_string(interesting_strings, list.unique(hints))
+}
+
+/// A string of 0 to 20 printable ASCII characters, with one draw in four spent
+/// on an `interesting` string and one in eight on a `hinted` one — and
+/// neither, when there is nothing to spend them on.
+///
+/// The single draw the length used to come out of answers all three questions,
+/// so a plain string still costs the draws it always did.
+fn drawn_string(
+  interesting: List(String),
+  hinted: List(String),
+) -> Generator(String) {
+  let choices = list.length(interesting)
+  let hints = list.length(hinted)
+  let reserved = reserved_bucket(hints)
   Generator(fn(s) {
     let #(raw, advanced) = next(s)
-    let length = raw % 21
-    let #(chars, rest_seed) =
-      draw_trees(uniform_towards(32, 126, 97), length, advanced, [])
-    #(tree_map(list_tree(chars), codes_to_string), rest_seed)
+    case
+      choices > 0 && raw < interesting_bucket,
+      hints > 0 && raw >= interesting_bucket && raw < reserved
+    {
+      True, _ -> #(text_of(pick_text(interesting, raw % choices)), advanced)
+      _, True -> #(
+        text_of(pick_text(hinted, { raw - interesting_bucket } % hints)),
+        advanced,
+      )
+      _, _ -> {
+        let length = raw % 21
+        let #(chars, rest_seed) =
+          draw_trees(uniform_towards(32, 126, 97), length, advanced, [])
+        #(tree_map(text_tree(chars), codes_to_string), rest_seed)
+      }
+    }
   })
+}
+
+/// The element of `texts` at `index`, or the empty string if there is none.
+fn pick_text(texts: List(String), index: Int) -> String {
+  case list.drop(texts, index) {
+    [text, ..] -> text
+    [] -> ""
+  }
+}
+
+/// `text` as the tree a drawn string of the same characters would have, so a
+/// hint shrinks the way everything else does.
+fn text_of(text: String) -> Tree(String) {
+  let characters =
+    string.to_utf_codepoints(text)
+    |> list.map(string.utf_codepoint_to_int)
+    |> list.map(fn(code) { int_tree(code, 97, 32, 126) })
+  tree_map(text_tree(characters), codes_to_string)
 }
 
 /// A bit array of 0 to 16 bytes.
@@ -406,32 +546,54 @@ fn uniform_towards(low: Int, high: Int, target: Int) -> Generator(Int) {
   Generator(fn(s) {
     // Nothing is reserved here: the whole draw is spent on the offset.
     let #(_, offset, advanced) = draw_offset(high - low + 1, 1, s)
-    #(int_tree(low + offset, target), advanced)
+    #(int_tree(low + offset, target, low, high), advanced)
   })
 }
 
-/// `uniform_towards` with one draw in four spent on an interesting value.
+/// `uniform_towards` with one draw in four spent on an interesting value, and
+/// one in eight more on a hint when there are hints.
 ///
-/// One draw answers both questions: the bucket it falls in says whether this
-/// is an interesting draw, and its remainder picks — the offset into the
-/// range, or the index into the interesting values. A range one draw covers
-/// therefore still costs the single MINSTD draw it always did, and a range
-/// that needs two still costs two, so every generator built on this one keeps
-/// drawing in step. The bottom quarter of the draws is what the decision
-/// spends, and `draw_offset` is told so: the offsets it may read are the ones
-/// above that quarter.
-fn biased_towards(low: Int, high: Int, target: Int) -> Generator(Int) {
-  let interesting = interesting_values(low, high)
+/// One draw answers both questions: the bucket it falls in says which kind of
+/// draw this is, and its remainder picks — the offset into the range, the
+/// index into the interesting values, or the index into the hints. A range one
+/// draw covers therefore still costs the single MINSTD draw it always did, and
+/// a range that needs two still costs two, so every generator built on this
+/// one keeps drawing in step. What the decision spends is `reserved_bucket`,
+/// and `draw_offset` is told the figure: the offsets it may read are the ones
+/// above it.
+fn biased_towards(
+  low: Int,
+  high: Int,
+  interesting: List(Int),
+  hinted: List(Int),
+) -> Generator(Int) {
+  let target = zero_closest(low, high)
   let choices = list.length(interesting)
+  let hints = list.length(hinted)
+  let reserved = reserved_bucket(hints)
   Generator(fn(s) {
-    let #(raw, offset, advanced) =
-      draw_offset(high - low + 1, interesting_bucket, s)
-    let value = case raw / interesting_bucket {
-      0 -> pick(interesting, raw % choices, low)
-      _ -> low + offset
+    let #(raw, offset, advanced) = draw_offset(high - low + 1, reserved, s)
+    let value = case raw < interesting_bucket, raw < reserved {
+      True, _ -> pick(interesting, raw % choices, low)
+      _, True -> pick(hinted, { raw - interesting_bucket } % hints, low)
+      _, _ -> low + offset
     }
-    #(int_tree(value, target), advanced)
+    #(int_tree(value, target, low, high), advanced)
   })
+}
+
+/// The draws a generator spends on a value it chose rather than drew: the
+/// interesting quarter, and an eighth more when there are hints to spend it
+/// on.
+///
+/// Everything above it is the uniform draw, and `draw_offset` is told the
+/// figure so that the offsets it reads come from the run of draws nothing else
+/// claimed.
+fn reserved_bucket(hints: Int) -> Int {
+  case hints {
+    0 -> interesting_bucket
+    _ -> interesting_bucket + hint_bucket
+  }
 }
 
 /// The values a boundary hides at, as far as `low..high` holds them: zero,
@@ -505,17 +667,33 @@ fn zero_closest(low: Int, high: Int) -> Int {
   }
 }
 
-fn int_tree(value: Int, target: Int) -> Tree(Int) {
+fn int_tree(value: Int, target: Int, low: Int, high: Int) -> Tree(Int) {
   Tree(value, fn() {
-    int_steps(value, target)
-    |> list.map(fn(candidate) { int_tree(candidate, target) })
+    int_steps(value, target, low, high)
+    |> list.map(fn(candidate) { int_tree(candidate, target, low, high) })
   })
 }
 
-fn int_steps(value: Int, target: Int) -> List(Int) {
+/// The candidates a value offers, most aggressive first: the target, then the
+/// mirror of a negative value, then the binary-search steps back towards it.
+///
+/// The mirror is what makes `Score(total: 1, killed: 0, timed_out: 1, ..)`
+/// come out of a search that used to answer `timed_out: -1`: at equal
+/// magnitude the two separate exactly the same mutants, and only one of them
+/// reads as a value anybody meant. It is offered before the halvings because a
+/// greedy shrink takes the first candidate that still fails, and a smaller
+/// magnitude would be taken first otherwise. A range the mirror falls outside
+/// of never offers it.
+fn int_steps(value: Int, target: Int, low: Int, high: Int) -> List(Int) {
   case value == target {
     True -> []
-    False -> [target, ..halve_towards(target, value)]
+    False -> {
+      let mirror = case value < 0 && -value <= high && -value >= low {
+        True -> [-value]
+        False -> []
+      }
+      [target, ..list.append(mirror, halve_towards(target, value))]
+    }
   }
 }
 
@@ -540,6 +718,23 @@ fn draw_trees(
       draw_trees(generator, count - 1, advanced, [tree, ..acc])
     }
   }
+}
+
+/// `list_tree` with a floor of one element, which is what a string shrinks by.
+///
+/// Shrinking to `""` is minimal and meaningless: measured on real code it
+/// produced `render.import_line(render.Requirement("", None, ["", ""]))
+/// == "import .{, }"`, an artefact of an empty module name rather than any
+/// behaviour. The empty string stays reachable by being drawn — a drawn one is
+/// a leaf and stays the counterexample — but nothing shrinks onto it.
+fn text_tree(characters: List(Tree(Int))) -> Tree(List(Int)) {
+  Tree(list.map(characters, tree_root), fn() {
+    let shorter =
+      removal_plans(list.length(characters))
+      |> list.filter(fn(kept) { kept != [] })
+      |> list.map(fn(kept) { text_tree(keep(characters, kept)) })
+    list.append(shorter, element_variants([], characters, text_tree))
+  })
 }
 
 fn list_tree(elements: List(Tree(a))) -> Tree(List(a)) {

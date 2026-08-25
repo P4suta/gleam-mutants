@@ -102,6 +102,21 @@ until you add it yourself. See [suggesting tests](suggest.md) for what the
 probe does with these values, which statuses it reports, and what `apply`
 writes.
 
+`exclude_functions` is the setting that bounds what a probe does to the machine
+it runs on, and it is worth filling in before the first `suggest`. The probe
+calls every public function of the selected modules for real, with generated
+arguments, in the environment the command was run in — the snapshot isolates
+source, not effects — so name here anything that writes or deletes files,
+spawns a subprocess, opens a socket, reads the clock or the environment, or is
+simply expensive to call. Matching is by bare function name across every
+selected module, so `exclude_functions = ["main", "clean"]` excludes every
+`main` and every `clean` the run selected, and a name no selected module
+defines is not an error. What it costs is coverage: those mutants are reported
+as unsupported rather than as tests you could write. `--function` narrows the
+opposite way, to one name, for one run. Neither is enforcement — an excluded
+function's effects still happen when a probed function calls it — so see [side
+effects](suggest.md#side-effects) before probing code you do not know.
+
 Enabled project formats atomically replace fixed `mutation.json` and
 `mutation.html` targets in that directory. `formats = []` or `--report none`
 disables project reports without deleting existing files; `history = false`

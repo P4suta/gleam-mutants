@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import childProcess from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import process from "node:process";
 import Ajv from "ajv";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -67,6 +70,20 @@ function cliFixture(command, target, root = "fixtures/basic_project") {
     throw new Error(`CLI ${command.join(" ")} fixture failed on ${target}`);
   }
   return result.stdout;
+}
+
+// Where a run stores what it knows about one workspace: the same directory
+// `cache.workspace_id` and the platform FFI compute, spelled out here because
+// this script has to delete one without asking the tool to.
+function workspaceCacheEntry(root) {
+  const home = process.env.HOME || ".";
+  const base = process.platform === "win32"
+    ? (process.env.LOCALAPPDATA || os.tmpdir())
+    : process.platform === "darwin"
+      ? path.join(home, "Library", "Caches")
+      : (process.env.XDG_CACHE_HOME || path.join(home, ".cache"));
+  const id = crypto.createHash("sha256").update(path.resolve(root)).digest("hex").toUpperCase();
+  return path.join(base, "gleam-mutants", "v1", "workspaces", id);
 }
 
 const nativeErlang = fixture("native_schema_fixture", "erlang");
@@ -156,6 +173,37 @@ if (!suggestReport.indistinguishable.some(entry => entry.function === "abs")) {
 if (!suggestReport.unsupported.some(entry => entry.function === "applies" && entry.reason.includes("function"))) {
   throw new Error("The function-typed parameter of `applies` was not reported as unsupported");
 }
+// One mutant the compiler rejects must not take its file down: `join`'s
+// pipeline-stage-deletion leaves a `List(String)` where a `String` belongs, and
+// the string-neutral mutant on the very same line is still a test worth
+// pasting.
+if (!suggestReport.unsupported.some(entry => entry.function === "join" && entry.reason.includes("does not compile"))) {
+  throw new Error("The type-invalid pipeline mutant of `join` was not reported as unsupported");
+}
+if (!suggestReport.suggestions.some(suggestion => suggestion.function === "join" && suggestion.operator === "string-neutral")) {
+  throw new Error("The string-neutral mutant beside the type-invalid one was never suggested");
+}
+// `nondeterministic` is a bucket of its own, present even when empty: a
+// consumer must not have to string-match a reason to recover a documented
+// status.
+if (!Array.isArray(suggestReport.nondeterministic) || suggestReport.nondeterministic.length !== 0) {
+  throw new Error("Suggest JSON v1 is missing the `nondeterministic` array, or the fixture reported an entry in it");
+}
+// `--operator` narrows a probe the way it narrows `run` and `list`.
+const narrowedSuggest = JSON.parse(cliFixture(
+  ["suggest", "--operator", "string-neutral", "--json"],
+  "erlang",
+  "fixtures/boundary_project",
+));
+if (!validateSuggest(narrowedSuggest)) {
+  throw new Error(`Operator-narrowed suggest JSON schema validation failed:\n${nativeAjv.errorsText(validateSuggest.errors, { separator: "\n" })}`);
+}
+if (
+  narrowedSuggest.suggestions.length === 0
+  || narrowedSuggest.suggestions.some(suggestion => suggestion.operator !== "string-neutral")
+) {
+  throw new Error("`suggest --operator string-neutral` did not narrow the run to string-neutral mutants");
+}
 
 // `explain` is the same probe narrowed to one mutant, so it is Erlang-only for
 // the same reason `suggest` is. The run is narrowed to `is_positive` as well,
@@ -202,6 +250,39 @@ if (
   throw new Error("A dry-run `apply` did not plan the is_positive test into the fixture's own test module");
 }
 
+// A dry run's `verification` is `null`, so the shape `--verify` fills it with
+// — `attribution` on every entry included — is only exercised by writing for
+// real. That happens in a throwaway copy of the fixture: `apply --yes` writes
+// into the workspace's own `test/` directory, and the fixture in the
+// repository is not the place for it.
+const verifyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gleam-mutants-apply-"));
+let applied;
+try {
+  fs.cpSync("fixtures/boundary_project", verifyRoot, { recursive: true });
+  applied = JSON.parse(cliFixture(["apply", "--yes", "--verify", "--json"], "erlang", verifyRoot));
+} finally {
+  fs.rmSync(verifyRoot, { recursive: true, force: true });
+  // A run also stores its report history under the user's cache, keyed by the
+  // workspace it ran in. That workspace is gone, so its entry is an orphan
+  // nothing will ever read again: deleting the copy without it would leave one
+  // behind per invocation of this script.
+  fs.rmSync(workspaceCacheEntry(verifyRoot), { recursive: true, force: true });
+}
+if (!validateApply(applied)) {
+  throw new Error(`Verified apply JSON schema validation failed:\n${nativeAjv.errorsText(validateApply.errors, { separator: "\n" })}`);
+}
+const attributions = new Set((applied.verification ?? []).map(entry => entry.attribution));
+if (
+  !Array.isArray(applied.verification)
+  || applied.verification.length === 0
+  || !applied.verification.every(entry => typeof entry.attribution === "string")
+) {
+  throw new Error("`apply --yes --verify --json` reported no verification entry carrying an attribution");
+}
+if (!attributions.has("new") || !attributions.has("already_killed") || attributions.has("surviving")) {
+  throw new Error(`The verified fixture did not attribute its kills to both the generated tests and its own suite: ${[...attributions].join(", ")}`);
+}
+
 const erlang = fixture("stryker_schema_fixture", "erlang");
 const node = fixture("stryker_schema_fixture", "javascript");
 if (erlang !== node) throw new Error("Erlang and Node Stryker JSON differ byte-for-byte");
@@ -226,4 +307,4 @@ for (const mutant of file.mutants) {
     if (forbidden in mutant) throw new Error(`Unexpected ${forbidden} field`);
   }
 }
-console.log("Native, unvalidated-list, validated-list, and doctor v1 fixtures validated against JSON Schema 2020-12 with Erlang/Node byte parity; Erlang-only suggest v1, explain v1, and apply v1 fixtures validated against JSON Schema 2020-12; deterministic Stryker fixture validated against official Draft-07 schema with Ajv 8.20.0");
+console.log("Native, unvalidated-list, validated-list, and doctor v1 fixtures validated against JSON Schema 2020-12 with Erlang/Node byte parity; Erlang-only suggest v1, explain v1, planned apply v1 and verified apply v1 fixtures validated against JSON Schema 2020-12; deterministic Stryker fixture validated against official Draft-07 schema with Ajv 8.20.0");

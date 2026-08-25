@@ -43,7 +43,7 @@
     "verified": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mutant_id", "display_id", "outcome", "killed"],
+      "required": ["mutant_id", "display_id", "outcome", "killed", "attribution"],
       "properties": {
         "mutant_id": { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" },
         "display_id": {
@@ -55,8 +55,12 @@
           "enum": ["killed", "timed-out", "survived", "test-error", "missing"]
         },
         "killed": {
-          "description": "Whether the mutant counts as dead. A timeout does, exactly as the mutation score counts it; the command exits 1 when any entry is false.",
+          "description": "Whether the mutant counts as dead. A timeout does, exactly as the mutation score counts it.",
           "type": "boolean"
+        },
+        "attribution": {
+          "description": "Which of the two runs around the write is owed the kill. `new` means the mutant was alive, or undiscovered, before the generated tests were written and is dead now; `already_killed` means the workspace's own tests were killing it already, so the generated test added nothing; `surviving` means it is alive now, whatever it was before, and the command exits 1 when any entry says so.",
+          "enum": ["new", "already_killed", "surviving"]
         }
       }
     }

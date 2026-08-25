@@ -12,6 +12,14 @@
 // reports the mutants those new tests now kill — and that it exits 1 when one
 // of them does not.
 //
+// `--verify` re-runs the whole suite, so a kill it reports is not by itself a
+// kill the generated tests made: the fixture already kills several of the
+// mutants they claim. Each verified mutant is therefore attributed against a
+// run taken before the write, and a generated test that added nothing is
+// warned about rather than counted. That baseline run is skipped where the
+// workspace's last stored run still describes it, so one copy stores a run
+// first and is held to the answer the measured copy gave.
+//
 // Several copies are used. The first is applied to and then deliberately
 // spoiled, so the failing half of `--verify` is exercised on a real run rather
 // than described. The others each hand `apply` a test module that binds a name
@@ -97,8 +105,11 @@ pub fn main() {
 
   discard_workspace(root)
 
+  let measured = measured_verification()
   let readers =
     list.flatten([
+      measured.problems,
+      reuse_problems(measured),
       aliased_problems(),
       renamed_option_problems(),
       renamed_should_problems(),
@@ -116,10 +127,13 @@ pub fn main() {
     <> " test that kills mutant "
     <> string.slice(boundary_id, 0, 8)
     <> ", `gleam test` still passes, a spoiled test is reported as a survivor, "
-    <> "--verify stored no report of its own, and a module, a constructor and "
-    <> "`should` bound under other names, a module the file declares `Some` "
-    <> "and `None` for itself, and one it imported as `_` are all applied to "
-    <> "and still compile",
+    <> "--verify stored no report of its own and credited that kill to the "
+    <> "test it wrote while warning about the ones that added nothing, a "
+    <> "baseline reused from a stored run attributed every kill exactly as a "
+    <> "measured one did, and a "
+    <> "module, a constructor and `should` bound under other names, a module "
+    <> "the file declares `Some` and `None` for itself, and one it imported "
+    <> "as `_` are all applied to and still compile",
   )
 }
 
@@ -220,6 +234,32 @@ fn verification_problems(
             && entry.outcome == "killed"
           }),
           "the boundary mutant of is_positive is not reported killed: "
+            <> string.inspect(entries),
+        ),
+        expect(
+          list.any(entries, fn(entry) {
+            entry.mutant_id == boundary_id && entry.attribution == "new"
+          }),
+          "the boundary mutant of is_positive is dead, but the run does not "
+            <> "credit the generated test with killing it: "
+            <> string.inspect(entries),
+        ),
+        expect(
+          list.any(entries, fn(entry) { entry.attribution == "already_killed" }),
+          "nothing was reported as dead before the generated tests were "
+            <> "written, though the fixture's own suite kills several of the "
+            <> "mutants they claim: "
+            <> string.inspect(entries),
+        ),
+        expect(
+          list.all(entries, fn(entry) {
+            list.contains(
+              ["new", "already_killed", "surviving"],
+              entry.attribution,
+            )
+          }),
+          "an entry carries no attribution, or one Apply JSON v1 does not "
+            <> "name: "
             <> string.inspect(entries),
         ),
       ])
@@ -339,6 +379,13 @@ fn survivor_problems(
         <> string.inspect(entries),
     ),
     expect(
+      list.any(entries, fn(entry) {
+        entry.mutant_id == boundary_id && entry.attribution == "surviving"
+      }),
+      "the spoiled test's mutant is not attributed as surviving: "
+        <> string.inspect(entries),
+    ),
+    expect(
       list.any(entries, fn(entry) { entry.killed }),
       "no mutant at all was reported dead, so the run checked nothing: "
         <> string.inspect(entries),
@@ -359,6 +406,185 @@ fn history_problems(run: platform.ProcessResult) -> List(String) {
       <> "answered with\n"
       <> output(run),
   )
+}
+
+/// A generated test whose mutants were already dead is called out as one.
+///
+/// `--verify` re-runs the whole suite, so a mutant the reader's own tests were
+/// already killing comes back dead whether or not the generated test beside
+/// them does anything. The fixture's `abs_test` asserts `abs(-4) == 4`, which
+/// `0 - value -> 0 + value` fails, so every mutant the generated `abs` test
+/// claims was dead before it was written — and a run that reports that as a
+/// kill is exactly the green light bug 3 of the dogfood report describes.
+/// Only the run taken before the write can tell the two apart.
+///
+/// This copy is applied to in text mode, because a warning a reader never
+/// sees is not a warning. It is also the yardstick the reused baseline is
+/// held to: this workspace stored no run, so `--verify` had to measure.
+fn measured_verification() -> Verification {
+  let root = copy_fixture(None)
+  let run = run_cli(["apply", "--root", root, "--yes", "--verify"])
+  discard_workspace(root)
+  let warnings = idle_warnings(run)
+
+  Verification(
+    problems: list.flatten([
+      status_problems("apply --yes --verify (text)", run),
+      expect(
+        warnings != [],
+        "no warning named a generated test that added nothing:\n" <> output(run),
+      ),
+      expect(
+        list.any(warnings, string.contains(_, "abs_kills_")),
+        "the generated `abs` test kills nothing the fixture's own suite was "
+          <> "not already killing, and no warning said so:\n"
+          <> string.join(warnings, "\n"),
+      ),
+      expect(
+        list.all(warnings, string.contains(_, "GMU8017: ")),
+        "a warning about a test that adds nothing does not name the code a "
+          <> "reader would look it up under:\n"
+          <> string.join(warnings, "\n"),
+      ),
+      expect(
+        string.contains(output(run), "Baseline: a run of those files"),
+        "a run with no stored report did not say it measured its own "
+          <> "baseline:\n"
+          <> output(run),
+      ),
+    ]),
+    summary: summary_line(run),
+    warnings: warnings,
+  )
+}
+
+/// A stored run is reused only where it still describes the workspace — and
+/// where it is, it answers exactly what measuring would have.
+///
+/// This is the shortcut the reader pays nothing for and is told nothing
+/// about: `run` followed by `apply --verify` grades the kills against the
+/// stored run instead of taking a second one. What makes that sound is that
+/// nothing the suite is made of has been written since that run started, so
+/// the two baselines are the same baseline — and this copy proves it by
+/// comparing the answer against the measured one, warnings included.
+///
+/// The copy is stamped with a modification time in 2021 first. Without it the
+/// stored run and the files it ran over share a second, and a run that shares
+/// a second with a write is not trusted to have seen it: the shortcut would
+/// be refused for a reason that has nothing to do with what is being tested.
+fn reuse_problems(measured: Verification) -> List(String) {
+  let root = copy_fixture(None)
+  case backdate(root) {
+    False -> {
+      discard_workspace(root)
+      io.println(
+        "skipped: this platform kept no modification times, so the stored "
+        <> "baseline could not be reused deliberately",
+      )
+      []
+    }
+    True -> {
+      let stored = run_cli(["run", "--root", root, "--no-strict"])
+      let run = run_cli(["apply", "--root", root, "--yes", "--verify"])
+      let again = run_cli(["apply", "--root", root, "--yes", "--verify"])
+      discard_workspace(root)
+
+      list.flatten([
+        status_problems("run --no-strict (before apply --verify)", stored),
+        status_problems("apply --yes --verify (stored baseline)", run),
+        expect(
+          string.contains(output(run), "Baseline: the last stored run"),
+          "a workspace whose stored run predates every source and test file "
+            <> "did not reuse it as the baseline:\n"
+            <> output(run),
+        ),
+        expect(
+          summary_line(run) == measured.summary,
+          "the reused baseline attributed the kills differently from the "
+            <> "measured one:\n  reused:   "
+            <> summary_line(run)
+            <> "\n  measured: "
+            <> measured.summary,
+        ),
+        expect(
+          idle_warnings(run) == measured.warnings,
+          "the reused baseline named different tests as adding nothing:\n"
+            <> "  reused:\n"
+            <> string.join(idle_warnings(run), "\n")
+            <> "\n  measured:\n"
+            <> string.join(measured.warnings, "\n"),
+        ),
+        // The stored run is now the older half of this workspace: the
+        // generated tests were written after it started, so it is no longer a
+        // verdict on the suite in the tree. Reusing it here is what made a
+        // second `--verify` credit those tests with kills their own baseline
+        // had already recorded.
+        status_problems("apply --yes --verify (second time)", again),
+        expect(
+          string.contains(output(again), "Baseline: a run of those files"),
+          "a second --verify reused a stored run taken before the generated "
+            <> "tests it is grading were written:\n"
+            <> output(again),
+        ),
+        expect(
+          string.contains(summary_line(again), "0 newly killed"),
+          "a second --verify over an applied workspace credited the tests it "
+            <> "wrote nothing this time with a kill:\n"
+            <> summary_line(again),
+        ),
+        expect(
+          idle_warnings(again) == [],
+          "a second --verify wrote no test at all, and warned about one "
+            <> "anyway:\n"
+            <> string.join(idle_warnings(again), "\n"),
+        ),
+      ])
+    }
+  }
+}
+
+/// One text-mode `apply --yes --verify`, reduced to what it claimed.
+type Verification {
+  Verification(problems: List(String), summary: String, warnings: List(String))
+}
+
+/// The line that says how many mutants died and which run is owed each kill.
+fn summary_line(run: platform.ProcessResult) -> String {
+  output(run)
+  |> string.split("\n")
+  |> list.filter(string.starts_with(_, "Verified "))
+  |> string.join("\n")
+}
+
+/// Every warning about a generated test that added nothing.
+fn idle_warnings(run: platform.ProcessResult) -> List(String) {
+  output(run)
+  |> string.split("\n")
+  |> list.filter(string.contains(_, "adds nothing"))
+  |> list.sort(string.compare)
+}
+
+/// Stamps a workspace with a modification time long before this run.
+///
+/// `touch` is POSIX and this smoke is Erlang-only, but a filesystem that
+/// keeps no useful times is answered with `False` so the caller can skip
+/// rather than fail over something no change of ours can fix.
+fn backdate(root: String) -> Bool {
+  list.each(list.append(fixture_files, [".", "src", "test"]), fn(relative) {
+    let _ =
+      platform.run_process(
+        "touch",
+        ["-t", "202101010000", path.join(root, relative)],
+        root,
+        [],
+        10_000,
+      )
+    Nil
+  })
+  case simplifile.link_info(path.join(root, "test")) {
+    Ok(info) -> info.mtime_seconds < 1_631_500_000
+    Error(_) -> False
+  }
 }
 
 // --- The names the reader's own test module already binds --------------------
@@ -764,7 +990,13 @@ type Plan {
 }
 
 type Verified {
-  Verified(mutant_id: String, display_id: String, outcome: String, killed: Bool)
+  Verified(
+    mutant_id: String,
+    display_id: String,
+    outcome: String,
+    killed: Bool,
+    attribution: String,
+  )
 }
 
 type Candidate {
@@ -818,11 +1050,15 @@ fn verified_decoder() -> decode.Decoder(Verified) {
   use display_id <- decode.field("display_id", decode.string)
   use outcome <- decode.field("outcome", decode.string)
   use killed <- decode.field("killed", decode.bool)
+  // Read as optional so that an output missing it is reported as the one
+  // entry that carries no attribution rather than as JSON nobody can decode.
+  use attribution <- decode.optional_field("attribution", "", decode.string)
   decode.success(Verified(
     mutant_id: mutant_id,
     display_id: display_id,
     outcome: outcome,
     killed: killed,
+    attribution: attribution,
   ))
 }
 
