@@ -256,6 +256,29 @@ pub fn add_one_test() { calculator.add_one(1) |> should.equal(2) }
   write(path.join(directory, "test", "artifact_smoke_test.gleam"), "import gleeunit\npub fn main() { gleeunit.main() }\n");
 }
 
+function addSmartestConsumerContract(directory) {
+  write(path.join(directory, "test", "artifact_smoke_test.gleam"), `import smartest
+
+pub fn main() -> Nil { smartest.main() }
+`);
+  write(path.join(directory, "test", "smartest_api_test.gleam"), `import gleam/list
+import smartest.{type Test}
+import smartest/gen
+import smartest/property
+import smartest/testing
+
+pub fn packaged_example_test() -> Test {
+  testing.example(fn() { assert 1 + 1 == 2 })
+}
+
+pub fn packaged_property_test() -> Test {
+  property.for_all(gen.list(gen.int()), fn(items) {
+    assert list.reverse(list.reverse(items)) == items
+  })
+}
+`);
+}
+
 function verifyReports(project, label) {
   const jsonPath = path.join(project, "reports", "mutation", "mutation.json");
   const htmlPath = path.join(project, "reports", "mutation", "mutation.html");
@@ -293,7 +316,12 @@ function smokeHexArtifact(artifact, temporaryRoot) {
     }
   }
   makeMutationProject(consumer, "gleam_mutants = { path = \"vendor/gleam_mutants\" }\n");
+  addSmartestConsumerContract(consumer);
   run("gleam", ["deps", "download"], consumer);
+  const smartest = run("gleam", ["test", "--target", "erlang"], consumer, { capture: true });
+  if (!smartest.includes("3 passed, 0 failed")) {
+    throw new Error(`Packaged Smartest discovery did not run every consumer test: ${smartest}`);
+  }
   const output = run("gleam", ["run", "-m", "gleam_mutants", "--", "--version"], consumer, { capture: true });
   if (!output.includes(`gleam-mutants ${version}`)) throw new Error(`Unexpected direct dependency CLI version: ${output}`);
   run("gleam", ["run", "-m", "gleam_mutants", "--", "run", "--no-strict", "--jobs", "2"], consumer);

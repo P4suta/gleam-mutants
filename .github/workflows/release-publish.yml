@@ -25,13 +25,33 @@ name: Publish release
         required: false
         default: true
         type: boolean
+      approve_smartest_name:
+        description: >-
+          Product owner completed name/trademark review and approves Smartest
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: release-publish-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
+  name-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: node --test scripts/name-gate.test.mjs
+      - name: Verify the live Smartest name release gate
+        env:
+          SMARTEST_NAME_REVIEW_APPROVED: >-
+            ${{ inputs.approve_smartest_name }}
+        run: node scripts/check-smartest-name.mjs
+
   publish:
+    needs: name-review
     # Configure required reviewers for the `release` environment in repository
     # settings.
     environment:
@@ -120,6 +140,12 @@ jobs:
       - run: mise run test-ecosystem
       - run: mise run package
       - run: mise run release-candidate
+
+      - name: Recheck the Smartest name immediately before publication
+        env:
+          SMARTEST_NAME_REVIEW_APPROVED: >-
+            ${{ inputs.approve_smartest_name }}
+        run: node scripts/check-smartest-name.mjs
 
       # sigstore/cosign-installer v4.1.2
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6

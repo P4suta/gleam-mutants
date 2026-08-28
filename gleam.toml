@@ -6,11 +6,16 @@ name = "gleam_mutants"
 version = "0.1.0"
 # x-release-please-end
 gleam = ">= 1.17.0 and < 2.0.0"
-internal_modules = ["gleam_mutants/*", "gleam_mutants/core/*", "gleam_mutants/suggest/*"]
+internal_modules = ["gleam_mutants/*", "gleam_mutants/core/*", "gleam_mutants/suggest/*", "smartest/internal/*"]
 
 description = "Mutation testing for Gleam across Erlang, Node, Deno, and Bun"
 licences = ["MIT", "Apache-2.0"]
 repository = { type = "github", user = "P4suta", repo = "gleam-mutants" }
+
+[[documentation.pages]]
+title = "Smartest"
+path = "smartest.html"
+source = "docs/smartest.md"
 
 [[documentation.pages]]
 title = "Configuration"
@@ -34,16 +39,23 @@ source = "docs/architecture.md"
 
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"
-glance = ">= 6.1.0 and < 6.2.0"
+glance = ">= 7.0.0 and < 8.0.0"
 glint = ">= 1.3.0 and < 1.4.0"
 tomlet = ">= 1.3.0 and < 1.4.0"
 simplifile = ">= 2.6.0 and < 2.7.0"
 child_process = ">= 2.1.0 and < 2.2.0"
 gleam_crypto = ">= 1.6.0 and < 1.7.0"
 gleam_json = ">= 3.1.0 and < 3.2.0"
+girard = ">= 2.0.0 and < 3.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.9.0 and < 1.12.0"
+
+[javascript.deno]
+allow_env = true
+allow_read = true
+allow_run = true
+allow_write = true
 
 [tools.gleam_mutants]
 version = 1

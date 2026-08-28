@@ -206,6 +206,61 @@ pub fn map(generator: Generator(a), f: fn(a) -> b) -> Generator(b) {
   })
 }
 
+/// Maps values a partial function accepts and deterministically retries roots
+/// it rejects.
+///
+/// Shrink candidates are filtered rather than retried, so every value in the
+/// resulting tree satisfies the same predicate. Exhausting the explicit
+/// attempt budget fails closed: a smart constructor that cannot produce a
+/// value must not silently substitute an unrelated input.
+pub fn filter_map(
+  generator: Generator(a),
+  max_attempts: Int,
+  transform: fn(a) -> Option(b),
+) -> Generator(b) {
+  Generator(fn(s) { draw_accepted(generator, s, max_attempts, transform) })
+}
+
+fn draw_accepted(
+  generator: Generator(a),
+  s: Seed,
+  remaining: Int,
+  transform: fn(a) -> Option(b),
+) -> #(Tree(b), Seed) {
+  case remaining <= 0 {
+    True -> panic as "gleam_mutants: filter_map exhausted its attempt budget"
+    False -> {
+      let #(tree, advanced) = generate(generator, s)
+      case filter_tree(tree, transform) {
+        Some(accepted) -> #(accepted, advanced)
+        None -> draw_accepted(generator, advanced, remaining - 1, transform)
+      }
+    }
+  }
+}
+
+fn filter_tree(
+  tree: Tree(a),
+  transform: fn(a) -> Option(b),
+) -> Option(Tree(b)) {
+  case transform(tree.root) {
+    None -> None
+    Some(root) ->
+      Some(
+        Tree(root, fn() {
+          tree
+          |> tree_children
+          |> list.filter_map(fn(child) {
+            case filter_tree(child, transform) {
+              Some(accepted) -> Ok(accepted)
+              None -> Error(Nil)
+            }
+          })
+        }),
+      )
+  }
+}
+
 /// Combines two generators. Shrinks of the first value are tried before
 /// shrinks of the second.
 pub fn map2(

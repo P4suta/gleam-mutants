@@ -23,6 +23,8 @@ export type { CliResult, MutantRange };
 export interface HostSettings {
   // The executable and the arguments it already carries, executable first.
   readonly command: readonly string[];
+  // Smartest is a separate CLI with a separate Gleam entry module.
+  readonly smartestCommand: readonly string[];
   // Where `run` leaves its report, relative to the workspace root.
   readonly reportPath: string;
   // How long any one CLI invocation may take. Zero means no budget.
@@ -72,6 +74,11 @@ export interface HostOpenOptions {
   readonly reveal?: string;
 }
 
+export interface HostInputOptions {
+  readonly prompt: string;
+  readonly placeHolder?: string;
+}
+
 /**
  * The editor, as far as a flow is concerned.
  *
@@ -101,14 +108,30 @@ export interface Host {
   /** Runs the configured command with `args`, capturing both streams. */
   run(args: readonly string[]): Promise<CliResult>;
 
+  /** Runs one explicitly selected configured command with `args`. */
+  runWith(
+    command: readonly string[],
+    args: readonly string[],
+  ): Promise<CliResult>;
+
   /** Runs `args` in a visible terminal, where the user watches it work. */
   runInTerminal(name: string, args: readonly string[]): void;
+
+  /** Runs one explicitly selected command in a visible terminal. */
+  runInTerminalWith(
+    name: string,
+    command: readonly string[],
+    args: readonly string[],
+  ): void;
 
   /** The chosen item, or undefined when the user dismissed the list. */
   pick<T extends HostQuickPickItem>(
     items: readonly T[],
     options: HostPickOptions,
   ): Promise<T | undefined>;
+
+  /** A line of user-authored audit text, or undefined when dismissed. */
+  input(options: HostInputOptions): Promise<string | undefined>;
 
   /** A notification, with buttons. Resolves to the button that was hit. */
   info(message: string, ...actions: string[]): Promise<string | undefined>;

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import gleam/list
 import gleam/string
 import gleam_mutants/core/path
 import gleam_mutants/platform
@@ -93,13 +94,57 @@ pub fn generated_runtime_resolves_the_active_mutant_per_process_test() {
   assert after_cleanup == from_environment
 }
 
-pub fn generated_javascript_runtime_exposes_an_active_override_test() {
+pub fn generated_javascript_runtime_uses_process_context_without_a_global_override_test() {
   let root = fresh_snapshot_root()
   let assert Ok(generated) = runtime.generate(root, platform.random_nonce())
   let assert Ok(source) =
     simplifile.read(generated_source_path(root, runtime.name(generated), ".mjs"))
   let assert Ok(Nil) = simplifile.delete(root)
 
-  assert string.contains(source, "export function set_active")
+  assert !string.contains(source, "let override")
+  assert !string.contains(source, "set_active")
+  assert string.contains(source, "globalThis.process?.env")
+  assert string.contains(source, "globalThis.Deno.env.get")
   assert string.contains(source, "GLEAM_MUTANTS_ACTIVE")
+}
+
+pub fn generated_javascript_runtime_isolates_parallel_process_contexts_test() {
+  let root = fresh_snapshot_root()
+  let assert Ok(generated) = runtime.generate(root, platform.random_nonce())
+  let module = "./src/" <> runtime.name(generated) <> "_ffi.mjs"
+  let script =
+    "import { active } from '"
+    <> module
+    <> "'; setTimeout(() => process.stdout.write(active()), 100)"
+  let requests =
+    ["mutant-one", "mutant-two"]
+    |> list.map(fn(id) {
+      platform.ProcessRequest(
+        "node",
+        ["--input-type=module", "-e", script],
+        root,
+        [#("GLEAM_MUTANTS_ACTIVE", id)],
+        5000,
+      )
+    })
+  let results = platform.run_process_batch(requests, 2)
+  let assert Ok(Nil) = simplifile.delete(root)
+
+  let observed =
+    list.map(results, fn(result) {
+      #(
+        result.process.status,
+        result.process.stdout,
+        result.process.stderr,
+        result.process.timed_out,
+      )
+    })
+  let expected = [
+    #(0, "mutant-one", "", False),
+    #(0, "mutant-two", "", False),
+  ]
+  case observed == expected {
+    True -> Nil
+    False -> panic as string.inspect(observed)
+  }
 }

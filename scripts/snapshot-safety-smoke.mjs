@@ -35,6 +35,13 @@ try {
   makeProject(valid);
   makeProject(rejected);
   fs.mkdirSync(outside, { recursive: true });
+  const nestedDependencies = path.join(valid, "editors", "demo", "node_modules", ".bin");
+  fs.mkdirSync(nestedDependencies, { recursive: true });
+  fs.symlinkSync(
+    outside,
+    path.join(nestedDependencies, "tool"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
   fs.symlinkSync(outside, path.join(rejected, "escape"), process.platform === "win32" ? "junction" : "dir");
   for (const target of ["erlang", "javascript"]) {
     run(target, "valid", valid);

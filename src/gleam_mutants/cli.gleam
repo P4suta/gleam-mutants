@@ -67,7 +67,14 @@ pub type Command {
 }
 
 pub fn main() -> Nil {
-  let arguments = platform.arguments()
+  run(platform.arguments())
+}
+
+/// Runs the compatibility CLI with an explicit argument list.
+///
+/// Smartest uses this entrypoint for its `mutants ...` namespace without
+/// changing any existing parsing, diagnostics, or exit codes.
+pub fn run(arguments: List(String)) -> Nil {
   case parse(arguments) {
     Error(message) -> {
       write_diagnostic(

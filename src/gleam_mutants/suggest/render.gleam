@@ -78,6 +78,7 @@ pub type Suggestion {
     original: String,
     replacement: String,
     inputs: List(String),
+    support_modules: List(String),
     expected: Option(String),
     expected_inspect: String,
     expected_outcome: Outcome,
@@ -291,6 +292,7 @@ fn bound(scope: Scope, module: String) -> String {
 fn support(suggestions: List(Suggestion), style: AssertStyle) -> List(String) {
   let written = list.filter(suggestions, renderable)
   list.flatten([
+    list.flat_map(written, fn(suggestion) { suggestion.support_modules }),
     when(option_names(written) != [], option_module),
     when(list.any(written, inspects), string_module),
     when(written != [] && style == ShouldEqual, should_module),
@@ -320,6 +322,9 @@ pub fn requirements(
   let written = list.filter(suggestions, renderable)
   list.flatten([
     list.map(written, fn(suggestion) { needed(scope, suggestion.module_path) }),
+    written
+      |> list.flat_map(fn(suggestion) { suggestion.support_modules })
+      |> list.map(needed(scope, _)),
     case option_names(written), scope.qualify_option {
       [], _ -> []
       _, True -> [needed(scope, option_module)]
@@ -445,7 +450,17 @@ pub fn rendered(scope: Scope, suggestion: Suggestion) -> Suggestion {
     last_segment(suggestion.module_path),
     qualifier(scope, suggestion.module_path),
   )
+  |> rendered_support_modules(scope)
   |> qualified_options(scope)
+}
+
+fn rendered_support_modules(
+  suggestion: Suggestion,
+  scope: Scope,
+) -> Suggestion {
+  list.fold(suggestion.support_modules, suggestion, fn(current, module) {
+    renamed_values(current, last_segment(module), qualifier(scope, module))
+  })
 }
 
 /// `suggestion` with every option constructor it names written through the

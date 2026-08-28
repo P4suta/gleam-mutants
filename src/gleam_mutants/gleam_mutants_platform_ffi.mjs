@@ -288,6 +288,7 @@ self.onmessage = async ({ data }) => {
 `;
 
 function startDenoProcess(executable, arguments_, workingDirectory, environment, timeoutMs) {
+  const started = performance.now();
   const shared = new SharedArrayBuffer(8 + 256 * 1024);
   const control = new Int32Array(shared, 0, 2);
   const workerUrl = URL.createObjectURL(new Blob([denoProcessWorkerSource], { type: "text/javascript" }));
@@ -300,7 +301,7 @@ function startDenoProcess(executable, arguments_, workingDirectory, environment,
     timeoutMs,
     shared,
   });
-  return { shared, control, workerUrl, worker, timeoutMs };
+  return { shared, control, workerUrl, worker, timeoutMs, started };
 }
 
 function finishDenoProcess(handle) {
@@ -452,9 +453,8 @@ export function run_process_batch(requestList, jobs) {
       const handles = wave.map(([executable, args, cwd, environment, timeoutMs]) =>
         startDenoProcess(executable, args, cwd, environment, timeoutMs));
       for (const handle of handles) {
-        const started = performance.now();
         const result = finishDenoProcess(handle);
-        results.push([...result, Math.max(0, Math.trunc(performance.now() - started))]);
+        results.push([...result, Math.max(0, Math.trunc(performance.now() - handle.started))]);
       }
     }
     if (results.some(result => result[0] === 130)) Deno.exit(130);
@@ -477,6 +477,15 @@ export function run_process_batch(requestList, jobs) {
   status = output.status ?? -2;
   stdout = String(output.stdout || "");
   stderr = String(output.stderr || output.error?.message || "");
+  if (output.error) {
+    return toList(requests.map(() => [
+      -2,
+      "",
+      `batch runner failed: ${stderr || String(output.error.message || output.error)}`,
+      false,
+      0,
+    ]));
+  }
   if (status !== 0) {
     if (status === 130) {
       if (globalThis.Deno) Deno.exit(130);

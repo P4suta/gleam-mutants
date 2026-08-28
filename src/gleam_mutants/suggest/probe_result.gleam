@@ -63,6 +63,7 @@ pub type ProbeResult {
     mutant: String,
     status: Status,
     inputs: List(String),
+    support_modules: List(String),
     expected: Option(String),
     expected_inspect: String,
     expected_outcome: Outcome,
@@ -115,6 +116,7 @@ pub fn encode(result: ProbeResult) -> String {
     #("mutant", json.string(result.mutant)),
     #("status", json.string(status_name(result.status))),
     #("inputs", json.array(result.inputs, json.string)),
+    #("support_modules", json.array(result.support_modules, json.string)),
     #("expected", json.nullable(result.expected, json.string)),
     #("expected_inspect", json.string(result.expected_inspect)),
     #("expected_outcome", json.string(outcome_name(result.expected_outcome))),
@@ -152,6 +154,11 @@ fn decoder() -> decode.Decoder(ProbeResult) {
   use mutant <- decode.field("mutant", decode.string)
   use status <- decode.field("status", status_decoder())
   use inputs <- decode.field("inputs", decode.list(decode.string))
+  use support_modules <- decode.optional_field(
+    "support_modules",
+    [],
+    decode.list(decode.string),
+  )
   use expected <- decode.optional_field(
     "expected",
     None,
@@ -186,6 +193,7 @@ fn decoder() -> decode.Decoder(ProbeResult) {
     mutant: mutant,
     status: status,
     inputs: inputs,
+    support_modules: support_modules,
     expected: expected,
     expected_inspect: expected_inspect,
     expected_outcome: expected_outcome,

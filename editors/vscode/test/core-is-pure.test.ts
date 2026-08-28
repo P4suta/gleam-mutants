@@ -23,6 +23,7 @@ describe("src/core", () => {
       "cli.ts",
       "diagnostics.ts",
       "json.ts",
+      "smartest.ts",
       "stryker.ts",
       "suggest.ts",
     ]);

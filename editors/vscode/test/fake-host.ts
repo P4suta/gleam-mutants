@@ -10,6 +10,7 @@ import type {
   Host,
   HostDiagnostic,
   HostDiagnostics,
+  HostInputOptions,
   HostOpenOptions,
   HostPickOptions,
   HostQuickPickItem,
@@ -34,6 +35,12 @@ export interface RecordedOpen {
 
 export interface RecordedTerminal {
   readonly name: string;
+  readonly command: readonly string[];
+  readonly args: readonly string[];
+}
+
+export interface RecordedRun {
+  readonly command: readonly string[];
   readonly args: readonly string[];
 }
 
@@ -86,6 +93,7 @@ export class FakeHost implements Host {
   // the command line it is. `withGleamRun` swaps in the shipped default.
   settingsValue: HostSettings = {
     command: ["gleam-mutants"],
+    smartestCommand: ["smartest"],
     reportPath: "reports/mutation/mutation.json",
     timeoutMs: 300_000,
   };
@@ -99,10 +107,13 @@ export class FakeHost implements Host {
   readonly replies = new Map<string, Reply>();
 
   readonly runs: Array<readonly string[]> = [];
+  readonly runCommands: RecordedRun[] = [];
   readonly terminals: RecordedTerminal[] = [];
   readonly messages: RecordedMessage[] = [];
   readonly picks: RecordedPick[] = [];
   readonly opened: RecordedOpen[] = [];
+  readonly inputs: HostInputOptions[] = [];
+  readonly inputAnswers: Array<string | undefined> = [];
   readonly lines: string[] = [];
   outputShown = 0;
 
@@ -131,8 +142,16 @@ export class FakeHost implements Host {
   }
 
   run(args: readonly string[]): Promise<CliResult> {
+    return this.runWith(this.settingsValue.command, args);
+  }
+
+  runWith(
+    command: readonly string[],
+    args: readonly string[],
+  ): Promise<CliResult> {
     this.runs.push([...args]);
-    const subcommand = this.subcommandOf(args);
+    this.runCommands.push({ command: [...command], args: [...args] });
+    const subcommand = this.subcommandOf(command, args);
     const reply = this.replies.get(subcommand);
     if (reply === undefined) {
       throw new Error(
@@ -143,7 +162,15 @@ export class FakeHost implements Host {
   }
 
   runInTerminal(name: string, args: readonly string[]): void {
-    this.terminals.push({ name, args: [...args] });
+    this.runInTerminalWith(name, this.settingsValue.command, args);
+  }
+
+  runInTerminalWith(
+    name: string,
+    command: readonly string[],
+    args: readonly string[],
+  ): void {
+    this.terminals.push({ name, command: [...command], args: [...args] });
   }
 
   pick<T extends HostQuickPickItem>(
@@ -156,6 +183,11 @@ export class FakeHost implements Host {
     }
     if (this.chooseIndex === null) return Promise.resolve(undefined);
     return Promise.resolve(items[this.chooseIndex]);
+  }
+
+  input(options: HostInputOptions): Promise<string | undefined> {
+    this.inputs.push(options);
+    return Promise.resolve(this.inputAnswers.shift());
   }
 
   info(message: string, ...actions: string[]): Promise<string | undefined> {
@@ -231,8 +263,11 @@ export class FakeHost implements Host {
   }
 
   /** The subcommand of one argument list, past the configured prefix. */
-  private subcommandOf(args: readonly string[]): string {
-    const prefix = this.settingsValue.command.slice(1);
+  private subcommandOf(
+    command: readonly string[],
+    args: readonly string[],
+  ): string {
+    const prefix = command.slice(1);
     for (const [index, part] of prefix.entries()) {
       if (args[index] !== part) {
         throw new Error(

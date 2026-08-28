@@ -271,11 +271,16 @@ fn special_file_refusal(relative: String) -> String {
 }
 
 fn excluded(relative: String, excluded_directories: List(String)) -> Bool {
-  let first = relative |> string.split("/") |> list.first |> result.unwrap("")
-  list.contains(
-    [".git", "build", tool_directory, ".mise", "node_modules"],
-    first,
-  )
+  let segments =
+    relative
+    |> mutant.normalize_path
+    |> string.split("/")
+  list.any(segments, fn(segment) {
+    list.contains(
+      [".git", "build", tool_directory, ".mise", "node_modules"],
+      segment,
+    )
+  })
   || list.any(excluded_directories, fn(directory) {
     relative == directory || string.starts_with(relative, directory <> "/")
   })

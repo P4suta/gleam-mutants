@@ -53,11 +53,28 @@ export async function invoke(
   options: Omit<CliOptions, "root">,
   name: string,
 ): Promise<Invoked> {
+  return await invokeCommand(
+    host,
+    host.settings().command,
+    subcommand,
+    options,
+    name,
+  );
+}
+
+/** Runs a subcommand through an explicitly selected configured CLI. */
+export async function invokeCommand(
+  host: Host,
+  command: readonly string[],
+  subcommand: string | readonly string[],
+  options: Omit<CliOptions, "root">,
+  name: string,
+): Promise<Invoked> {
   const settings = host.settings();
 
   let args: string[];
   try {
-    args = buildArgs(settings.command, subcommand, {
+    args = buildArgs(command, subcommand, {
       ...options,
       root: host.root,
     });
@@ -65,11 +82,11 @@ export async function invoke(
     return await report(host, `Could not run \`${name}\`: ${reasonOf(error)}`);
   }
 
-  host.log(`$ ${[settings.command[0] ?? "", ...args].join(" ")}`);
+  host.log(`$ ${[command[0] ?? "", ...args].join(" ")}`);
 
   let result: CliResult;
   try {
-    result = await host.run(args);
+    result = await host.runWith(command, args);
   } catch (error) {
     return await report(host, `Could not run \`${name}\`: ${reasonOf(error)}`);
   }

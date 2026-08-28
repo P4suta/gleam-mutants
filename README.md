@@ -16,6 +16,13 @@ The engine and its lossless `RunReport` are Gleam-native. Every completed run
 also projects that report into the Stryker report ecosystem format pinned to
 Mutation Testing Elements and report-schema 3.9.0.
 
+The repository also develops **Smartest**, a Gleam-first adaptive verification
+layer that unifies lazy examples, properties, models, snapshots, fuzzing,
+finite and solver-bounded exploration, integration transcripts, reviewed
+corpus replay, and mutation goals. Mutation never acts as its correctness
+oracle. See the [Smartest guide](docs/smartest.md) for the current API,
+evidence states, capability model, and foreground CLI modes.
+
 ## Install
 
 From a checked-out repository, add the tool as a path dependency:
@@ -245,9 +252,9 @@ failure. The Linux workflow runs Sunday at 03:41 UTC or manually, has a
 absent from ordinary PR CI and the daily nightly matrix, but is required by the
 manual release-candidate and publish gates.
 
-See [configuration](docs/configuration.md), [operators](docs/operators.md),
-[suggesting tests](docs/suggest.md), and [architecture](docs/architecture.md)
-for details.
+See [Smartest](docs/smartest.md), [configuration](docs/configuration.md),
+[operators](docs/operators.md), [suggesting tests](docs/suggest.md), and
+[architecture](docs/architecture.md) for details.
 
 ## Licence
 

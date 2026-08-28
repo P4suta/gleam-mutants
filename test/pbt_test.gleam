@@ -130,6 +130,34 @@ pub fn bind_chooses_the_next_generator_from_the_first_value_test() {
   assert pbt.tree_root(tree) == 21
 }
 
+pub fn filter_map_is_deterministic_and_keeps_only_accepted_values_test() {
+  let even =
+    pbt.filter_map(pbt.int(0, 100), 200, fn(value) {
+      case value % 2 == 0 {
+        True -> Some(value / 2)
+        False -> None
+      }
+    })
+  let first = sample(even, pbt.seed(27), 100)
+  let again = sample(even, pbt.seed(27), 100)
+
+  assert first == again
+  assert list.all(first, fn(value) { value >= 0 && value <= 50 })
+}
+
+pub fn filter_map_drops_rejected_shrink_candidates_test() {
+  let filtered =
+    pbt.filter_map(pbt.int(0, 100), 200, fn(value) {
+      case value % 2 == 0 {
+        True -> Some(value)
+        False -> None
+      }
+    })
+  let #(tree, _) = pbt.generate(filtered, pbt.seed(1))
+
+  assert list.all(tree_values(tree), fn(value) { value % 2 == 0 })
+}
+
 pub fn one_of_picks_every_branch_and_shrinks_to_the_first_test() {
   let generator =
     pbt.one_of(pbt.constant(0), [pbt.int(20, 29), pbt.int(30, 39)])
@@ -999,6 +1027,10 @@ fn node(value: a, children: List(a)) -> pbt.Tree(a) {
 fn child_roots(tree: pbt.Tree(a)) -> List(a) {
   pbt.tree_children(tree)
   |> list.map(pbt.tree_root)
+}
+
+fn tree_values(tree: pbt.Tree(a)) -> List(a) {
+  [pbt.tree_root(tree), ..list.flat_map(pbt.tree_children(tree), tree_values)]
 }
 
 /// Every value reachable from `tree` within `depth` shrink steps, root aside.
