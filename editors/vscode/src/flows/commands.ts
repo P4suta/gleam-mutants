@@ -18,6 +18,11 @@ import { refreshDiagnostics, summariseRefresh } from "./diagnostics";
 import { invoke, readJson, reasonOf, report } from "./invoke";
 import { applySuggestion, generateTest } from "./quickfix";
 import { displayPrefix, loadReport, locationOf } from "./report";
+import {
+  smartestFindings,
+  smartestReplay,
+  smartestReview,
+} from "./smartest";
 
 export type CommandHandler = (...args: readonly unknown[]) => Promise<void>;
 
@@ -57,6 +62,15 @@ export function commandTable(host: Host): CommandTable {
     },
     "gleam_mutants.explainMutant": async (mutantId) => {
       await explainMutant(host, asText(mutantId));
+    },
+    "gleam_mutants.smartestFindings": async () => {
+      await smartestFindings(host);
+    },
+    "gleam_mutants.smartestReview": async (findingId) => {
+      await smartestReview(host, asText(findingId));
+    },
+    "gleam_mutants.smartestReplay": async (findingId) => {
+      await smartestReplay(host, asText(findingId));
     },
     // Not contributed: the quick fix is the only caller that has a mutant
     // id to give it.

@@ -12,13 +12,15 @@ import glance
 import gleam/float
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam_mutants/suggest/genspec.{
-  type GenSpec, type VariantSpec, BitArraySpec, BoolSpec, CustomSpec, FloatSpec,
-  IntSpec, ListSpec, NilSpec, OptionSpec, RecursiveRef, ResultSpec, StringSpec,
-  TupleSpec,
+  type GenSpec, type OpaqueAccess, type OpaqueObserver, type OpaqueProvider,
+  type VariantSpec, BitArraySpec, BoolSpec, CustomSpec, FloatSpec,
+  ImportedCustomSpec, ImportedModuleAccess, IntSpec, ListSpec, NilSpec,
+  OpaqueSpec, OptionProvider, OptionSpec, RecursiveRef, ResultProvider,
+  ResultSpec, StringSpec, TargetModuleAccess, TupleSpec, ValueProvider,
 }
 import gleam_mutants/suggest/hints
 import gleam_mutants/suggest/probe_result
@@ -173,10 +175,24 @@ fn escaped(grapheme: String) -> String {
 type Custom {
   Custom(
     key: String,
+    module: Option(String),
     name: String,
     arguments: List(GenSpec),
     variants: List(VariantSpec),
     scope: Scope,
+  )
+}
+
+/// One opaque type whose public constructor/accessor pair the probe uses.
+type Opaque {
+  Opaque(
+    key: String,
+    module: String,
+    name: String,
+    arguments: List(GenSpec),
+    provider: OpaqueProvider,
+    observer: OpaqueObserver,
+    access: OpaqueAccess,
   )
 }
 
@@ -201,11 +217,12 @@ type Helpers {
     // True when an annotation names `Option` though no helper needs it.
     option_types: Bool,
     customs: List(#(String, Custom)),
+    opaques: List(#(String, Opaque)),
   )
 }
 
 fn no_helpers() -> Helpers {
-  Helpers(False, False, False, False, False, False, False, False, False, [])
+  Helpers(False, False, False, False, False, False, False, False, False, [], [])
 }
 
 /// Every type one probed function mentions: its parameters and its result.
@@ -214,6 +231,50 @@ fn plan_specs(plan: typederive.FunctionPlan) -> List(GenSpec) {
   case plan.return_spec {
     Some(spec) -> list.append(parameters, [spec])
     None -> parameters
+  }
+}
+
+/// Package modules a replay test must import for rendered opaque values.
+///
+/// The probe has its own imports, but an accepted witness is rendered in a
+/// different test module. Keeping this provenance on the wire prevents a
+/// cross-module smart-constructor expression from becoming uncompilable when
+/// it moves into the tracked corpus.
+pub fn support_modules(plan: typederive.FunctionPlan) -> List(String) {
+  plan_specs(plan)
+  |> list.flat_map(spec_support_modules)
+  |> list.unique
+}
+
+fn spec_support_modules(spec: GenSpec) -> List(String) {
+  case spec {
+    ListSpec(element) | OptionSpec(element) -> spec_support_modules(element)
+    ResultSpec(ok, error) ->
+      list.append(spec_support_modules(ok), spec_support_modules(error))
+    TupleSpec(elements) -> list.flat_map(elements, spec_support_modules)
+    CustomSpec(_, arguments, variants)
+    | ImportedCustomSpec(_, _, arguments, variants) ->
+      list.append(
+        list.flat_map(arguments, spec_support_modules),
+        list.flat_map(variants, fn(variant) {
+          list.flat_map(variant.fields, fn(field) {
+            spec_support_modules(field.spec)
+          })
+        }),
+      )
+    OpaqueSpec(module, _, arguments, provider, observer, access) -> {
+      let own = case access {
+        TargetModuleAccess -> []
+        ImportedModuleAccess -> [module]
+      }
+      list.flatten([
+        own,
+        list.flat_map(arguments, spec_support_modules),
+        list.flat_map(provider.parameters, spec_support_modules),
+        spec_support_modules(observer.result),
+      ])
+    }
+    _ -> []
   }
 }
 
@@ -249,7 +310,7 @@ fn collect(spec: GenSpec, scope: Scope, acc: Helpers) -> Helpers {
         Ok(_) -> named
         Error(_) -> {
           let inner = [#(name, CustomSpec(name, arguments, variants)), ..scope]
-          let entry = Custom(key, name, arguments, variants, inner)
+          let entry = Custom(key, None, name, arguments, variants, inner)
           list.fold(
             variants,
             Helpers(..named, customs: [#(key, entry), ..named.customs]),
@@ -260,6 +321,53 @@ fn collect(spec: GenSpec, scope: Scope, acc: Helpers) -> Helpers {
             },
           )
         }
+      }
+    }
+    ImportedCustomSpec(module, name, arguments, variants) -> {
+      let key = imported_custom_key(module, name, arguments, scope)
+      let named = list.fold(arguments, acc, annotated)
+      case list.key_find(named.customs, key) {
+        Ok(_) -> named
+        Error(_) -> {
+          let value = ImportedCustomSpec(module, name, arguments, variants)
+          let inner = [#(name, value), ..scope]
+          let entry =
+            Custom(key, Some(module), name, arguments, variants, inner)
+          list.fold(
+            variants,
+            Helpers(..named, customs: [#(key, entry), ..named.customs]),
+            fn(seen, variant) {
+              list.fold(variant.fields, seen, fn(deeper, field) {
+                collect(field.spec, inner, deeper)
+              })
+            },
+          )
+        }
+      }
+    }
+    OpaqueSpec(module, name, arguments, provider, observer, access) -> {
+      let key = opaque_key(module, name, arguments, scope)
+      let named = list.fold(arguments, acc, annotated)
+      let nested =
+        list.fold(provider.parameters, named, fn(seen, parameter) {
+          collect(parameter, scope, seen)
+        })
+      let nested = collect(observer.result, scope, nested)
+      let nested = case provider.mode {
+        ValueProvider -> nested
+        OptionProvider -> Helpers(..nested, options: True)
+        ResultProvider -> Helpers(..nested, options: True, results: True)
+      }
+      case list.key_find(nested.opaques, key) {
+        Ok(_) -> nested
+        Error(_) ->
+          Helpers(..nested, opaques: [
+            #(
+              key,
+              Opaque(key, module, name, arguments, provider, observer, access),
+            ),
+            ..nested.opaques
+          ])
       }
     }
     RecursiveRef(_) -> acc
@@ -280,7 +388,13 @@ fn annotated(acc: Helpers, spec: GenSpec) -> Helpers {
     OptionSpec(inner) -> annotated(Helpers(..acc, option_types: True), inner)
     ResultSpec(ok, error) -> annotated(annotated(acc, ok), error)
     TupleSpec(elements) -> list.fold(elements, acc, annotated)
-    CustomSpec(_, arguments, _) -> list.fold(arguments, acc, annotated)
+    CustomSpec(_, arguments, _) | ImportedCustomSpec(_, _, arguments, _) ->
+      list.fold(arguments, acc, annotated)
+    OpaqueSpec(_, _, arguments, provider, observer, _) -> {
+      let acc = list.fold(arguments, acc, annotated)
+      let acc = list.fold(provider.parameters, acc, annotated)
+      annotated(acc, observer.result)
+    }
     _ -> acc
   }
 }
@@ -308,6 +422,33 @@ fn custom_keys(spec: GenSpec, scope: Scope, acc: List(String)) -> List(String) {
             })
           })
         }
+      }
+    }
+    ImportedCustomSpec(module, name, arguments, variants) -> {
+      let key = imported_custom_key(module, name, arguments, scope)
+      case list.contains(acc, key) {
+        True -> acc
+        False -> {
+          let value = ImportedCustomSpec(module, name, arguments, variants)
+          let inner = [#(name, value), ..scope]
+          list.fold(variants, [key, ..acc], fn(seen, variant) {
+            list.fold(variant.fields, seen, fn(deeper, field) {
+              custom_keys(field.spec, inner, deeper)
+            })
+          })
+        }
+      }
+    }
+    OpaqueSpec(module, name, arguments, provider, observer, _) -> {
+      let key = opaque_key(module, name, arguments, scope)
+      let nested =
+        list.fold(provider.parameters, acc, fn(seen, parameter) {
+          custom_keys(parameter, scope, seen)
+        })
+      let nested = custom_keys(observer.result, scope, nested)
+      case list.contains(nested, key) {
+        True -> nested
+        False -> [key, ..nested]
       }
     }
     _ -> acc
@@ -350,6 +491,34 @@ fn custom_key(name: String, arguments: List(GenSpec), scope: Scope) -> String {
   }
 }
 
+fn imported_custom_key(
+  module: String,
+  name: String,
+  arguments: List(GenSpec),
+  scope: Scope,
+) -> String {
+  "m_" <> module_key(module) <> "_" <> custom_key(name, arguments, scope)
+}
+
+fn opaque_key(
+  module: String,
+  name: String,
+  arguments: List(GenSpec),
+  scope: Scope,
+) -> String {
+  "opaque_" <> imported_custom_key(module, name, arguments, scope)
+}
+
+fn module_key(module: String) -> String {
+  module
+  |> string.replace("_", "__")
+  |> string.replace("/", "_s_")
+}
+
+fn module_alias(module: String) -> String {
+  "smartest_type_" <> module_key(module)
+}
+
 /// One type argument written in the alphabet a Gleam function name allows.
 ///
 /// A custom type is marked with a leading `t_`, which keeps `Box(List(String))`
@@ -375,6 +544,10 @@ fn fingerprint(spec: GenSpec, scope: Scope) -> String {
       <> "_"
       <> string.join(list.map(elements, fingerprint(_, scope)), "_")
     CustomSpec(name, arguments, _) -> "t_" <> custom_key(name, arguments, scope)
+    ImportedCustomSpec(module, name, arguments, _) ->
+      "t_" <> imported_custom_key(module, name, arguments, scope)
+    OpaqueSpec(module, name, arguments, _, _, _) ->
+      "t_" <> opaque_key(module, name, arguments, scope)
     RecursiveRef(name) -> "t_" <> recursive_key(name, scope)
   }
 }
@@ -391,6 +564,8 @@ fn recursive_key(name: String, scope: Scope) -> String {
   case list.key_find(scope, name) {
     Ok(CustomSpec(found, arguments, _)) ->
       custom_key(found, arguments, without(scope, name))
+    Ok(ImportedCustomSpec(module, found, arguments, _)) ->
+      imported_custom_key(module, found, arguments, without(scope, name))
     _ -> snake_case(name)
   }
 }
@@ -408,8 +583,12 @@ fn references(spec: GenSpec, name: String) -> Bool {
     OptionSpec(inner) -> references(inner, name)
     ResultSpec(ok, error) -> references(ok, name) || references(error, name)
     TupleSpec(elements) -> list.any(elements, references(_, name))
-    CustomSpec(_, _, variants) ->
+    CustomSpec(_, _, variants) | ImportedCustomSpec(_, _, _, variants) ->
       list.any(variants, variant_references(_, name))
+    OpaqueSpec(_, _, arguments, provider, observer, _) ->
+      list.any(arguments, references(_, name))
+      || list.any(provider.parameters, references(_, name))
+      || references(observer.result, name)
     _ -> False
   }
 }
@@ -448,6 +627,7 @@ pub fn render_probe(spec: ProbeSpec) -> String {
           ],
           printers(helpers),
           customs(spec, helpers, generated_types(functions)),
+          opaque_helpers(spec, helpers, generated_types(functions)),
           function_blocks(functions),
         ]),
       )
@@ -549,6 +729,38 @@ fn instantiations(
         }
       }
     }
+    ImportedCustomSpec(module, name, arguments, variants) -> {
+      let entry = #(
+        imported_custom_key(module, name, arguments, scope),
+        type_source(spec, scope),
+      )
+      case list.contains(acc, entry) {
+        True -> acc
+        False -> {
+          let inner = [#(name, spec), ..scope]
+          list.fold(variants, [entry, ..acc], fn(seen, variant) {
+            list.fold(variant.fields, seen, fn(deeper, field) {
+              instantiations(field.spec, inner, deeper)
+            })
+          })
+        }
+      }
+    }
+    OpaqueSpec(module, name, arguments, provider, observer, _) -> {
+      let entry = #(
+        opaque_key(module, name, arguments, scope),
+        type_source(spec, scope),
+      )
+      let acc = case list.contains(acc, entry) {
+        True -> acc
+        False -> [entry, ..acc]
+      }
+      let acc =
+        list.fold(provider.parameters, acc, fn(seen, parameter) {
+          instantiations(parameter, scope, seen)
+        })
+      instantiations(observer.result, scope, acc)
+    }
     _ -> acc
   }
 }
@@ -627,9 +839,33 @@ fn imports(spec: ProbeSpec, helpers: Helpers) -> String {
         "import " <> spec.pbt_module <> " as pbt",
         "import " <> spec.target_module <> " as target",
       ],
+      imported_type_imports(helpers),
     ]),
     "\n",
   )
+}
+
+fn imported_type_imports(helpers: Helpers) -> List(String) {
+  list.append(
+    helpers.customs
+      |> list.filter_map(fn(found) {
+        case found.1.module {
+          Some(module) -> Ok(module)
+          None -> Error(Nil)
+        }
+      }),
+    list.filter_map(helpers.opaques, fn(found) {
+      case found.1.access {
+        TargetModuleAccess -> Error(Nil)
+        ImportedModuleAccess -> Ok(found.1.module)
+      }
+    }),
+  )
+  |> list.unique
+  |> list.sort(string.compare)
+  |> list.map(fn(module) {
+    "import " <> module <> " as " <> module_alias(module)
+  })
 }
 
 fn constants(spec: ProbeSpec) -> String {
@@ -813,6 +1049,7 @@ fn emit(
   mutant: String,
   status: String,
   inputs: List(String),
+  support_modules: List(String),
   expected: String,
   expected_inspect: String,
   expected_outcome: String,
@@ -830,6 +1067,7 @@ fn emit(
       #(\"mutant\", json_string(mutant)),
       #(\"status\", json_string(status)),
       #(\"inputs\", json_array(inputs)),
+      #(\"support_modules\", json_array(support_modules)),
       #(\"expected\", expected),
       #(\"expected_inspect\", json_string(expected_inspect)),
       #(\"expected_outcome\", json_string(expected_outcome)),
@@ -1010,12 +1248,171 @@ fn customs(
   |> list.reverse
   |> list.map(fn(found) {
     let entry = found.1
-    let printer = custom_printer(qualifier(spec.target_module), entry)
+    let printer = custom_printer(spec.target_module, entry)
     case list.contains(generated, entry.key) {
       True -> custom_generator(entry) <> "\n\n" <> printer
       False -> printer
     }
   })
+}
+
+fn opaque_helpers(
+  spec: ProbeSpec,
+  helpers: Helpers,
+  generated: List(String),
+) -> List(String) {
+  helpers.opaques
+  |> list.reverse
+  |> list.map(fn(found) {
+    let entry = found.1
+    let printer = opaque_printer(spec.target_module, entry)
+    case list.contains(generated, entry.key) {
+      True -> opaque_generator(spec.target_module, entry) <> "\n\n" <> printer
+      False -> printer
+    }
+  })
+}
+
+fn opaque_module_alias(target_module: String, entry: Opaque) -> String {
+  let _ = target_module
+  opaque_access_alias(entry.module, entry.access)
+}
+
+fn opaque_access_alias(module: String, access: OpaqueAccess) -> String {
+  case access {
+    TargetModuleAccess -> "target"
+    ImportedModuleAccess -> module_alias(module)
+  }
+}
+
+fn opaque_instantiation(target_module: String, entry: Opaque) -> String {
+  custom_type_source_with(
+    opaque_module_alias(target_module, entry),
+    entry.name,
+    entry.arguments,
+    no_scope,
+  )
+}
+
+fn opaque_generator(target_module: String, entry: Opaque) -> String {
+  let module_alias = opaque_module_alias(target_module, entry)
+  let generators =
+    list.map(entry.provider.parameters, fn(parameter) {
+      generator_expression(parameter, spent_depth, no_scope, hints.none())
+    })
+  let generated = tuple_generator(generators)
+  let variables =
+    list.map(indices(list.length(generators)), fn(index) {
+      "values." <> int.to_string(index)
+    })
+  let call =
+    module_alias
+    <> "."
+    <> entry.provider.function
+    <> "("
+    <> string.join(variables, ", ")
+    <> ")"
+  let binding = case variables {
+    [] -> "_values"
+    _ -> "values"
+  }
+  let expression = case entry.provider.mode {
+    ValueProvider ->
+      "pbt.map(" <> generated <> ", fn(" <> binding <> ") { " <> call <> " })"
+    OptionProvider ->
+      filtered_provider(generated, binding, call, "Some(value)", "None")
+    ResultProvider ->
+      filtered_provider(generated, binding, call, "Ok(value)", "Error(_)")
+  }
+  "fn gen_"
+  <> entry.key
+  <> "("
+  <> bound("depth", expression)
+  <> ": Int) -> pbt.Generator("
+  <> opaque_instantiation(target_module, entry)
+  <> ") {\n  "
+  <> expression
+  <> "\n}"
+}
+
+fn filtered_provider(
+  generator: String,
+  binding: String,
+  call: String,
+  accepted: String,
+  rejected: String,
+) -> String {
+  "pbt.filter_map("
+  <> generator
+  <> ", 200, fn("
+  <> binding
+  <> ") {\n    case "
+  <> call
+  <> " {\n      "
+  <> accepted
+  <> " -> Some(value)\n      "
+  <> rejected
+  <> " -> None\n    }\n  })"
+}
+
+fn opaque_printer(target_module: String, entry: Opaque) -> String {
+  let module_alias = opaque_module_alias(target_module, entry)
+  let display_module = qualifier(entry.module)
+  let observed = module_alias <> "." <> entry.observer.function <> "(value)"
+  let pairs = case entry.provider.parameters {
+    [] -> []
+    [only] -> [#(only, "observed")]
+    many ->
+      list.index_map(many, fn(spec, index) {
+        #(spec, "observed." <> int.to_string(index))
+      })
+  }
+  let #(rendered, _) = show_expressions(pairs, 0, no_scope)
+  let call = rendered_provider_call(display_module, entry.provider, rendered)
+  let source = case entry.provider.mode {
+    ValueProvider -> call
+    OptionProvider -> wrapped_provider_source("Some", call)
+    ResultProvider -> wrapped_provider_source("Ok", call)
+  }
+  let observed_binding = case entry.provider.parameters {
+    [] -> "_observed"
+    _ -> "observed"
+  }
+  "fn show_"
+  <> entry.key
+  <> "(value: "
+  <> opaque_instantiation(target_module, entry)
+  <> ") -> String {\n  let "
+  <> observed_binding
+  <> " = "
+  <> observed
+  <> "\n  "
+  <> source
+  <> "\n}"
+}
+
+fn rendered_provider_call(
+  module: String,
+  provider: OpaqueProvider,
+  arguments: List(String),
+) -> String {
+  case arguments {
+    [] -> quoted(module <> "." <> provider.function <> "()")
+    _ ->
+      quoted(module <> "." <> provider.function <> "(")
+      <> " <> "
+      <> string.join(arguments, " <> \", \" <> ")
+      <> " <> "
+      <> quoted(")")
+  }
+}
+
+fn wrapped_provider_source(constructor: String, call: String) -> String {
+  quoted("{\n  let assert " <> constructor <> "(value) = ")
+  <> " <> "
+  <> call
+  <> " <> "
+  <> quoted("\n  value\n}")
 }
 
 /// One printer per custom type the helpers reached, in the order they appear.
@@ -1027,7 +1424,26 @@ fn custom_printers(module: String, helpers: Helpers) -> List(String) {
 
 /// The type the helpers of `entry` take and produce, e.g. `target.Box(Int)`.
 fn instantiation(entry: Custom) -> String {
-  custom_type_source(entry.name, entry.arguments, entry.scope)
+  custom_type_source_with(
+    custom_module_alias(entry),
+    entry.name,
+    entry.arguments,
+    entry.scope,
+  )
+}
+
+fn custom_module_alias(entry: Custom) -> String {
+  case entry.module {
+    Some(module) -> module_alias(module)
+    None -> "target"
+  }
+}
+
+fn custom_display_module(target_module: String, entry: Custom) -> String {
+  case entry.module {
+    Some(module) -> qualifier(module)
+    None -> qualifier(target_module)
+  }
 }
 
 fn custom_generator(entry: Custom) -> String {
@@ -1036,7 +1452,7 @@ fn custom_generator(entry: Custom) -> String {
     |> list.filter(fn(variant) {
       variant_references(variant, entry.name) == recursive
     })
-    |> list.map(variant_generator(_, entry.scope))
+    |> list.map(variant_generator(_, entry.scope, custom_module_alias(entry)))
   }
   let base = of_variants(False)
   let deeper = of_variants(True)
@@ -1066,21 +1482,33 @@ fn one_of_expression(options: List(String), name: String) -> String {
   }
 }
 
-fn variant_generator(variant: VariantSpec, scope: Scope) -> String {
+fn variant_generator(
+  variant: VariantSpec,
+  scope: Scope,
+  module_alias: String,
+) -> String {
   let generators =
     list.map(variant.fields, fn(field) {
       generator_expression(field.spec, spent_depth, scope, hints.none())
     })
   case generators {
-    [] -> "pbt.constant(target." <> variant.name <> ")"
+    [] -> "pbt.constant(" <> module_alias <> "." <> variant.name <> ")"
     [only] ->
-      "pbt.map(" <> only <> ", fn(f0) { target." <> variant.name <> "(f0) })"
+      "pbt.map("
+      <> only
+      <> ", fn(f0) { "
+      <> module_alias
+      <> "."
+      <> variant.name
+      <> "(f0) })"
     [first, second] ->
       "pbt.map2("
       <> first
       <> ", "
       <> second
-      <> ", fn(f0, f1) { target."
+      <> ", fn(f0, f1) { "
+      <> module_alias
+      <> "."
       <> variant.name
       <> "(f0, f1) })"
     many -> {
@@ -1090,7 +1518,9 @@ fn variant_generator(variant: VariantSpec, scope: Scope) -> String {
         })
       "pbt.map("
       <> tuple_generator(many)
-      <> ", fn(fields) { target."
+      <> ", fn(fields) { "
+      <> module_alias
+      <> "."
       <> variant.name
       <> "("
       <> string.join(arguments, ", ")
@@ -1099,12 +1529,20 @@ fn variant_generator(variant: VariantSpec, scope: Scope) -> String {
   }
 }
 
-fn custom_printer(module: String, entry: Custom) -> String {
+fn custom_printer(target_module: String, entry: Custom) -> String {
+  let module = custom_display_module(target_module, entry)
+  let code_module = custom_module_alias(entry)
   let clauses =
     list.map(entry.variants, fn(variant) {
       let label = module <> "." <> variant.name
       case variant.fields {
-        [] -> "    target." <> variant.name <> " -> " <> quoted(label)
+        [] ->
+          "    "
+          <> code_module
+          <> "."
+          <> variant.name
+          <> " -> "
+          <> quoted(label)
         fields -> {
           let names =
             list.map(indices(list.length(fields)), fn(index) {
@@ -1131,7 +1569,9 @@ fn custom_printer(module: String, entry: Custom) -> String {
                 None -> text
               }
             })
-          "    target."
+          "    "
+          <> code_module
+          <> "."
           <> variant.name
           <> "("
           <> string.join(bindings, ", ")
@@ -1204,6 +1644,18 @@ fn generator_expression(
       )
     CustomSpec(name, arguments, _) ->
       "gen_type_" <> custom_key(name, arguments, scope) <> "(" <> depth <> ")"
+    ImportedCustomSpec(module, name, arguments, _) ->
+      "gen_type_"
+      <> imported_custom_key(module, name, arguments, scope)
+      <> "("
+      <> depth
+      <> ")"
+    OpaqueSpec(module, name, arguments, _, _, _) ->
+      "gen_"
+      <> opaque_key(module, name, arguments, scope)
+      <> "("
+      <> depth
+      <> ")"
     RecursiveRef(name) ->
       "gen_type_" <> recursive_key(name, scope) <> "(" <> spent_depth <> ")"
   }
@@ -1298,12 +1750,28 @@ fn type_source(spec: GenSpec, scope: Scope) -> String {
       <> string.join(list.map(elements, type_source(_, scope)), ", ")
       <> ")"
     CustomSpec(name, arguments, _) -> custom_type_source(name, arguments, scope)
+    ImportedCustomSpec(module, name, arguments, _) ->
+      custom_type_source_with(module_alias(module), name, arguments, scope)
+    OpaqueSpec(module, name, arguments, _, _, access) ->
+      custom_type_source_with(
+        opaque_access_alias(module, access),
+        name,
+        arguments,
+        scope,
+      )
     RecursiveRef(name) ->
       case list.key_find(scope, name) {
         // The reference is dropped from the scope it resolves in, so a pair of
         // types that name each other cannot chase each other for ever.
         Ok(CustomSpec(found, arguments, _)) ->
           custom_type_source(found, arguments, without(scope, name))
+        Ok(ImportedCustomSpec(module, found, arguments, _)) ->
+          custom_type_source_with(
+            module_alias(module),
+            found,
+            arguments,
+            without(scope, name),
+          )
         _ -> "target." <> name
       }
   }
@@ -1314,10 +1782,20 @@ fn custom_type_source(
   arguments: List(GenSpec),
   scope: Scope,
 ) -> String {
+  custom_type_source_with("target", name, arguments, scope)
+}
+
+fn custom_type_source_with(
+  module_alias: String,
+  name: String,
+  arguments: List(GenSpec),
+  scope: Scope,
+) -> String {
   case arguments {
-    [] -> "target." <> name
+    [] -> module_alias <> "." <> name
     _ ->
-      "target."
+      module_alias
+      <> "."
       <> name
       <> "("
       <> string.join(list.map(arguments, type_source(_, scope)), ", ")
@@ -1432,6 +1910,22 @@ fn show_expression(
         <> ")",
       fresh,
     )
+    ImportedCustomSpec(module, name, arguments, _) -> #(
+      "show_type_"
+        <> imported_custom_key(module, name, arguments, scope)
+        <> "("
+        <> variable
+        <> ")",
+      fresh,
+    )
+    OpaqueSpec(module, name, arguments, _, _, _) -> #(
+      "show_"
+        <> opaque_key(module, name, arguments, scope)
+        <> "("
+        <> variable
+        <> ")",
+      fresh,
+    )
     RecursiveRef(name) -> #(
       "show_type_" <> recursive_key(name, scope) <> "(" <> variable <> ")",
       fresh,
@@ -1520,6 +2014,7 @@ fn probe_function(probe: ProbeFunction) -> String {
         quoted(mutant),
         "\"nondeterministic\"",
         "[]",
+        modules_literal(probe.plan),
         "\"null\"",
         "\"\"",
         "\"returned\"",
@@ -1659,15 +2154,32 @@ fn runner_function(plan: typederive.FunctionPlan) -> String {
 /// Renders the comparison the search and the kill set are both settled by:
 /// two observations disagree only when a test could say how.
 fn agrees_function(plan: typederive.FunctionPlan) -> String {
-  "fn agrees_"
-  <> plan.name
-  <> "(args: "
-  <> args_type(plan)
-  <> ", mutant: String) -> Bool {\n  !separated(\n    normalise(run_"
-  <> plan.name
-  <> "(args, \"\")),\n    normalise(run_"
-  <> plan.name
-  <> "(args, mutant)),\n  )\n}"
+  let opening =
+    "fn agrees_"
+    <> plan.name
+    <> "(args: "
+    <> args_type(plan)
+    <> ", mutant: String) -> Bool {"
+  case plan.return_spec {
+    None ->
+      opening
+      <> "\n  !separated(\n    normalise(run_"
+      <> plan.name
+      <> "(args, \"\")),\n    normalise(run_"
+      <> plan.name
+      <> "(args, mutant)),\n  )\n}"
+    Some(_) ->
+      opening
+      <> "\n  let original = normalise(run_"
+      <> plan.name
+      <> "(args, \"\"))\n  let mutated = normalise(run_"
+      <> plan.name
+      <> "(args, mutant))\n  case original, mutated {\n    Value(original_value), Value(mutated_value) ->\n      show_result_"
+      <> plan.name
+      <> "(original_value) == show_result_"
+      <> plan.name
+      <> "(mutated_value)\n    _, _ -> !separated(original, mutated)\n  }\n}"
+  }
 }
 
 /// Renders the plain structural comparison, which is the wider question:
@@ -1758,6 +2270,7 @@ fn search_function(
     quoted(mutant),
     "\"distinguished\"",
     "show_args_" <> name <> "(shrunk)",
+    modules_literal(probe.plan),
     "expected",
     "observed(original)",
     "ended(original)",
@@ -1788,6 +2301,7 @@ fn search_function(
     quoted(mutant),
     "\"unsupported\"",
     "show_args_" <> name <> "(divided)",
+    modules_literal(probe.plan),
     "\"null\"",
     "observed(original)",
     "ended(original)",
@@ -1804,6 +2318,7 @@ fn search_function(
     quoted(mutant),
     "\"indistinguishable\"",
     "[]",
+    modules_literal(probe.plan),
     "\"null\"",
     "\"\"",
     "\"returned\"",
@@ -1815,6 +2330,10 @@ fn search_function(
     "[]",
   ])
   <> "\n      }\n  }\n}"
+}
+
+fn modules_literal(plan: typederive.FunctionPlan) -> String {
+  "[" <> string.join(list.map(support_modules(plan), quoted), ", ") <> "]"
 }
 
 fn emit_call(indent: String, arguments: List(String)) -> String {

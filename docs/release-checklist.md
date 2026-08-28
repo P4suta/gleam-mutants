@@ -20,6 +20,9 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 - [ ] Confirm all three SBOM scans contain no known High/Critical vulnerability
 - [ ] Confirm the SBOM contains Mutation Testing Elements 3.9.0 and an
       application dependency edge
+- [ ] Confirm the official Hex API still returns 404 for `smartest`
+- [ ] Complete the product-owner name/trademark review and explicitly select
+      `approve_smartest_name` when dispatching candidate and publish workflows
 - [ ] Confirm official Draft-07 schema validation, four-runtime report byte
       parity, offline Chromium/Firefox/WebKit smokes, and vendored
       integrity/hash checks

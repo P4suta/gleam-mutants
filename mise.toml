@@ -151,6 +151,7 @@ run = "node scripts/ecosystem-smoke.mjs"
 [tasks.release-candidate]
 description = "Verify already-built development snapshot artifacts without publishing"
 run = [
+  "node --test scripts/name-gate.test.mjs",
   "node scripts/release-candidate.mjs --dry-run",
   "node scripts/scan-sboms.mjs",
 ]

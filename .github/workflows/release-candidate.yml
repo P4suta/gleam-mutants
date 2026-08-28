@@ -7,6 +7,13 @@ name: Development snapshot evidence
 
 "on":
   workflow_dispatch:
+    inputs:
+      approve_smartest_name:
+        description: >-
+          Product owner completed name/trademark review and approves Smartest
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -16,7 +23,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  name-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+      - run: node --test scripts/name-gate.test.mjs
+      - name: Verify the live Smartest name release gate
+        env:
+          SMARTEST_NAME_REVIEW_APPROVED: >-
+            ${{ inputs.approve_smartest_name }}
+        run: node scripts/check-smartest-name.mjs
+
   immutable-evidence:
+    needs: name-review
     if: github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false

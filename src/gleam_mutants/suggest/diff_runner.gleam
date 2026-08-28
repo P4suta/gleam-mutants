@@ -11,6 +11,7 @@
 // counterpart. The rejection is a run-time error rather than a `@target`
 // annotation so that this module still compiles on both targets.
 
+import girard
 import glance
 import gleam/int
 import gleam/list
@@ -27,10 +28,14 @@ import gleam_mutants/engine.{type SourceCatalog}
 import gleam_mutants/platform
 import gleam_mutants/runtime
 import gleam_mutants/snapshot.{type Snapshot}
+import gleam_mutants/suggest/compile_lane
+import gleam_mutants/suggest/compile_lane_shell
 import gleam_mutants/suggest/harness.{
   type ProbeFunction, type ProbeSpec, ProbeFunction, ProbeSpec,
 }
 import gleam_mutants/suggest/hints
+import gleam_mutants/suggest/package_derive
+import gleam_mutants/suggest/package_types.{type PackageIndex}
 import gleam_mutants/suggest/pbt_source
 import gleam_mutants/suggest/probe_result.{
   type ProbeResult, ProbeResult, Unsupported,
@@ -88,9 +93,27 @@ pub type Request {
 /// it is the one reading this reason back.
 pub const excluded_reason = "excluded by suggest.exclude_functions"
 
+/// A private function whose selected boundary has no public caller.
+///
+/// This is deliberately a named evidence state rather than the old generic
+/// `private function` rejection: the engine did inspect the boundary, but it
+/// cannot legally call the function through the package's public API.
+pub const unreachable_reason = "UnreachableUnderSelectedBoundary"
+
+/// A mutant that preserves its meaning only when compiled in isolation.
+///
+/// These verdicts remain explicit while the shell consumes the accompanying
+/// compile job; they are never folded back into the older unassigned count.
+pub const compile_lane_reason = "RequiresPerMutantCompileLane"
+
 /// A function the runner walked past, and why.
 pub type Skipped {
   Skipped(module: String, function: String, reason: String)
+}
+
+/// The compiler evidence produced for one content-addressed compile job.
+pub type CompileEvidence {
+  CompileEvidence(mutant: String, outcome: compile_lane.CompileOutcome)
 }
 
 /// Why one differential run stopped, in the pieces a caller needs.
@@ -153,14 +176,20 @@ fn is_code(candidate: String) -> Bool {
 /// entry for the mutants of the functions in `skipped`. `mutants` carries the
 /// discovered mutant of every one of those ids, so a caller can name an
 /// operator, a location and the source a verdict is about without discovering
-/// the catalogue a second time. `unassigned_mutants` counts the mutants that
-/// fall outside every function, such as those in module constants.
+/// the catalogue a second time. `compile_jobs` contains function-external
+/// sites whose semantics require an isolated compiler invocation.
+/// `routes` records every private function explored through a public caller.
+/// `unassigned_mutants` counts only sites neither the runtime nor compile lane
+/// understands; module constants no longer disappear into that count.
 /// `snapshot_root` is left on disk for the caller to read and then delete.
 pub type RunOutput {
   RunOutput(
     results: List(ProbeResult),
     mutants: List(Mutant),
     skipped: List(Skipped),
+    routes: List(select.PublicRoute),
+    compile_jobs: List(compile_lane.Job),
+    compile_evidence: List(CompileEvidence),
     unassigned_mutants: Int,
     snapshot_root: String,
   )
@@ -330,6 +359,20 @@ fn run_snapshot(
       Error(coded(reason, None))
     }
     Ok(prepared) -> {
+      let compile_jobs =
+        list.flat_map(prepared.plans, fn(plan) { plan.compile_jobs })
+      use compile_evidence <- result.try(
+        execute_compile_jobs(prepared.catalogs, compile_jobs, fn(source, job) {
+          compile_lane_shell.execute(
+            snapshot,
+            source,
+            job,
+            "erlang",
+            request.probe_timeout_ms,
+          )
+        })
+        |> located(root),
+      )
       use reported <- result.try(
         probe(
           request,
@@ -353,6 +396,9 @@ fn run_snapshot(
           source_catalog.mutants
         }),
         skipped: list.flat_map(plans, fn(plan) { plan.skipped }),
+        routes: list.flat_map(plans, fn(plan) { plan.routes }),
+        compile_jobs: compile_jobs,
+        compile_evidence: compile_evidence,
         unassigned_mutants: list.fold(plans, 0, fn(total, plan) {
           total + plan.unassigned
         }),
@@ -393,12 +439,94 @@ fn prepare(
       chosen -> chosen
     }),
   )
+  use package <- result.try(package_types.annotate_workspace_with_dependencies(
+    root,
+    request.workspace,
+    girard.Erlang,
+  ))
+  use compiler <- result.try(compiler_fingerprint(root))
   use plans <- result.try(
     list.try_map(catalogs, fn(source_catalog) {
-      plan_module(request, source_catalog, root, tag, pbt_module)
+      plan_module(
+        request,
+        source_catalog,
+        root,
+        tag,
+        pbt_module,
+        Some(package),
+        compiler,
+        snapshot.digest(snapshot),
+      )
     }),
   )
   Ok(Prepared(catalogs: catalogs, plans: plans, pbt_module: pbt_module))
+}
+
+/// Converts `gleam --version` into the compiler side of a compile-cache key.
+///
+/// A missing identity fails closed: otherwise two unknown compiler versions
+/// could silently share artifacts. Keeping this transformation pure also
+/// makes the process boundary independently testable.
+pub fn compiler_identity(
+  process: platform.ProcessResult,
+) -> Result(String, String) {
+  case process.timed_out, process.status {
+    True, _ -> Error("GMU8007: identifying the Gleam compiler timed out")
+    False, 0 ->
+      case process_text(process) {
+        "" -> Error("GMU8007: the Gleam compiler reported no version")
+        identity -> Ok(identity)
+      }
+    False, _ -> {
+      let diagnostic = case process_text(process) {
+        "" -> "exit " <> int.to_string(process.status)
+        text -> text
+      }
+      Error("GMU8007: could not identify the Gleam compiler: " <> diagnostic)
+    }
+  }
+}
+
+/// Couples each compile job to the exact catalogued source it was planned
+/// from, then executes it in source order.
+///
+/// The executor is injected so planning/lifecycle contracts can be tested
+/// without spawning a compiler. Production supplies the isolated snapshot
+/// shell; a missing catalogue is an infrastructure error rather than an
+/// unassigned mutant.
+pub fn execute_compile_jobs(
+  catalogs: List(SourceCatalog),
+  jobs: List(compile_lane.Job),
+  execute: fn(String, compile_lane.Job) ->
+    Result(compile_lane.CompileOutcome, String),
+) -> Result(List(CompileEvidence), String) {
+  list.try_map(jobs, fn(job) {
+    use source_catalog <- result.try(
+      list.find(catalogs, fn(source_catalog) {
+        source_catalog.path == job.mutant.path
+      })
+      |> result.map_error(fn(_) {
+        "GMU8008: no source catalog for compile-lane mutant "
+        <> job.mutant.id
+        <> " at "
+        <> job.mutant.path
+      }),
+    )
+    use outcome <- result.try(execute(source_catalog.source, job))
+    Ok(CompileEvidence(job.mutant.id, outcome))
+  })
+}
+
+fn compiler_fingerprint(workspace: String) -> Result(String, String) {
+  platform.run_process("gleam", ["--version"], workspace, [], 10_000)
+  |> compiler_identity
+}
+
+fn process_text(process: platform.ProcessResult) -> String {
+  case string.trim(process.stderr) {
+    "" -> string.trim(process.stdout)
+    diagnostic -> diagnostic
+  }
 }
 
 /// Hands the snapshot to a failure, so the generated files can be read — and
@@ -438,7 +566,25 @@ type ModulePlan {
     spec: ProbeSpec,
     probed: List(Mutant),
     skipped: List(Skipped),
+    routes: List(select.PublicRoute),
     unsupported: List(ProbeResult),
+    compile_jobs: List(compile_lane.Job),
+    unassigned: Int,
+  )
+}
+
+/// Read-only view of a module plan for editor previews and contract tests.
+///
+/// It deliberately omits snapshot implementation details while retaining
+/// every decision that can affect evidence: public probe boundaries, skipped
+/// functions, unsupported mutant verdicts and outside-function mutants.
+pub type PlanPreview {
+  PlanPreview(
+    functions: List(ProbeFunction),
+    skipped: List(Skipped),
+    routes: List(select.PublicRoute),
+    unsupported: List(ProbeResult),
+    compile_jobs: List(compile_lane.Job),
     unassigned: Int,
   )
 }
@@ -455,7 +601,69 @@ pub fn check_plan(
   tag: String,
   pbt_module: String,
 ) -> Result(Nil, String) {
-  plan_module(request, source_catalog, root, tag, pbt_module)
+  plan_module(
+    request,
+    source_catalog,
+    root,
+    tag,
+    pbt_module,
+    None,
+    "test-compiler",
+    "test-workspace",
+  )
+  |> result.replace(Nil)
+}
+
+/// Produces the same package-local plan as `check_plan`, without writing or
+/// compiling a snapshot.
+pub fn preview_plan(
+  request: Request,
+  source_catalog: SourceCatalog,
+  root: String,
+  tag: String,
+  pbt_module: String,
+) -> Result(PlanPreview, String) {
+  plan_module(
+    request,
+    source_catalog,
+    root,
+    tag,
+    pbt_module,
+    None,
+    "test-compiler",
+    "test-workspace",
+  )
+  |> result.map(fn(plan) {
+    PlanPreview(
+      functions: plan.spec.functions,
+      skipped: plan.skipped,
+      routes: plan.routes,
+      unsupported: plan.unsupported,
+      compile_jobs: plan.compile_jobs,
+      unassigned: plan.unassigned,
+    )
+  })
+}
+
+/// Checks planning with the package-wide typed graph used in production.
+pub fn check_plan_package(
+  request: Request,
+  source_catalog: SourceCatalog,
+  root: String,
+  tag: String,
+  pbt_module: String,
+  package: PackageIndex,
+) -> Result(Nil, String) {
+  plan_module(
+    request,
+    source_catalog,
+    root,
+    tag,
+    pbt_module,
+    Some(package),
+    "test-compiler",
+    "test-workspace",
+  )
   |> result.replace(Nil)
 }
 
@@ -465,6 +673,9 @@ fn plan_module(
   root: String,
   tag: String,
   pbt_module: String,
+  package: Option(PackageIndex),
+  compiler_fingerprint: String,
+  workspace_digest: String,
 ) -> Result(ModulePlan, String) {
   use parsed <- result.try(
     glance.module(source_catalog.source)
@@ -478,14 +689,23 @@ fn plan_module(
   let context = typederive.context(parsed)
   let #(targets, outside) =
     select.assign(parsed, chosen_mutants(request, source_catalog.mutants))
+  let compile =
+    compile_lane.plan(
+      parsed,
+      outside,
+      "erlang",
+      compiler_fingerprint,
+      workspace_digest,
+    )
   let module = module_name(source_catalog.path)
   let probe_module = "gleam_mutants_probe_" <> tag <> "_" <> flatten(module)
   let considered = filter_targets(request.function_filter, targets)
+  let routing = select.route_private(parsed, considered)
   let #(probing, left_alone) =
-    split_excluded(request.exclude_functions, considered)
+    split_excluded(request.exclude_functions, routing.targets)
   let judged =
     list.fold(probing, Sorted([], [], [], []), fn(sorted, target) {
-      sort_target(sorted, context, module, target)
+      sort_target(sorted, context, package, module, target)
     })
   // The excluded functions are sorted after the probed ones rather than in
   // source order: they were never a candidate for the probe, so they read as
@@ -493,6 +713,10 @@ fn plan_module(
   let sorted =
     list.fold(left_alone, judged, fn(sorted, target) {
       given_up(sorted, module, target, excluded_reason)
+    })
+  let sorted =
+    list.fold(routing.unreachable, sorted, fn(sorted, target) {
+      given_up(sorted, module, target, unreachable_reason)
     })
   let spec =
     ProbeSpec(
@@ -516,6 +740,14 @@ fn plan_module(
     [] -> Ok(Nil)
     _ -> harness.check_spec(spec)
   })
+  let compile_verdicts =
+    list.map(compile.jobs, fn(job) {
+      unsupported(
+        compile_site_name(job.site),
+        job.mutant.id,
+        compile_lane_reason,
+      )
+    })
   Ok(ModulePlan(
     module: module,
     probe_module: probe_module,
@@ -523,9 +755,17 @@ fn plan_module(
     spec: spec,
     probed: list.reverse(sorted.mutants),
     skipped: list.reverse(sorted.skipped),
-    unsupported: list.reverse(sorted.unsupported),
-    unassigned: list.length(outside),
+    routes: routing.routes,
+    unsupported: list.append(list.reverse(sorted.unsupported), compile_verdicts),
+    compile_jobs: compile.jobs,
+    unassigned: list.length(compile.unsupported),
   ))
+}
+
+fn compile_site_name(site: compile_lane.Site) -> String {
+  case site {
+    compile_lane.ModuleConstant(name) -> name
+  }
 }
 
 /// The functions of one module split into probed and given up on, reversed.
@@ -541,10 +781,16 @@ type Sorted {
 fn sort_target(
   sorted: Sorted,
   context: typederive.Context,
+  package: Option(PackageIndex),
   module: String,
   target: select.FunctionTarget,
 ) -> Sorted {
-  case classify(context, target.function) {
+  let classified = case package {
+    Some(package) ->
+      classify_package(package, module: module, function: target.function)
+    None -> classify(context, target.function)
+  }
+  case classified {
     Ok(plan) ->
       Sorted(
         probes: [
@@ -650,6 +896,26 @@ pub fn classify(
   }
 }
 
+/// Plans a function from Girard's package-wide typed graph.
+///
+/// The legacy single-module classifier remains available for compatibility;
+/// new exploration uses this path so inferred parameters and imported public
+/// types keep their semantic module identity.
+pub fn classify_package(
+  package: PackageIndex,
+  module module: String,
+  function function: glance.Function,
+) -> Result(typederive.FunctionPlan, String) {
+  case function.publicity {
+    glance.Private -> Error("private function")
+    glance.Public ->
+      case select.comparable_return(function) {
+        False -> Error("return type contains a function")
+        True -> package_derive.function(package, module, function.name)
+      }
+  }
+}
+
 /// The Gleam module path of a source file: `src/app/util.gleam` is `app/util`.
 ///
 /// A Windows separator is normalised to `/` first, and a path that is already
@@ -700,7 +966,20 @@ fn probe(
 ) -> Result(List(#(String, List(ProbeResult))), String) {
   let root = snapshot.root(snapshot)
   case list.filter(plans, fn(plan) { plan.spec.functions != [] }) {
-    [] -> Ok([])
+    // A type-invalid workspace can make every function unprobeable. It is
+    // still an infrastructure failure, not a successful run containing only
+    // Unsupported verdicts, so validate the pristine snapshot once when no
+    // later instrumented build will do it for us.
+    [] ->
+      case needs_idle_validation(plans) {
+        False -> Ok([])
+        True ->
+          engine.build_targets(root, [outcome.Erlang])
+          |> result.map(fn(_) { [] })
+          |> result.map_error(fn(error) {
+            "GMU8003: the instrumented snapshot did not compile:\n" <> error
+          })
+      }
     active -> {
       use module <- result.try(runtime.generate(root, snapshot.digest(snapshot)))
       use refused <- result.try(refused_mutants(
@@ -756,6 +1035,14 @@ fn probe(
       })
     }
   }
+}
+
+fn needs_idle_validation(plans: List(ModulePlan)) -> Bool {
+  list.any(plans, fn(plan) {
+    list.any(plan.skipped, fn(skipped) {
+      skipped.reason != excluded_reason && skipped.reason != unreachable_reason
+    })
+  })
 }
 
 /// One module's plan narrowed to the mutants that compile, beside the verdict
@@ -932,6 +1219,7 @@ fn unsupported(
     mutant: mutant,
     status: Unsupported,
     inputs: [],
+    support_modules: [],
     expected: None,
     expected_inspect: "",
     expected_outcome: probe_result.Returned,

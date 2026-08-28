@@ -18,6 +18,7 @@ import type {
   Host,
   HostDiagnostic,
   HostDiagnostics,
+  HostInputOptions,
   HostOpenOptions,
   HostPickOptions,
   HostQuickPickItem,
@@ -29,6 +30,7 @@ import type {
 // before the manifest is registered.
 const DEFAULTS: HostSettings = {
   command: ["gleam", "run", "-m", "gleam_mutants", "--"],
+  smartestCommand: ["gleam", "run", "-m", "smartest", "--"],
   reportPath: "reports/mutation/mutation.json",
   timeoutMs: 300_000,
 };
@@ -82,11 +84,15 @@ export class VsCodeHost implements Host {
   settings(): HostSettings {
     const configuration = vscode.workspace.getConfiguration(SECTION);
     const command = configuration.get<readonly string[]>("command");
+    const smartestCommand = configuration.get<readonly string[]>("smartestCommand");
     const reportPath = configuration.get<string>("reportPath");
     const timeoutMs = configuration.get<number>("timeoutMs");
 
     return {
       command: Array.isArray(command) ? [...command] : DEFAULTS.command,
+      smartestCommand: Array.isArray(smartestCommand)
+        ? [...smartestCommand]
+        : DEFAULTS.smartestCommand,
       reportPath: typeof reportPath === "string" && reportPath !== ""
         ? reportPath
         : DEFAULTS.reportPath,
@@ -137,8 +143,14 @@ export class VsCodeHost implements Host {
   }
 
   run(args: readonly string[]): Promise<CliResult> {
-    const settings = this.settings();
-    const executable = settings.command[0];
+    return this.runWith(this.settings().command, args);
+  }
+
+  runWith(
+    command: readonly string[],
+    args: readonly string[],
+  ): Promise<CliResult> {
+    const executable = command[0];
     if (executable === undefined) {
       return Promise.reject(
         new Error("cannot run an empty command: no executable to spawn"),
@@ -149,12 +161,20 @@ export class VsCodeHost implements Host {
       (argv, options) =>
         spawn(executable, argv, { cwd: options.cwd, windowsHide: true }),
       [...args],
-      { cwd: this.root, timeoutMs: settings.timeoutMs },
+      { cwd: this.root, timeoutMs: this.settings().timeoutMs },
     );
   }
 
   runInTerminal(name: string, args: readonly string[]): void {
-    const executable = this.settings().command[0] ?? "";
+    this.runInTerminalWith(name, this.settings().command, args);
+  }
+
+  runInTerminalWith(
+    name: string,
+    command: readonly string[],
+    args: readonly string[],
+  ): void {
+    const executable = command[0] ?? "";
     const terminal = vscode.window.createTerminal({ name, cwd: this.root });
     terminal.show(true);
     terminal.sendText([executable, ...args].map(quote).join(" "));
@@ -172,6 +192,17 @@ export class VsCodeHost implements Host {
       matchOnDetail: options.matchOnDetail ?? false,
       ignoreFocusOut: true,
     });
+  }
+
+  async input(options: HostInputOptions): Promise<string | undefined> {
+    const vscodeOptions: vscode.InputBoxOptions = {
+      prompt: options.prompt,
+      ignoreFocusOut: true,
+    };
+    if (options.placeHolder !== undefined) {
+      vscodeOptions.placeHolder = options.placeHolder;
+    }
+    return await vscode.window.showInputBox(vscodeOptions);
   }
 
   async info(message: string, ...actions: string[]): Promise<string | undefined> {

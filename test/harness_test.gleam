@@ -2333,6 +2333,102 @@ pub fn rendered_probe_compiles_and_answers_inside_a_snapshot_test() {
   assert list.filter(floats, fn(text) { !is_float_literal(text) }) == []
 }
 
+@target(erlang)
+pub fn opaque_input_probe_compiles_and_replays_public_construction_test() {
+  let root = live_root()
+  let assert Ok(generated) = runtime.generate(root, "e2eopaqueinput")
+  let rt = runtime.name(generated)
+  let pbt_module = "gleam_mutants_pbt_opaque_input"
+  let target_module = "probe_opaque_input"
+  let source =
+    "import "
+    <> rt
+    <> "\n\npub opaque type Token { Token(Int) }\n\npub fn new(value: Int) -> Token { Token(value) }\n\npub fn value(token: Token) -> Int {\n  let Token(value) = token\n  value\n}\n\npub fn increment(token: Token) -> Int {\n  value(token) + "
+    <> rt
+    <> ".select(\"m_opaque_input\", fn() { 1 }, fn() { 2 })\n}\n\npub fn make(value: Int) -> Token {\n  Token(value + "
+    <> rt
+    <> ".select(\"m_opaque_return\", fn() { 1 }, fn() { 2 }))\n}\n"
+  let opaque_spec =
+    genspec.OpaqueSpec(
+      target_module,
+      "Token",
+      [],
+      genspec.OpaqueProvider("new", [IntSpec], genspec.ValueProvider),
+      genspec.OpaqueObserver("value", IntSpec),
+      genspec.TargetModuleAccess,
+    )
+  let input_plan =
+    typederive.FunctionPlan(
+      "increment",
+      [typederive.ParameterPlan("token", None, opaque_spec)],
+      Some(IntSpec),
+    )
+  let return_plan =
+    typederive.FunctionPlan(
+      "make",
+      [typederive.ParameterPlan("value", None, IntSpec)],
+      Some(opaque_spec),
+    )
+  let spec =
+    ProbeSpec(
+      target_module: target_module,
+      probe_module: target_module <> "_probe",
+      pbt_module: pbt_module,
+      ffi_module: target_module <> "_probe_ffi",
+      results_path: live_results(root, target_module <> "_probe"),
+      functions: [
+        ProbeFunction(input_plan, ["m_opaque_input"], hints.none()),
+        ProbeFunction(return_plan, ["m_opaque_return"], hints.none()),
+      ],
+      seed: 1,
+      max_cases: 5,
+      max_shrinks: 5,
+      call_timeout_ms: 250,
+      nondeterminism_checks: 1,
+    )
+  write_file(root, "gleam.toml", project_toml())
+  write_file(root, "src/" <> pbt_module <> ".gleam", pbt_source.source())
+  write_file(root, "src/" <> target_module <> ".gleam", source)
+  write_file(
+    root,
+    "src/" <> spec.probe_module <> ".gleam",
+    harness.render_probe(spec),
+  )
+  write_file(
+    root,
+    "src/" <> spec.ffi_module <> ".erl",
+    harness.render_ffi(spec),
+  )
+  let build =
+    platform.run_process(
+      "gleam",
+      ["build", "--target", "erlang", "--warnings-as-errors"],
+      root,
+      [],
+      180_000,
+    )
+  let run = run_probe(root, spec.probe_module)
+  let assert Ok(Nil) = platform.delete_tree(root)
+  case build.status == 0 {
+    True -> Nil
+    False -> io.println(build.stdout <> build.stderr)
+  }
+
+  assert build.status == 0
+  assert run.status == 0
+  assert statuses(run.results)
+    == [
+      #("m_opaque_input", "distinguished"),
+      #("m_opaque_return", "distinguished"),
+    ]
+  let input_verdict = reported(run, "m_opaque_input")
+  let assert [input] = input_verdict.inputs
+  assert string.starts_with(input, "probe_opaque_input.new(")
+  let return_verdict = reported(run, "m_opaque_return")
+  let assert Some(expected) = return_verdict.expected
+  assert string.starts_with(expected, "probe_opaque_input.new(")
+}
+
 // --- parameterised types inside a real snapshot ------------------------------
 //
 // A type the module under test declares with parameters is a different type at

@@ -85,6 +85,7 @@ describe("the extension's README", () => {
   it("documents every setting a user can write", () => {
     expect(readme).toContain("gleam_mutants.command");
     expect(readme).toContain("gleam_mutants.reportPath");
+    expect(readme).toContain("gleam_mutants.smartestCommand");
     expect(readme).toContain("gleam_mutants.timeoutMs");
   });
 
@@ -93,6 +94,9 @@ describe("the extension's README", () => {
     expect(readme).toContain("gleam_mutants.runFile");
     expect(readme).toContain("gleam_mutants.suggestFile");
     expect(readme).toContain("gleam_mutants.explainMutant");
+    expect(readme).toContain("gleam_mutants.smartestFindings");
+    expect(readme).toContain("gleam_mutants.smartestReview");
+    expect(readme).toContain("gleam_mutants.smartestReplay");
   });
 
   it("warns that suggesting a test calls the code for real", () => {

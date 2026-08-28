@@ -29,6 +29,7 @@ fn is_positive() -> render.Suggestion {
     original: "value > 0",
     replacement: "value >= 0",
     inputs: ["0"],
+    support_modules: [],
     expected: Some("False"),
     expected_inspect: "False",
     expected_outcome: Returned,
@@ -55,6 +56,7 @@ fn maybe_double() -> render.Suggestion {
     original: "v + v",
     replacement: "v - v",
     inputs: ["Some(1)"],
+    support_modules: [],
     expected: Some("Ok(2)"),
     expected_inspect: "Ok(2)",
     expected_outcome: Returned,
@@ -77,6 +79,7 @@ fn hidden() -> render.Suggestion {
     original: "True",
     replacement: "False",
     inputs: ["None"],
+    support_modules: [],
     expected: None,
     expected_inspect: "Secret(2)",
     expected_outcome: Returned,
@@ -99,6 +102,7 @@ fn zero() -> render.Suggestion {
     original: "0",
     replacement: "1",
     inputs: [],
+    support_modules: [],
     expected: None,
     expected_inspect: "Ok(\"a\nb\")",
     expected_outcome: Returned,
@@ -121,6 +125,7 @@ fn shout() -> render.Suggestion {
     original: "\"!\"",
     replacement: "\"\"",
     inputs: ["1", "\"Nonesuch\""],
+    support_modules: [],
     expected: Some("\"Nonesuch!\""),
     expected_inspect: "\"Nonesuch!\"",
     expected_outcome: Returned,
@@ -144,6 +149,7 @@ fn wrapped() -> render.Suggestion {
     original: "alpha_component(alpha)\n  * beta_component(beta)",
     replacement: "alpha_component(alpha)\n  / beta_component(beta)",
     inputs: ["2", "3"],
+    support_modules: [],
     expected: Some("15"),
     expected_inspect: "15",
     expected_outcome: Returned,
@@ -166,6 +172,7 @@ fn panicking() -> render.Suggestion {
     original: "1",
     replacement: "2",
     inputs: ["Some(0)"],
+    support_modules: [],
     expected: None,
     expected_inspect: "",
     expected_outcome: Panicked,
@@ -214,6 +221,7 @@ fn shadowing_option() -> render.Suggestion {
     original: "0",
     replacement: "1",
     inputs: ["None"],
+    support_modules: [],
     expected: Some("0"),
     expected_inspect: "0",
     expected_outcome: Returned,
@@ -273,6 +281,27 @@ fn shadowing_option_shape() -> render.Suggestion {
     expected_inspect: "6",
     actual_inspect: "1",
     kills: ["99aabbccddee00112233"],
+  )
+}
+
+fn cross_opaque() -> render.Suggestion {
+  Suggestion(
+    module_path: "boundary",
+    function: "consume",
+    mutant_id: "c0ffee00112233445566",
+    display_id: "c0ffee001122",
+    operator: "integer-arithmetic",
+    location: "src/boundary.gleam:30:3",
+    original: "value > 0",
+    replacement: "value >= 0",
+    inputs: ["token.new(1)"],
+    support_modules: ["demo/token"],
+    expected: Some("True"),
+    expected_inspect: "True",
+    expected_outcome: Returned,
+    actual_inspect: "False",
+    actual_outcome: Returned,
+    kills: ["c0ffee00112233445566"],
   )
 }
 
@@ -338,6 +367,7 @@ pub fn a_probe_result_maps_onto_a_suggestion_test() {
       original: "value > 0",
       replacement: "value >= 0",
       inputs: reported.inputs,
+      support_modules: reported.support_modules,
       expected: reported.expected,
       expected_inspect: reported.expected_inspect,
       expected_outcome: reported.expected_outcome,
@@ -1114,6 +1144,7 @@ fn every_suggestion() -> List(render.Suggestion) {
     panicking(),
     timing_out(),
     unobserved(),
+    cross_opaque(),
   ]
 }
 
@@ -1159,7 +1190,7 @@ pub fn file_source_is_already_formatted_test() {
     every_suggestion()
     |> list.filter(render.renderable)
     |> list.map(render.test_name)
-  assert list.length(names) == 10
+  assert list.length(names) == 11
   assert list.filter(names, fn(name) { !string.contains(with_assert, name) })
     == []
   assert list.filter(names, fn(name) { !string.contains(with_should, name) })
@@ -1189,6 +1220,8 @@ fn subject_project(root: String) -> Nil {
     root,
     "src/boundary.gleam",
     lines([
+      "import demo/token",
+      "",
       "pub fn is_positive(value: Int) -> Bool {",
       "  value > 0",
       "}",
@@ -1210,6 +1243,29 @@ fn subject_project(root: String) -> Nil {
       "",
       "pub fn wide(alpha: Int, beta: Int) -> Int {",
       "  alpha_component(alpha) * beta_component(beta)",
+      "}",
+      "",
+      "pub fn consume(value: token.Token) -> Bool {",
+      "  token.value(value) > 0",
+      "}",
+    ])
+      <> "\n",
+  )
+  write_file(
+    root,
+    "src/demo/token.gleam",
+    lines([
+      "pub opaque type Token {",
+      "  Token(Int)",
+      "}",
+      "",
+      "pub fn new(value: Int) -> Token {",
+      "  Token(value)",
+      "}",
+      "",
+      "pub fn value(token: Token) -> Int {",
+      "  let Token(value) = token",
+      "  value",
       "}",
     ])
       <> "\n",
@@ -1340,4 +1396,13 @@ pub fn file_source_compiles_without_a_warning_test() {
     False -> io.println("generated build failed:\n" <> outcome.stderr)
   }
   assert outcome.status == 0
+}
+
+pub fn cross_module_opaque_inputs_require_their_provider_module_test() {
+  let suggestion = cross_opaque()
+  let scope = render.scope([suggestion], AssertKeyword)
+
+  assert list.contains(render.imports(scope, [suggestion]), "import demo/token")
+  let assert Ok(source) = render.test_source(scope, suggestion)
+  assert string.contains(source, "token.new(1)")
 }

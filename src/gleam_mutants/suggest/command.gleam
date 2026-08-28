@@ -31,6 +31,7 @@ import gleam_mutants/suggest/diff_runner
 import gleam_mutants/suggest/minimize
 import gleam_mutants/suggest/probe_result.{type ProbeResult, type Status}
 import gleam_mutants/suggest/render
+import gleam_mutants/suggest/select
 import simplifile
 
 /// One `suggest` or `explain` run, as the caller asked for it.
@@ -313,6 +314,7 @@ pub fn unreported(
       mutant: item.id,
       status: probe_result.Unsupported,
       inputs: [],
+      support_modules: [],
       expected: None,
       expected_inspect: "",
       expected_outcome: probe_result.Returned,
@@ -339,11 +341,15 @@ const outside_every_function = "not inside a function, so the probe has nothing 
 pub fn unmatched_function(
   function: Option(String),
   results: List(ProbeResult),
+  routes: List(select.PublicRoute),
 ) -> Option(String) {
   case function {
     None -> None
     Some(name) ->
-      case list.any(results, fn(verdict) { verdict.function == name }) {
+      case
+        list.any(results, fn(verdict) { verdict.function == name })
+        || list.any(routes, fn(route) { route.private_function == name })
+      {
         True -> None
         False -> Some(name)
       }
@@ -483,7 +489,11 @@ fn probe(
         survivors_missing: missing,
         style: style,
         snapshot_root: output.snapshot_root,
-        unmatched_function: unmatched_function(options.function, output.results),
+        unmatched_function: unmatched_function(
+          options.function,
+          output.results,
+          output.routes,
+        ),
       )
     }
   }
@@ -725,6 +735,7 @@ fn suggestion(
     original: item.original,
     replacement: item.replacement,
     inputs: verdict.inputs,
+    support_modules: verdict.support_modules,
     expected: verdict.expected,
     expected_inspect: verdict.expected_inspect,
     expected_outcome: verdict.expected_outcome,

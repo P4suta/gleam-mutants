@@ -20,6 +20,8 @@ const panicked_line = "{\"function\":\"boom\",\"mutant\":\"m4\",\"status\":\"dis
 
 const minimal_line = "{\"function\":\"double\",\"mutant\":\"m2\",\"status\":\"indistinguishable\",\"inputs\":[]}"
 
+const cross_module_line = "{\"function\":\"consume\",\"mutant\":\"m5\",\"status\":\"distinguished\",\"inputs\":[\"token.new(1)\"],\"support_modules\":[\"demo/token\"]}"
+
 const unsupported_line = "{\"function\":\"apply\",\"mutant\":\"m3\",\"status\":\"unsupported\",\"inputs\":[],\"expected\":null,\"reason\":\"parameter type is not derivable\"}"
 
 fn sample(status: Status) -> ProbeResult {
@@ -28,6 +30,7 @@ fn sample(status: Status) -> ProbeResult {
     mutant: "mutant-1",
     status: status,
     inputs: ["1", "\"two\""],
+    support_modules: [],
     expected: Some("Ok(3)"),
     expected_inspect: "Ok(3)",
     expected_outcome: Returned,
@@ -50,6 +53,7 @@ pub fn decode_line_reads_a_distinguished_result_test() {
         mutant: "m1",
         status: Distinguished,
         inputs: ["0", "1"],
+        support_modules: [],
         expected: Some("1"),
         expected_inspect: "1",
         expected_outcome: Returned,
@@ -71,6 +75,7 @@ pub fn decode_line_defaults_missing_optional_fields_test() {
         mutant: "m2",
         status: Indistinguishable,
         inputs: [],
+        support_modules: [],
         expected: None,
         expected_inspect: "",
         expected_outcome: Returned,
@@ -92,6 +97,7 @@ pub fn decode_line_reads_an_unsupported_reason_test() {
         mutant: "m3",
         status: Unsupported,
         inputs: [],
+        support_modules: [],
         expected: None,
         expected_inspect: "",
         expected_outcome: Returned,
@@ -119,6 +125,12 @@ pub fn decode_line_reads_the_kill_set_test() {
       "{\"function\":\"a\",\"mutant\":\"b\",\"status\":\"distinguished\",\"inputs\":[],\"kills\":[]}",
     )
   assert empty.kills == []
+}
+
+pub fn decode_line_preserves_cross_module_input_provenance_test() {
+  let assert Ok(decoded) = probe_result.decode_line(cross_module_line)
+  assert decoded.support_modules == ["demo/token"]
+  assert probe_result.decode_line(probe_result.encode(decoded)) == Ok(decoded)
 }
 
 pub fn encode_puts_the_kill_set_last_test() {
@@ -207,6 +219,7 @@ pub fn encode_uses_stable_field_names_test() {
         mutant: "m1",
         status: Distinguished,
         inputs: ["0"],
+        support_modules: [],
         expected: None,
         expected_inspect: "1",
         expected_outcome: Returned,
@@ -218,7 +231,7 @@ pub fn encode_uses_stable_field_names_test() {
         kills: ["m1", "m2"],
       ),
     )
-    == "{\"function\":\"add\",\"mutant\":\"m1\",\"status\":\"distinguished\",\"inputs\":[\"0\"],\"expected\":null,\"expected_inspect\":\"1\",\"expected_outcome\":\"returned\",\"actual_inspect\":\"2\",\"actual_outcome\":\"returned\",\"cases\":3,\"shrinks\":1,\"reason\":\"\",\"kills\":[\"m1\",\"m2\"]}"
+    == "{\"function\":\"add\",\"mutant\":\"m1\",\"status\":\"distinguished\",\"inputs\":[\"0\"],\"support_modules\":[],\"expected\":null,\"expected_inspect\":\"1\",\"expected_outcome\":\"returned\",\"actual_inspect\":\"2\",\"actual_outcome\":\"returned\",\"cases\":3,\"shrinks\":1,\"reason\":\"\",\"kills\":[\"m1\",\"m2\"]}"
 }
 
 pub fn encode_renders_every_status_in_lowercase_test() {

@@ -1,7 +1,7 @@
 {
   "name": "gleam-mutants-vscode",
   "displayName": "gleam-mutants",
-  "description": "Surviving mutants and suggested tests from gleam-mutants, inside the editor.",
+  "description": "Mutation diagnostics and Smartest evidence review for Gleam, inside the editor.",
   "version": "0.1.0",
   "private": true,
   "license": "MIT OR Apache-2.0",
@@ -49,6 +49,21 @@
         "command": "gleam_mutants.refreshDiagnostics",
         "title": "Refresh surviving mutants from the last report",
         "category": "gleam_mutants"
+      },
+      {
+        "command": "gleam_mutants.smartestFindings",
+        "title": "Inspect Smartest findings",
+        "category": "gleam_mutants"
+      },
+      {
+        "command": "gleam_mutants.smartestReview",
+        "title": "Review a Smartest finding",
+        "category": "gleam_mutants"
+      },
+      {
+        "command": "gleam_mutants.smartestReplay",
+        "title": "Replay a Smartest witness",
+        "category": "gleam_mutants"
       }
     ],
     "configuration": {
@@ -75,12 +90,27 @@
           "scope": "resource",
           "description": "Where `run` leaves its mutation report, relative to the workspace root. Surviving mutants are published from this file, and republished whenever it is written."
         },
+        "gleam_mutants.smartestCommand": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "gleam",
+            "run",
+            "-m",
+            "smartest",
+            "--"
+          ],
+          "scope": "resource",
+          "description": "How to run the Smartest CLI, executable first. It is separate from the mutation CLI so findings, review, and replay always use the Smartest evidence ledger."
+        },
         "gleam_mutants.timeoutMs": {
           "type": "number",
           "default": 300000,
           "minimum": 0,
           "scope": "resource",
-          "description": "How long any one `suggest`, `apply` or `explain` invocation may take, in milliseconds. Zero means no budget. `run` is not bound by this: it runs in a terminal you can interrupt."
+          "description": "How long any one captured mutation or Smartest invocation may take, in milliseconds. Zero means no budget. Long runs and Smartest replay use a terminal you can interrupt."
         }
       }
     }

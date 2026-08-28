@@ -12,6 +12,7 @@
 //
 //     gleam run -m suggest_smoke --target erlang
 
+import glance
 import gleam/int
 import gleam/io
 import gleam/list
@@ -25,6 +26,7 @@ import gleam_mutants/suggest/diff_runner
 import gleam_mutants/suggest/probe_result.{
   type ProbeResult, type Status, Distinguished, Indistinguishable, Unsupported,
 }
+import gleam_mutants/suggest/select
 
 const workspace = "fixtures/boundary_project"
 
@@ -54,7 +56,7 @@ pub fn main() {
     }
   }
 
-  let found = problems(request, output, catalog.mutants)
+  let found = problems(request, output, catalog.source, catalog.mutants)
   let _ = platform.delete_tree(output.snapshot_root)
 
   list.each(found, io.println)
@@ -67,6 +69,7 @@ pub fn main() {
 fn problems(
   request: diff_runner.Request,
   output: diff_runner.RunOutput,
+  source: String,
   mutants: List(Mutant),
 ) -> List(String) {
   list.flatten([
@@ -77,10 +80,66 @@ fn problems(
     area_problems(output),
     maybe_double_problems(output, mutants),
     join_problems(output, mutants),
-    unsupported_problems(output, "helper", "private"),
+    private_route_problems(output, source, mutants),
     unsupported_problems(output, "applies", "function"),
     skipped_problems(output),
   ])
+}
+
+/// Mutants inside a reachable private function are explored through the
+/// nearest public caller, while retaining their original mutant ids.
+fn private_route_problems(
+  output: diff_runner.RunOutput,
+  source: String,
+  mutants: List(Mutant),
+) -> List(String) {
+  case glance.module(source) {
+    Error(error) -> [
+      "could not parse routing fixture: " <> string.inspect(error),
+    ]
+    Ok(module) -> {
+      let #(targets, _) = select.assign(module, mutants)
+      case list.find(targets, fn(target) { target.function.name == "helper" }) {
+        Error(_) -> ["no mutants were assigned to private helper"]
+        Ok(target) -> {
+          let ids = list.map(target.mutants, fn(item) { item.id })
+          let reported =
+            list.filter(output.results, fn(probe) {
+              list.contains(ids, probe.mutant)
+            })
+          let wrong_boundary =
+            list.filter(reported, fn(probe) { probe.function != "uses_helper" })
+          let refused =
+            list.filter(reported, fn(probe) {
+              probe.status == Unsupported
+              && string.contains(probe.reason, "private")
+            })
+          list.flatten([
+            expect(
+              list.length(reported) == list.length(ids),
+              "private helper mutants were not each reported once through "
+                <> "uses_helper",
+            ),
+            expect(
+              wrong_boundary == [],
+              "private helper mutants used the wrong public boundary: "
+                <> string.inspect(list.map(wrong_boundary, describe)),
+            ),
+            expect(
+              refused == [],
+              "reachable private helper mutants were refused as private",
+            ),
+            expect(
+              list.any(reported, fn(probe) {
+                probe.status == Distinguished && probe.inputs != []
+              }),
+              "uses_helper found no witness for a private helper mutant",
+            ),
+          ])
+        }
+      }
+    }
+  }
 }
 
 /// Every discovered mutant is accounted for exactly once, and nothing else is.
@@ -400,8 +459,8 @@ fn skipped_problems(output: diff_runner.RunOutput) -> List(String) {
   }
   list.flatten([
     expect(
-      skipped("helper"),
-      "`helper` is missing from the skipped list: "
+      !skipped("helper"),
+      "reachable `helper` was skipped instead of routed: "
         <> string.inspect(output.skipped),
     ),
     expect(

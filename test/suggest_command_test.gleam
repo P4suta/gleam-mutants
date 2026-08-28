@@ -27,6 +27,7 @@ import gleam_mutants/suggest/probe_result.{
   Unsupported,
 }
 import gleam_mutants/suggest/render
+import gleam_mutants/suggest/select
 
 // --- The catalogue the tests talk about --------------------------------------
 
@@ -195,6 +196,7 @@ pub fn suggestions_keep_the_fewest_tests_that_kill_every_mutant_test() {
       mutant: equivalent.id,
       status: Indistinguishable,
       inputs: [],
+      support_modules: [],
       expected: None,
       expected_inspect: "",
       expected_outcome: Returned,
@@ -224,6 +226,7 @@ pub fn suggestions_keep_the_fewest_tests_that_kill_every_mutant_test() {
       original: "value > 0",
       replacement: "value >= 0",
       inputs: ["0"],
+      support_modules: [],
       expected: Some("False"),
       expected_inspect: "False",
       expected_outcome: Returned,
@@ -231,6 +234,26 @@ pub fn suggestions_keep_the_fewest_tests_that_kill_every_mutant_test() {
       actual_outcome: Returned,
       kills: [boundary.id, redundant.id],
     )
+}
+
+pub fn suggestions_preserve_cross_module_replay_provenance_test() {
+  let item = boundary_mutant()
+  let verdict =
+    ProbeResult(
+      ..distinguished(
+        "is_positive",
+        item,
+        ["token.new(0)"],
+        Some("False"),
+        "False",
+        "True",
+        [item.id],
+      ),
+      support_modules: ["demo/token"],
+    )
+  let assert [suggestion] = command.suggestions([verdict], [item])
+
+  assert suggestion.support_modules == ["demo/token"]
 }
 
 pub fn suggestions_only_claim_the_mutants_the_run_selected_test() {
@@ -626,25 +649,42 @@ pub fn unmatched_function_names_a_filter_no_verdict_mentions_test() {
       [boundary_mutant().id],
     ),
   ]
-  assert command.unmatched_function(Some("is_positive"), judged) == None
-  assert command.unmatched_function(Some("positive"), judged)
+  assert command.unmatched_function(Some("is_positive"), judged, []) == None
+  assert command.unmatched_function(Some("positive"), judged, [])
     == Some("positive")
-  assert command.unmatched_function(Some("is_positive"), [])
+  assert command.unmatched_function(Some("is_positive"), [], [])
     == Some("is_positive")
 }
 
 /// A run that narrowed nothing has no name to report back: every function of
 /// every selected file was fair game, so there is no typo to point at.
 pub fn unmatched_function_says_nothing_about_a_run_that_named_none_test() {
-  assert command.unmatched_function(None, []) == None
+  assert command.unmatched_function(None, [], []) == None
 }
 
 /// A function the probe walked past was still found: `--function helper` on a
 /// private function is answered by the skipped list, not by a typo.
 pub fn unmatched_function_counts_a_verdict_of_any_status_as_a_match_test() {
   let equivalent = abs_mutant()
-  assert command.unmatched_function(Some("abs"), [
-      indistinguishable("abs", equivalent),
+  assert command.unmatched_function(
+      Some("abs"),
+      [
+        indistinguishable("abs", equivalent),
+      ],
+      [],
+    )
+    == None
+}
+
+pub fn unmatched_function_accepts_a_private_function_routed_to_its_public_caller_test() {
+  let hidden = boundary_mutant()
+  let routed =
+    distinguished("uses_helper", hidden, ["0"], Some("1"), "1", "-1", [
+      hidden.id,
+    ])
+
+  assert command.unmatched_function(Some("helper"), [routed], [
+      select.PublicRoute("helper", "uses_helper", distance: 1),
     ])
     == None
 }
@@ -667,6 +707,7 @@ fn indistinguishable(function: String, item: Mutant) -> ProbeResult {
     mutant: item.id,
     status: Indistinguishable,
     inputs: [],
+    support_modules: [],
     expected: None,
     expected_inspect: "",
     expected_outcome: Returned,
@@ -755,6 +796,7 @@ fn distinguished(
     mutant: item.id,
     status: Distinguished,
     inputs: inputs,
+    support_modules: [],
     expected: expected,
     expected_inspect: expected_inspect,
     expected_outcome: Returned,

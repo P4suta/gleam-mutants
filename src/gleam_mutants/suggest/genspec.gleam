@@ -32,7 +32,50 @@ pub type GenSpec {
     type_arguments: List(GenSpec),
     variants: List(VariantSpec),
   )
+  /// A public, non-opaque custom type defined by another package module.
+  ImportedCustomSpec(
+    module: String,
+    name: String,
+    type_arguments: List(GenSpec),
+    variants: List(VariantSpec),
+  )
+  /// An opaque public type built and observed entirely through public API.
+  OpaqueSpec(
+    module: String,
+    name: String,
+    type_arguments: List(GenSpec),
+    provider: OpaqueProvider,
+    observer: OpaqueObserver,
+    access: OpaqueAccess,
+  )
   RecursiveRef(name: String)
+}
+
+/// Which already-imported module name exposes an opaque type's public API.
+pub type OpaqueAccess {
+  TargetModuleAccess
+  ImportedModuleAccess
+}
+
+/// How a public smart constructor wraps the opaque value it creates.
+pub type OpaqueProviderMode {
+  ValueProvider
+  OptionProvider
+  ResultProvider
+}
+
+/// A public smart constructor and the values needed to call it.
+pub type OpaqueProvider {
+  OpaqueProvider(
+    function: String,
+    parameters: List(GenSpec),
+    mode: OpaqueProviderMode,
+  )
+}
+
+/// An independent public accessor used to render an opaque value.
+pub type OpaqueObserver {
+  OpaqueObserver(function: String, result: GenSpec)
 }
 
 /// One constructor of a custom type, with its fields in source order.
@@ -65,6 +108,21 @@ pub fn describe(spec: GenSpec) -> String {
       <> "{"
       <> string.join(list.map(variants, describe_variant), " | ")
       <> "}"
+    ImportedCustomSpec(module, name, _, variants) ->
+      module
+      <> "."
+      <> name
+      <> "{"
+      <> string.join(list.map(variants, describe_variant), " | ")
+      <> "}"
+    OpaqueSpec(module, name, _, provider, observer, _) ->
+      module
+      <> "."
+      <> name
+      <> " via "
+      <> provider.function
+      <> "/"
+      <> observer.function
     RecursiveRef(name) -> name
   }
 }

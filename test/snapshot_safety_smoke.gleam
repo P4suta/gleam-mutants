@@ -15,6 +15,9 @@ pub fn main() {
       assert list.contains(paths, "gleam.toml")
       assert list.contains(paths, "src/main.gleam")
       assert !list.any(paths, fn(path) { string.starts_with(path, "build/") })
+      assert !list.any(paths, fn(path) {
+        string.contains(path, "/node_modules/")
+      })
       let assert Ok(Nil) = snapshot.dispose(copy)
       Nil
     }

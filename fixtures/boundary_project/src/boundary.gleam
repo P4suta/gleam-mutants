@@ -42,7 +42,7 @@ pub fn maybe_double(value: Option(Int)) -> Result(Int, String) {
   }
 }
 
-/// Private, so its mutants can only be reported as unsupported.
+/// Private, so its mutants must be explored through `uses_helper`.
 fn helper(x: Int) -> Int {
   x + 1
 }

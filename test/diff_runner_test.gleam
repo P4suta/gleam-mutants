@@ -29,6 +29,9 @@ import gleam/int
 @target(erlang)
 import gleam_mutants/suggest/probe_result
 
+@target(erlang)
+import gleam_mutants/suggest/compile_lane
+
 import gleam_mutants/suggest/select
 import gleam_mutants/suggest/typederive
 import simplifile
@@ -388,6 +391,63 @@ pub fn plan_module_keeps_planning_around_a_function_it_cannot_probe_test() {
   assert planned(non_uniform_source) == Ok(Nil)
 }
 
+const routed_private_source = "fn hidden(value: Int) -> Int {
+  value + 1
+}
+
+pub fn api(value: Int) -> Int {
+  hidden(value)
+}
+"
+
+pub fn plan_module_routes_private_mutants_into_the_public_probe_test() {
+  let assert Ok(discovered) =
+    catalog.discover("src/routed.gleam", routed_private_source, operator.all())
+  let assert Ok(preview) =
+    diff_runner.preview_plan(
+      diff_runner.defaults("/workspace", ["src/routed.gleam"]),
+      engine.SourceCatalog(
+        "src/routed.gleam",
+        routed_private_source,
+        discovered.mutants,
+        discovered.rejected,
+      ),
+      "/snapshot",
+      "t02",
+      "gleam_mutants_pbt_t02",
+    )
+
+  let assert [probe] = preview.functions
+  assert probe.plan.name == "api"
+  assert probe.mutant_ids == list.map(discovered.mutants, fn(item) { item.id })
+  assert preview.routes == [select.PublicRoute("hidden", "api", distance: 1)]
+  assert preview.skipped == []
+}
+
+pub fn plan_module_marks_unreachable_private_mutants_explicitly_test() {
+  let source = "fn orphan(value: Int) -> Int { value + 1 }\n"
+  let assert Ok(discovered) =
+    catalog.discover("src/orphan.gleam", source, operator.all())
+  let assert Ok(preview) =
+    diff_runner.preview_plan(
+      diff_runner.defaults("/workspace", ["src/orphan.gleam"]),
+      engine.SourceCatalog(
+        "src/orphan.gleam",
+        source,
+        discovered.mutants,
+        discovered.rejected,
+      ),
+      "/snapshot",
+      "t03",
+      "gleam_mutants_pbt_t03",
+    )
+
+  assert preview.functions == []
+  let assert [skipped] = preview.skipped
+  assert skipped.function == "orphan"
+  assert skipped.reason == diff_runner.unreachable_reason
+}
+
 // --- the runtime decides before the target ----------------------------------
 
 const erlang_runtime_of_javascript_test_toml = "name = \"demo\"
@@ -495,6 +555,27 @@ fn workspace(gleam_toml: String, sources: List(#(String, String))) -> String {
     let assert Ok(Nil) = simplifile.create_directory_all(path.parent(target))
     let assert Ok(Nil) = simplifile.write(target, contents)
   })
+  // A real `gleam run -m gleam_mutants` has already materialised the package
+  // interfaces needed to compile the tool. These tests invoke the library
+  // directly against another root, so give that throwaway root the same
+  // precondition before Girard resolves external imports.
+  case string.contains(gleam_toml, "[dependencies]") {
+    False -> Nil
+    True -> {
+      let downloaded =
+        platform.run_process("gleam", ["deps", "download"], root, [], 120_000)
+      case downloaded.timed_out, downloaded.status {
+        False, 0 -> Nil
+        _, _ -> {
+          let message =
+            "could not prepare throwaway dependencies: "
+            <> downloaded.stdout
+            <> downloaded.stderr
+          panic as message
+        }
+      }
+    }
+  }
   root
 }
 
@@ -602,6 +683,14 @@ pub fn bumped(value: Int) -> Int {
 "
 
 @target(erlang)
+const constant_source = "const limit = 10
+
+pub fn over(value: Int) -> Bool {
+  value > limit
+}
+"
+
+@target(erlang)
 /// A source that parses but does not type check.
 ///
 /// Reaching GMU8003 needs a snapshot that is instrumented and generated
@@ -642,8 +731,8 @@ fn discard_run(
 @target(erlang)
 /// One real run of a nested module asked for twice, which is the evidence for
 /// three things at once: a repeated path is probed once rather than twice,
-/// `src/app/util.gleam` is the module `app/util`, and a private function is
-/// skipped under that module's name.
+/// `src/app/util.gleam` is the module `app/util`, and a reachable private
+/// function is explored through its public boundary rather than skipped.
 pub fn run_probes_a_repeated_nested_source_once_test() {
   let root = workspace(stdlib_toml, [#("src/app/util.gleam", nested_source)])
   let outcome =
@@ -656,7 +745,10 @@ pub fn run_probes_a_repeated_nested_source_once_test() {
   discard(root)
   discard_run(outcome)
 
-  let assert Ok(output) = outcome
+  let output = case outcome {
+    Ok(output) -> output
+    Error(error) -> panic as diff_runner.describe(error)
+  }
   let reported = list.map(output.results, fn(probe) { probe.mutant })
   assert reported != []
   assert list.unique(reported) == reported
@@ -664,8 +756,54 @@ pub fn run_probes_a_repeated_nested_source_once_test() {
   assert list.any(output.results, fn(probe) {
     probe.function == "add" && probe.status == probe_result.Distinguished
   })
-  assert list.map(output.skipped, fn(entry) { #(entry.module, entry.function) })
-    == [#("app/util", "bump")]
+  assert list.any(output.results, fn(probe) {
+    probe.function == "bumped" && probe.status == probe_result.Distinguished
+  })
+  assert output.skipped == []
+}
+
+@target(erlang)
+pub fn run_retains_an_unreachable_private_mutant_as_unsupported_test() {
+  let unreachable_source =
+    "fn orphan(value: Int) -> Int { value + 1 }\n\npub fn identity(value: Int) -> Int { value }\n"
+  let root =
+    workspace(stdlib_toml, [#("src/unreachable.gleam", unreachable_source)])
+  let outcome = diff_runner.run(quick(root, ["src/unreachable.gleam"]))
+  discard(root)
+  discard_run(outcome)
+
+  let assert Ok(output) = outcome
+  let assert [skipped] = output.skipped
+  assert skipped.function == "orphan"
+  assert skipped.reason == diff_runner.unreachable_reason
+  assert list.any(output.results, fn(probe) {
+    probe.function == "orphan"
+    && probe.status == probe_result.Unsupported
+    && probe.reason == diff_runner.unreachable_reason
+  })
+}
+
+@target(erlang)
+pub fn run_executes_every_module_constant_compile_job_test() {
+  let root = workspace(stdlib_toml, [#("src/constant.gleam", constant_source)])
+  let outcome = diff_runner.run(quick(root, ["src/constant.gleam"]))
+  discard(root)
+  discard_run(outcome)
+
+  let output = case outcome {
+    Ok(output) -> output
+    Error(error) -> panic as diff_runner.describe(error)
+  }
+  assert output.compile_jobs != []
+  assert list.length(output.compile_evidence)
+    == list.length(output.compile_jobs)
+  assert list.all(output.compile_evidence, fn(evidence) {
+    case evidence.outcome {
+      compile_lane.Compiled(_) -> True
+      _ -> False
+    }
+  })
+  assert output.unassigned_mutants == 0
 }
 
 @target(erlang)

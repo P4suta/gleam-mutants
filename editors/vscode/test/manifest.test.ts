@@ -14,11 +14,15 @@ const COMMANDS = [
   "gleam_mutants.runFile",
   "gleam_mutants.suggestFile",
   "gleam_mutants.explainMutant",
+  "gleam_mutants.smartestFindings",
+  "gleam_mutants.smartestReview",
+  "gleam_mutants.smartestReplay",
 ];
 
 const SETTINGS = [
   "gleam_mutants.command",
   "gleam_mutants.reportPath",
+  "gleam_mutants.smartestCommand",
   "gleam_mutants.timeoutMs",
 ];
 
@@ -40,7 +44,7 @@ describe("activation", () => {
 });
 
 describe("contributed commands", () => {
-  it("contributes the four a user can invoke, and no others", () => {
+  it("contributes every command a user can invoke, and no others", () => {
     expect(contributedCommands().sort()).toEqual([...COMMANDS].sort());
   });
 
@@ -67,6 +71,14 @@ describe("contributed settings", () => {
       type: "array",
       items: { type: "string" },
       default: ["gleam", "run", "-m", "gleam_mutants", "--"],
+    });
+  });
+
+  it("runs Smartest through its own Gleam entry module", () => {
+    expect(properties["gleam_mutants.smartestCommand"]).toMatchObject({
+      type: "array",
+      items: { type: "string" },
+      default: ["gleam", "run", "-m", "smartest", "--"],
     });
   });
 
