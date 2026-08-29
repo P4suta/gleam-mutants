@@ -112,6 +112,36 @@ pub fn suites_get_stable_parent_and_child_ids_test() {
     ]
 }
 
+pub fn exact_leaf_selection_keeps_descriptor_order_and_runs_only_the_leaf_test() {
+  let entry =
+    runner.entry(
+      "demo",
+      "stack_test",
+      "selected_test",
+      testing.suite("stack", [
+        testing.named("empty", testing.example(fn() { Nil })),
+        testing.named("push", testing.example(fn() { Nil })),
+        testing.named("pop", testing.example(fn() { Nil })),
+      ]),
+    )
+  let ids =
+    runner.test_ids(entry)
+    |> list.map(evidence.test_id_to_string)
+  assert ids
+    == [
+      "demo/stack_test/selected_test/stack/empty",
+      "demo/stack_test/selected_test/stack/push",
+      "demo/stack_test/selected_test/stack/pop",
+    ]
+
+  let results =
+    runner.run_entry_selected(entry, runner.default_options(), [
+      "demo/stack_test/selected_test/stack/push",
+    ])
+  assert list.map(results, fn(result) { evidence.test_id_to_string(result.id) })
+    == ["demo/stack_test/selected_test/stack/push"]
+}
+
 pub fn generator_manifest_is_extracted_from_lazy_plans_without_running_callbacks_test() {
   let integer = gen.int_range(0, 9)
   let value =

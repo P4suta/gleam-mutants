@@ -16,10 +16,16 @@ function makeProject(directory) {
   fs.mkdirSync(path.join(directory, "src"), { recursive: true });
   fs.mkdirSync(path.join(directory, "build"), { recursive: true });
   fs.mkdirSync(path.join(directory, "priv"), { recursive: true });
+  fs.mkdirSync(path.join(directory, ".smartest", "inbox"), { recursive: true });
+  fs.mkdirSync(path.join(directory, ".gleam_mutants"), { recursive: true });
+  fs.mkdirSync(path.join(directory, "test", "smartest", "corpus"), { recursive: true });
   fs.writeFileSync(path.join(directory, "gleam.toml"), "name = \"snapshot_fixture\"\nversion = \"0.0.0\"\n");
   fs.writeFileSync(path.join(directory, "src", "main.gleam"), "pub fn main() { Nil }\n");
   fs.writeFileSync(path.join(directory, "build", "ignored"), "ignored\n");
   fs.writeFileSync(path.join(directory, "priv", "asset.txt"), "asset\n");
+  fs.writeFileSync(path.join(directory, ".smartest", "inbox", "report.json"), "{}\n");
+  fs.writeFileSync(path.join(directory, ".gleam_mutants", "impact.json"), "{}\n");
+  fs.writeFileSync(path.join(directory, "test", "smartest", "corpus", "case.json"), "{}\n");
 }
 
 function run(target, mode, directory) {

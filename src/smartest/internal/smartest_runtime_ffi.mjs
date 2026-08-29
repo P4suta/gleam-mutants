@@ -10,6 +10,29 @@ export function runtime_name() {
   return "node";
 }
 
+const testContext = Symbol.for("gleam-mutants.test-context");
+
+export function with_test_context(id, callback) {
+  const hadPrevious = Object.prototype.hasOwnProperty.call(globalThis, testContext);
+  const previous = globalThis[testContext];
+  const restore = () => {
+    if (hadPrevious) globalThis[testContext] = previous;
+    else delete globalThis[testContext];
+  };
+  globalThis[testContext] = id;
+  try {
+    const value = callback();
+    if (value && typeof value.then === "function") {
+      return Promise.resolve(value).finally(restore);
+    }
+    restore();
+    return value;
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
 function describe(error) {
   const message = String(error?.message ?? error ?? "test failed");
   const expression = assertionExpression(error);

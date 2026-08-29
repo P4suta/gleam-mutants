@@ -2,9 +2,22 @@
 %% SPDX-License-Identifier: MIT OR Apache-2.0
 
 -module(smartest_runtime_ffi).
--export([capture/2, attempt/2, runtime_name/0, format_failure/3]).
+-export([capture/2, attempt/2, runtime_name/0, format_failure/3,
+         with_test_context/2]).
 
 runtime_name() -> <<"erlang">>.
+
+with_test_context(Id, Callback) ->
+    Key = gleam_mutants_test_context,
+    PreviousProcess = erlang:get(Key),
+    erlang:put(Key, Id),
+    try Callback()
+    after
+        restore_process(Key, PreviousProcess)
+    end.
+
+restore_process(Key, undefined) -> erlang:erase(Key), ok;
+restore_process(Key, Value) -> erlang:put(Key, Value), ok.
 
 capture(Callback, Timeout0) ->
     {Status, _Value, Message, Duration} = attempt(Callback, Timeout0),
@@ -14,8 +27,13 @@ attempt(Callback, Timeout0) ->
     Timeout = erlang:max(0, Timeout0),
     Started = erlang:monotonic_time(millisecond),
     Parent = self(),
+    Context = erlang:get(gleam_mutants_test_context),
     Ref = make_ref(),
     {Pid, Monitor} = spawn_monitor(fun() ->
+        case Context of
+            Value when is_binary(Value) -> erlang:put(gleam_mutants_test_context, Value);
+            _ -> ok
+        end,
         Answer = try
             {passed, Callback()}
         catch

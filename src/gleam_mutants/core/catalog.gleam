@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import glance
+import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import gleam_mutants/core/bytes
 import gleam_mutants/core/mutant.{type Candidate, type Mutant, Candidate}
@@ -72,9 +75,10 @@ pub fn discover(
     expressions
     |> list.flat_map(rejected_candidates(path, enabled, _))
 
+  let source_index = mutant.index_source(source)
   candidates
-  |> list.map(mutant.from_candidate(source, _))
-  |> deduplicate
+  |> deduplicate_candidates
+  |> list.map(mutant.from_candidate_indexed(source, _, source_index))
   |> assign_display_ids
   |> fn(mutants) { Catalog(mutants, rejected) }
 }
@@ -121,30 +125,96 @@ fn needs_type_evidence(enabled: List(Operator)) -> Bool {
   })
 }
 
-fn deduplicate(mutants: List(Mutant)) -> List(Mutant) {
-  list.fold(mutants, [], fn(unique, candidate) {
-    case list.any(unique, mutant.same_semantics(candidate, _)) {
-      True -> unique
-      False -> list.append(unique, [candidate])
+fn deduplicate_candidates(candidates: List(Candidate)) -> List(Candidate) {
+  candidates
+  |> list.fold(#(set.new(), []), fn(state, candidate) {
+    let #(seen, unique) = state
+    let key = #(
+      mutant.normalize_path(candidate.path),
+      span.start(candidate.span),
+      span.end(candidate.span),
+      candidate.replacement,
+    )
+    case set.contains(seen, key) {
+      True -> state
+      False -> #(set.insert(seen, key), [candidate, ..unique])
     }
   })
+  |> fn(state) { list.reverse(state.1) }
 }
 
 pub fn assign_display_ids(mutants: List(Mutant)) -> List(Mutant) {
+  let ids =
+    mutants
+    |> list.map(fn(item) { item.id })
+    |> list.sort(string.compare)
+    |> unique_sorted([], None)
+  let prefixes = display_prefixes(ids, None, dict.new())
   list.map(mutants, fn(item) {
-    mutant.with_display_id(item, unique_prefix(item, mutants, 20))
+    mutant.with_display_id(
+      item,
+      dict.get(prefixes, item.id)
+        |> result.unwrap(string.slice(item.id, 0, 20)),
+    )
   })
 }
 
-fn unique_prefix(mutant: Mutant, all: List(Mutant), length: Int) -> String {
-  let prefix = string.slice(mutant.id, 0, length)
-  let collision =
-    list.any(all, fn(other) {
-      other.id != mutant.id && string.starts_with(other.id, prefix)
-    })
-  case collision, length < 64 {
-    True, True -> unique_prefix(mutant, all, length + 1)
-    _, _ -> prefix
+fn unique_sorted(
+  remaining: List(String),
+  collected: List(String),
+  previous: Option(String),
+) -> List(String) {
+  case remaining {
+    [] -> list.reverse(collected)
+    [id, ..rest] ->
+      case previous == Some(id) {
+        True -> unique_sorted(rest, collected, previous)
+        False -> unique_sorted(rest, [id, ..collected], Some(id))
+      }
+  }
+}
+
+fn display_prefixes(
+  ids: List(String),
+  previous: Option(String),
+  prefixes: dict.Dict(String, String),
+) -> dict.Dict(String, String) {
+  case ids {
+    [] -> prefixes
+    [id, ..rest] -> {
+      let next = case list.first(rest) {
+        Ok(value) -> Some(value)
+        Error(_) -> None
+      }
+      let previous_collision = case previous {
+        Some(value) -> common_prefix_length(value, id, 0)
+        None -> 0
+      }
+      let next_collision = case next {
+        Some(value) -> common_prefix_length(id, value, 0)
+        None -> 0
+      }
+      let length =
+        int.min(
+          64,
+          int.max(20, int.max(previous_collision, next_collision) + 1),
+        )
+      display_prefixes(
+        rest,
+        Some(id),
+        dict.insert(prefixes, id, string.slice(id, 0, length)),
+      )
+    }
+  }
+}
+
+fn common_prefix_length(left: String, right: String, offset: Int) -> Int {
+  case
+    offset >= 64
+    || string.slice(left, offset, 1) != string.slice(right, offset, 1)
+  {
+    True -> offset
+    False -> common_prefix_length(left, right, offset + 1)
   }
 }
 

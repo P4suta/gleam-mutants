@@ -38,23 +38,49 @@ batch is split recursively until the invalid candidate and a deterministic,
 workspace-independent compiler diagnostic are isolated. Rejected candidates
 are available through validated `--explain` and JSON output.
 
-The snapshot manifest is sorted and excludes `.git`, `build`, tool caches, and
-other generated data. Links and special files are rejected. A private runtime
+The snapshot manifest is sorted and excludes `.git`, `build`, `.gleam_mutants`,
+`.smartest`, and other generated data. Reviewed Smartest corpus under
+`test/smartest/corpus/` remains a normal input. Links and special files are
+rejected. Catalogue consumers borrow one callback-scoped session containing
+the configuration, changed paths, snapshot, sources, and discovered mutants;
+the session disposes its one snapshot on every return path. A private runtime
 module generated in the snapshot asks its own FFI which mutant is active, and
 that FFI answers from the first source that has one: on Erlang the process
 dictionary key `gleam_mutants_active`, then the persistent term
 `{gleam_mutants, active}`, then the `GLEAM_MUTANTS_ACTIVE` environment
-variable; on JavaScript an override held in the FFI module, then
-`GLEAM_MUTANTS_ACTIVE` from the runtime's environment. `run` sets the
-environment variable per worker process; the in-process sources are what let
-one VM switch mutants between calls, which the differential probe below
-depends on. No permanent runtime API is required in the target package.
+variable; on JavaScript it reads `GLEAM_MUTANTS_ACTIVE` from the runtime's
+environment. `run` sets the environment variable per worker process; the
+in-process Erlang sources are what let one VM switch mutants between calls,
+which the differential probe below depends on. No permanent runtime API is
+required in the target package.
+
+Adaptive test selection is provider-independent. With `test_selection =
+"auto"`, each instrumented baseline receives
+`GLEAM_MUTANTS_TEST_IMPACT_FILE`. A compatible runner atomically writes a
+versioned manifest of ordered opaque test descriptors and mutation sites each
+test reached. Mutant workers receive those selectors in an atomic JSON file
+below their snapshot's `.gleam_mutants/` directory through
+`GLEAM_MUTANTS_TEST_SELECTION_FILE`; selectors are never packed into an
+environment variable. Smartest supplies the first provider: native plans use
+exact leaf ids and legacy tests use their public `*_test` export id. Erlang
+propagates the current leaf through the runner's child-process context and a
+runtime-local ETS table; JavaScript runtimes use runtime-local global symbols.
+
+Evidence is only an optimisation. An unsupported runner, invalid or incomplete
+manifest, unknown identity, or unreached site falls back to the configured full
+suite. Every distinct narrowed selector set first passes an unmutated baseline.
+A narrowed kill is final; every survive, timeout, or test error is rerun with
+the full suite, and only that final verdict is cached. `test_selection =
+"full"` does not start the impact protocol and follows the full-suite path
+directly.
 
 A bounded worker pool receives independent copies of the instrumented snapshot.
-Workers are reused between mutant waves so their local build cache remains warm;
-no workspace is shared by concurrently running tests. Timeout cleanup terminates
-the entire descendant process tree (TERM then KILL on POSIX, `taskkill /T` on
-Windows), and interruption is preserved as exit 130.
+The cache is read for every mutant/runtime pair before that pool is allocated,
+so only mutants with misses receive workers and an all-hit run creates none.
+Workers are reused between mutant waves so their local build cache remains
+warm; no workspace is shared by concurrently running tests. Timeout cleanup
+terminates the entire descendant process tree (TERM then KILL on POSIX,
+`taskkill /T` on Windows), and interruption is preserved as exit 130.
 
 Matrix aggregation is intentionally conservative: any surviving runtime makes
 the mutant survived; only mutants killed in every runtime are killed. Timeouts

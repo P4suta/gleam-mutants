@@ -593,6 +593,12 @@ fn parse_options(
       use jobs <- result.try(parse_positive_int("--jobs", value))
       parse_options(rest, Options(..options, jobs: Some(jobs)))
     }
+    ["--test-selection", value, ..rest] -> {
+      use selection <- result.try(parse_test_selection(value))
+      parse_options(rest, Options(..options, test_selection: Some(selection)))
+    }
+    ["--test-selection"] ->
+      Error("GMU1002: --test-selection requires auto or full")
     ["--timeout", value, ..rest] -> {
       use timeout <- result.try(parse_timeout(value))
       parse_options(rest, Options(..options, timeout_ms: Some(timeout)))
@@ -614,6 +620,13 @@ fn parse_options(
         Ok(#("jobs", value)) -> {
           use jobs <- result.try(parse_positive_int("--jobs", value))
           parse_options(rest, Options(..options, jobs: Some(jobs)))
+        }
+        Ok(#("test-selection", value)) -> {
+          use selection <- result.try(parse_test_selection(value))
+          parse_options(
+            rest,
+            Options(..options, test_selection: Some(selection)),
+          )
         }
         Ok(#("timeout", value)) -> {
           use timeout <- result.try(parse_timeout(value))
@@ -649,6 +662,14 @@ fn parse_report_formats(value: String) -> Result(List(String), String) {
     "html" -> Ok(["html"])
     "json,html" | "html,json" -> Ok(["json", "html"])
     _ -> Error("GMU1002: --report must be none, json, html, or json,html")
+  }
+}
+
+fn parse_test_selection(value: String) -> Result(config.TestSelection, String) {
+  case value {
+    "auto" -> Ok(config.TestSelectionAuto)
+    "full" -> Ok(config.TestSelectionFull)
+    _ -> Error("GMU1002: --test-selection must be auto or full")
   }
 }
 
@@ -839,6 +860,11 @@ fn execute(command: Command) -> Nil {
               True -> io.println(report.to_json(output.report))
               False -> {
                 io.print(report.render(output.report, options.explain))
+                emit_info(
+                  options,
+                  "GMU0005",
+                  render_execution_summary(output.execution),
+                )
                 case options.quiet {
                   True -> Nil
                   False -> {
@@ -867,7 +893,7 @@ fn execute(command: Command) -> Nil {
                       False -> Nil
                     }
                     case options.verbosity > 1 {
-                      True ->
+                      True -> {
                         emit_info(
                           options,
                           "GMU0003",
@@ -879,6 +905,11 @@ fn execute(command: Command) -> Nil {
                           )
                             <> " files",
                         )
+                        output.execution.details
+                        |> list.each(fn(detail) {
+                          emit_info(options, "GMU0006", detail)
+                        })
+                      }
                       False -> Nil
                     }
                   }
@@ -1626,6 +1657,18 @@ fn print_report_path(options: Options, label: String, value: String) -> Nil {
     "" -> Nil
     _ -> emit_info(options, "GMU0004", label <> ": " <> value)
   }
+}
+
+fn render_execution_summary(summary: engine.ExecutionSummary) -> String {
+  "execution: "
+  <> int.to_string(summary.narrowed)
+  <> " narrowed; "
+  <> int.to_string(summary.confirmations)
+  <> " full-suite confirmation(s); "
+  <> int.to_string(summary.fallbacks)
+  <> " fallback(s); "
+  <> int.to_string(summary.cache_hits)
+  <> " cache hit(s)"
 }
 
 fn fail(message: String) -> Nil {
@@ -2535,6 +2578,7 @@ fn help_text() -> String {
   <> "  --json | --explain\n"
   <> "  --mutant <id-prefix>  execute exactly one unambiguous mutant\n"
   <> "  --jobs <n>            parallel isolated worker count (1-32)\n"
+  <> "  --test-selection <v> auto or full (default: auto)\n"
   <> "  --timeout <duration>  100ms through 24h (for example 1.5s)\n"
   <> "  --report <formats>    none, json, html, or json,html\n"
   <> "  --include <glob>      override mutation includes (repeatable)\n"

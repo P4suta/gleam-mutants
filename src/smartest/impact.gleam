@@ -6,8 +6,11 @@
 // SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
+import gleam/result
+import gleam/set.{type Set}
 import smartest/evidence.{type TestId}
 
 /// A target-independent semantic code identity.
@@ -29,7 +32,14 @@ type CallEdge {
 
 /// Immutable dynamic and static impact evidence.
 pub opaque type Index {
-  Index(touches: List(Touch), roots: List(StaticRoot), calls: List(CallEdge))
+  Index(
+    touches: Dict(EntityId, List(TestId)),
+    touch_seen: Set(Touch),
+    roots: List(StaticRoot),
+    root_seen: Set(StaticRoot),
+    calls: Dict(EntityId, List(EntityId)),
+    call_seen: Set(CallEdge),
+  )
 }
 
 /// Why each affected test was selected, plus any conservative mapping gaps.
@@ -47,15 +57,29 @@ pub fn entity(package: String, module: String, name: String) -> EntityId {
 }
 
 pub fn new() -> Index {
-  Index(touches: [], roots: [], calls: [])
+  Index(
+    touches: dict.new(),
+    touch_seen: set.new(),
+    roots: [],
+    root_seen: set.new(),
+    calls: dict.new(),
+    call_seen: set.new(),
+  )
 }
 
 /// Records a runtime hit once. Repeated probes do not change ordering.
 pub fn record_touch(index: Index, test_id: TestId, entity: EntityId) -> Index {
   let touch = Touch(test_id, entity)
-  case list.contains(index.touches, touch) {
+  case set.contains(index.touch_seen, touch) {
     True -> index
-    False -> Index(..index, touches: list.append(index.touches, [touch]))
+    False -> {
+      let existing = dict.get(index.touches, entity) |> result.unwrap([])
+      Index(
+        ..index,
+        touches: dict.insert(index.touches, entity, [test_id, ..existing]),
+        touch_seen: set.insert(index.touch_seen, touch),
+      )
+    }
   }
 }
 
@@ -66,18 +90,30 @@ pub fn record_static_root(
   entity: EntityId,
 ) -> Index {
   let root = StaticRoot(test_id, entity)
-  case list.contains(index.roots, root) {
+  case set.contains(index.root_seen, root) {
     True -> index
-    False -> Index(..index, roots: list.append(index.roots, [root]))
+    False ->
+      Index(
+        ..index,
+        roots: [root, ..index.roots],
+        root_seen: set.insert(index.root_seen, root),
+      )
   }
 }
 
 /// Records a caller-to-callee edge from typed static analysis.
 pub fn record_call(index: Index, caller: EntityId, callee: EntityId) -> Index {
   let edge = CallEdge(caller, callee)
-  case list.contains(index.calls, edge) {
+  case set.contains(index.call_seen, edge) {
     True -> index
-    False -> Index(..index, calls: list.append(index.calls, [edge]))
+    False -> {
+      let outgoing = dict.get(index.calls, caller) |> result.unwrap([])
+      Index(
+        ..index,
+        calls: dict.insert(index.calls, caller, [callee, ..outgoing]),
+        call_seen: set.insert(index.call_seen, edge),
+      )
+    }
   }
 }
 
@@ -93,24 +129,18 @@ pub fn select(
     |> list.fold(#([], [], []), fn(accumulator, changed_entity) {
       let #(dynamic, static, unmapped) = accumulator
       case dynamic_tests(index, changed_entity) {
-        [_, ..] as selected -> #(
-          list.append(dynamic, selected),
-          static,
-          unmapped,
-        )
+        [_, ..] as selected -> #([selected, ..dynamic], static, unmapped)
         [] ->
           case static_tests(index, changed_entity) {
-            [_, ..] as selected -> #(
-              dynamic,
-              list.append(static, selected),
-              unmapped,
-            )
-            [] -> #(dynamic, static, list.append(unmapped, [changed_entity]))
+            [_, ..] as selected -> #(dynamic, [selected, ..static], unmapped)
+            [] -> #(dynamic, static, [changed_entity, ..unmapped])
           }
       }
     })
-  let dynamic = unique(dynamic)
-  let static = static |> unique |> without(dynamic)
+  let dynamic = dynamic |> list.reverse |> list.flatten |> unique
+  let static =
+    static |> list.reverse |> list.flatten |> unique |> without(dynamic)
+  let unmapped = list.reverse(unmapped)
   let fallback = case unmapped {
     [] -> []
     [_, ..] -> all_tests
@@ -124,18 +154,14 @@ pub fn select(
 }
 
 fn dynamic_tests(index: Index, changed: EntityId) -> List(TestId) {
-  index.touches
-  |> list.filter_map(fn(touch) {
-    case touch.entity == changed {
-      True -> Ok(touch.test_id)
-      False -> Error(Nil)
-    }
-  })
-  |> unique
+  dict.get(index.touches, changed)
+  |> result.map(list.reverse)
+  |> result.unwrap([])
 }
 
 fn static_tests(index: Index, changed: EntityId) -> List(TestId) {
   index.roots
+  |> list.reverse
   |> list.index_map(fn(root, order) { #(root, order) })
   |> list.filter_map(fn(indexed) {
     let #(root, order) = indexed
@@ -160,49 +186,58 @@ pub fn shortest_distance(
   from from: EntityId,
   to to: EntityId,
 ) -> Result(Int, Nil) {
-  breadth_first(index.calls, [from], [], to, 0)
+  breadth_first(index.calls, [from], [], set.from_list([from]), to, 0)
 }
 
 fn breadth_first(
-  calls: List(CallEdge),
+  calls: Dict(EntityId, List(EntityId)),
   frontier: List(EntityId),
-  visited: List(EntityId),
+  next: List(EntityId),
+  visited: Set(EntityId),
   target: EntityId,
   distance: Int,
 ) -> Result(Int, Nil) {
-  case list.contains(frontier, target), frontier {
-    True, _ -> Ok(distance)
-    False, [] -> Error(Nil)
-    False, _ -> {
-      let visited = unique(list.append(visited, frontier))
-      let next =
-        frontier
-        |> list.flat_map(fn(caller) {
-          calls
-          |> list.filter_map(fn(edge) {
-            case edge.caller == caller {
-              True -> Ok(edge.callee)
-              False -> Error(Nil)
-            }
-          })
+  case frontier {
+    [] ->
+      case next {
+        [] -> Error(Nil)
+        _ ->
+          breadth_first(
+            calls,
+            list.reverse(next),
+            [],
+            visited,
+            target,
+            distance + 1,
+          )
+      }
+    [entity, ..] if entity == target -> Ok(distance)
+    [entity, ..rest] -> {
+      let neighbours = dict.get(calls, entity) |> result.unwrap([])
+      let #(visited, next) =
+        list.fold(neighbours, #(visited, next), fn(state, neighbour) {
+          case set.contains(state.0, neighbour) {
+            True -> state
+            False -> #(set.insert(state.0, neighbour), [neighbour, ..state.1])
+          }
         })
-        |> unique
-        |> list.filter(fn(entity) { !list.contains(visited, entity) })
-      breadth_first(calls, next, visited, target, distance + 1)
+      breadth_first(calls, rest, next, visited, target, distance)
     }
   }
 }
 
 fn without(values: List(a), excluded: List(a)) -> List(a) {
-  list.filter(values, fn(value) { !list.contains(excluded, value) })
+  let excluded = set.from_list(excluded)
+  list.filter(values, fn(value) { !set.contains(excluded, value) })
 }
 
 fn unique(values: List(a)) -> List(a) {
   values
-  |> list.fold([], fn(accumulated, value) {
-    case list.contains(accumulated, value) {
-      True -> accumulated
-      False -> list.append(accumulated, [value])
+  |> list.fold(#(set.new(), []), fn(state, value) {
+    case set.contains(state.0, value) {
+      True -> state
+      False -> #(set.insert(state.0, value), [value, ..state.1])
     }
   })
+  |> fn(state) { list.reverse(state.1) }
 }

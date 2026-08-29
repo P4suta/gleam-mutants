@@ -57,6 +57,8 @@ pub fn stable_id_is_path_separator_portable_and_content_sensitive_test() {
   assert mutant.stable_id("pub const x = 1\n", candidate)
     != mutant.stable_id("pub const x = 2\n", candidate)
   assert string.length(mutant.stable_id("source", candidate)) == 64
+  assert mutant.stable_id("pub const x = 1\n", candidate)
+    == "E39416219B62B7C31F52E193890CC41A5CE71D2FD87889085D9841B35CE1CFBE"
 }
 
 pub fn display_ids_are_unique_across_the_selected_catalogue_test() {
@@ -92,9 +94,13 @@ pub fn display_ids_are_unique_across_the_selected_catalogue_test() {
       ..second,
       id: "aaaaaaaaaaaaaaaaaaaa1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     )
-  let assert [first, second] = catalog.assign_display_ids([first, second])
+  let duplicate = mutant.Mutant(..first, path: "src/duplicate.gleam")
+  let assert [first, second, duplicate] =
+    catalog.assign_display_ids([first, second, duplicate])
   assert first.display_id == "aaaaaaaaaaaaaaaaaaaa0"
   assert second.display_id == "aaaaaaaaaaaaaaaaaaaa1"
+  assert duplicate.display_id == first.display_id
+  assert duplicate.path == "src/duplicate.gleam"
 }
 
 pub fn catalog_preserves_unicode_comments_and_crlf_test() {
@@ -147,11 +153,42 @@ pub fn nested_instrumentation_selects_each_mutant_once_test() {
   assert string.contains(rendered, "1 - 2")
 }
 
+pub fn partial_overlap_is_rejected_after_stack_validation_test() {
+  let source = "1234567"
+  let first =
+    mutant.from_candidate(
+      source,
+      mutant.Candidate(
+        "src/a.gleam",
+        operator.StringNeutral,
+        span.unsafe_new(0, 4),
+        "1234",
+        "\"\"",
+      ),
+    )
+  let second =
+    mutant.from_candidate(
+      source,
+      mutant.Candidate(
+        "src/a.gleam",
+        operator.StringNeutral,
+        span.unsafe_new(3, 7),
+        "4567",
+        "\"\"",
+      ),
+    )
+  let assert Error(interval_tree.PartialOverlap(left, right)) =
+    interval_tree.build(source, [second, first])
+  assert left.id == first.id
+  assert right.id == second.id
+}
+
 pub fn config_defaults_and_toml_precedence_test() {
   let source =
     "# keep me\n[tools.gleam_mutants]\nversion = 1\n[tools.gleam_mutants.execution]\njobs = 3\n[tools.gleam_mutants.policy]\nstrict = false\nminimum_score = 80\n[tools.gleam_mutants.report]\ndirectory = \"artifacts/mutation\"\nhigh = 90\nlow = 70\n"
   let assert Ok(decoded) = config.decode(source, 32)
   assert decoded.jobs == 3
+  assert decoded.test_selection == config.TestSelectionAuto
   assert decoded.strict == Some(False)
   assert decoded.minimum_score == 80.0
   assert decoded.report.directory == "artifacts/mutation"
@@ -161,17 +198,43 @@ pub fn config_defaults_and_toml_precedence_test() {
   assert defaults.report.directory == "reports/mutation"
   assert defaults.report.high == 80
   assert defaults.report.low == 60
+  assert defaults.test_selection == config.TestSelectionAuto
   let assert Ok(#(initialised, changed)) =
     config.initialise("name = \"demo\" # comment\n")
   assert changed
   assert string.contains(initialised, "# comment")
   assert string.contains(initialised, "[tools.gleam_mutants]")
   assert string.contains(initialised, "[tools.gleam_mutants.report]")
+  assert string.contains(initialised, "test_selection = \"auto\"")
   assert string.contains(initialised, "directory = \"reports/mutation\"")
   assert string.contains(initialised, "high = 80")
   assert string.contains(initialised, "low = 60")
   let assert Ok(#(_, second_changed)) = config.initialise(initialised)
   assert !second_changed
+}
+
+pub fn test_selection_config_and_cli_override_test() {
+  let source =
+    "[tools.gleam_mutants]\nversion = 1\n[tools.gleam_mutants.execution]\ntest_selection = \"full\"\n"
+  let assert Ok(decoded) = config.decode(source, 4)
+  assert decoded.test_selection == config.TestSelectionFull
+
+  let assert Ok(cli.RunCommand(auto_options)) =
+    cli.parse(["run", "--test-selection", "auto"])
+  assert auto_options.test_selection == Some(config.TestSelectionAuto)
+  let assert Ok(cli.RunCommand(full_options)) =
+    cli.parse(["run", "--test-selection=full"])
+  assert full_options.test_selection == Some(config.TestSelectionFull)
+  assert cli.parse(["run", "--test-selection", "sometimes"])
+    == Error("GMU1002: --test-selection must be auto or full")
+  assert cli.parse(["run", "--test-selection"])
+    == Error("GMU1002: --test-selection requires auto or full")
+  let assert Error(config.ConfigError(_, _, message)) =
+    config.decode(
+      "[tools.gleam_mutants]\nversion = 1\n[tools.gleam_mutants.execution]\ntest_selection = \"sometimes\"\n",
+      4,
+    )
+  assert string.contains(message, "must be auto or full")
 }
 
 pub fn config_unknown_key_has_position_test() {

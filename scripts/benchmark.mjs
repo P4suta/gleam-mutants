@@ -17,17 +17,35 @@ try {
   for (let index = 0; index < 1_000; index += 1) {
     fs.writeFileSync(path.join(sourceDirectory, `file_${String(index).padStart(4, "0")}.gleam`), padding + body);
   }
-  const result = childProcess.spawnSync(
-    "gleam",
-    ["run", "-m", "benchmark_smoke", "--target", "erlang", "--", workspace],
-    { cwd: root, encoding: "utf8", shell: false, maxBuffer: 4 * 1024 * 1024 },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    process.stderr.write((result.stdout || "") + (result.stderr || ""));
-    throw new Error("tested-envelope benchmark failed");
+  const runs = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = childProcess.spawnSync(
+      "gleam",
+      ["run", "-m", "benchmark_smoke", "--target", "erlang", "--", workspace],
+      { cwd: root, encoding: "utf8", shell: false, maxBuffer: 4 * 1024 * 1024 },
+    );
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      process.stderr.write((result.stdout || "") + (result.stderr || ""));
+      throw new Error("tested-envelope benchmark failed");
+    }
+    runs.push(JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1)));
   }
-  const metrics = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+  const first = runs[0];
+  if (!runs.every(run => run.files === first.files
+    && run.mutants === first.mutants
+    && run.order_digest === first.order_digest)) {
+    throw new Error("benchmark catalogue changed between measurements");
+  }
+  const median = key => runs.map(run => run[key]).sort((a, b) => a - b)[1];
+  const metrics = {
+    files: first.files,
+    mutants: first.mutants,
+    order_digest: first.order_digest,
+    snapshot_ms: median("snapshot_ms"),
+    discovery_ms: median("discovery_ms"),
+    runs,
+  };
   console.log(`benchmark passed: ${JSON.stringify(metrics)}`);
 } finally {
   fs.rmSync(workspace, { recursive: true, force: true });

@@ -26,6 +26,7 @@ command = ["gleam", "test"]
 
 [tools.gleam_mutants.execution]
 jobs = 4
+test_selection = "auto"  # auto, full
 
 [tools.gleam_mutants.cache]
 mode = "auto"              # auto, off, read-only, write-only, read-write
@@ -62,6 +63,9 @@ the existing TOML through Tomlet, preserving comments and ordering, and is
 idempotent. `--test-command` consumes the remaining argv verbatim.
 
 `jobs` defaults to `min(logical CPU, 8)` and explicit values must be 1–32.
+`test_selection = "auto"` lets a compatible test runner execute impacted tests
+first while conservatively confirming non-kills with the full suite. `full`
+disables the impact protocol and always runs the complete suite.
 Explicit timeouts must be 100ms–24h. CLI durations accept `30000ms`, `30s`,
 `1.5s`, `1m`, `1h`, and unitless integer seconds; unknown units, unitless
 decimals, NaN, and Infinity are rejected. The derived timeout is five times the

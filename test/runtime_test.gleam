@@ -58,8 +58,9 @@ fn generated_source_path(
 pub fn generated_runtime_resolves_the_active_mutant_per_process_test() {
   let root = fresh_snapshot_root()
   let assert Ok(generated) = runtime.generate(root, platform.random_nonce())
-  let assert Ok(module) =
-    load_generated(generated_source_path(root, runtime.name(generated), ".erl"))
+  let erlang_path = generated_source_path(root, runtime.name(generated), ".erl")
+  let assert Ok(erlang_source) = simplifile.read(erlang_path)
+  let assert Ok(module) = load_generated(erlang_path)
 
   // (a) neither the process dictionary nor the persistent term is set.
   let unset = active(module)
@@ -92,6 +93,9 @@ pub fn generated_runtime_resolves_the_active_mutant_per_process_test() {
   assert with_both == "m1"
   assert in_spawned_process == "m2"
   assert after_cleanup == from_environment
+  assert string.contains(erlang_source, "GLEAM_MUTANTS_TEST_IMPACT_FILE")
+  assert string.contains(erlang_source, "gleam_mutants_test_context")
+  assert !string.contains(erlang_source, "{gleam_mutants, test_context}")
 }
 
 pub fn generated_javascript_runtime_uses_process_context_without_a_global_override_test() {
@@ -106,6 +110,9 @@ pub fn generated_javascript_runtime_uses_process_context_without_a_global_overri
   assert string.contains(source, "globalThis.process?.env")
   assert string.contains(source, "globalThis.Deno.env.get")
   assert string.contains(source, "GLEAM_MUTANTS_ACTIVE")
+  assert string.contains(source, "GLEAM_MUTANTS_TEST_IMPACT_FILE")
+  assert string.contains(source, "Symbol.for(\"gleam-mutants.test-context\")")
+  assert string.contains(source, "new Map()")
 }
 
 pub fn generated_javascript_runtime_isolates_parallel_process_contexts_test() {
