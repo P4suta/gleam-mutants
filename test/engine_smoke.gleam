@@ -19,6 +19,8 @@ pub fn main() {
   let assert Ok(output) = engine.run("fixtures/basic_project", options)
   assert output.report.score.total > 0
   assert output.report.score.errors == 0
+  assert output.execution.narrowed == 0
+  assert output.execution.fallbacks == output.report.selection.executed
   assert simplifile.is_file(output.stryker_json_path) == Ok(True)
   assert simplifile.is_file(output.html_report_path) == Ok(True)
   io.println(

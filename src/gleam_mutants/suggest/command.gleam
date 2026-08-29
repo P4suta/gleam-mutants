@@ -22,7 +22,6 @@ import gleam/string
 import gleam_mutants/config.{type Config}
 import gleam_mutants/core/mutant.{type Mutant}
 import gleam_mutants/core/operator
-import gleam_mutants/core/path
 import gleam_mutants/core/plan
 import gleam_mutants/engine
 import gleam_mutants/platform
@@ -32,7 +31,6 @@ import gleam_mutants/suggest/minimize
 import gleam_mutants/suggest/probe_result.{type ProbeResult, type Status}
 import gleam_mutants/suggest/render
 import gleam_mutants/suggest/select
-import simplifile
 
 /// One `suggest` or `explain` run, as the caller asked for it.
 ///
@@ -444,59 +442,66 @@ fn probe(
   options: SuggestOptions,
   selection: Selection,
 ) -> Result(Probed, String) {
-  use manifest <- result.try(read_manifest(workspace))
-  use configured <- result.try(
-    config.decode(manifest, platform.cpu_count())
-    |> result.map_error(config.describe_error),
-  )
-  let style = assert_style(configured, options)
-  use listed <- result.try(engine.list_mutants(
+  engine.with_catalog_session(
     workspace,
     selection_options(options),
-    False,
-  ))
-  use selected <- result.try(matching(listed.mutants, options.mutant_prefix))
-  use narrowed <- result.try(narrow(workspace, selected, options, selection))
-  let #(chosen, missing) = narrowed
-  case files_of(chosen) {
-    [] ->
-      Ok(Probed(
-        results: [],
-        mutants: [],
-        skipped: [],
-        survivors_missing: missing,
-        style: style,
-        snapshot_root: "",
-        // Nothing was probed, so nothing was looked for: a selection that
-        // holds no mutant says nothing about whether the function exists.
-        unmatched_function: None,
-      ))
-    files -> {
-      use output <- result.map(
-        diff_runner.run(request(workspace, files, chosen, configured, options))
-        |> result.map_error(discarding),
-      )
-      let _ = platform.delete_tree(output.snapshot_root)
-      let wanted = set.from_list(list.map(chosen, fn(item) { item.id }))
-      let reported =
-        list.filter(output.results, fn(verdict) {
-          set.contains(wanted, verdict.mutant)
-        })
-      Probed(
-        results: reported,
-        mutants: accountable(chosen, reported, options.function),
-        skipped: walked_past(output.skipped, reported, output.mutants),
-        survivors_missing: missing,
-        style: style,
-        snapshot_root: output.snapshot_root,
-        unmatched_function: unmatched_function(
-          options.function,
-          output.results,
-          output.routes,
-        ),
-      )
-    }
-  }
+    fn(session) {
+      let configured = engine.session_config(session)
+      let style = assert_style(configured, options)
+      use listed <- result.try(engine.list_session(session, False))
+      use selected <- result.try(matching(listed.mutants, options.mutant_prefix))
+      use narrowed <- result.try(narrow(workspace, selected, options, selection))
+      let #(chosen, missing) = narrowed
+      case files_of(chosen) {
+        [] ->
+          Ok(Probed(
+            results: [],
+            mutants: [],
+            skipped: [],
+            survivors_missing: missing,
+            style: style,
+            snapshot_root: "",
+            // Nothing was probed, so nothing was looked for: a selection that
+            // holds no mutant says nothing about whether the function exists.
+            unmatched_function: None,
+          ))
+        files -> {
+          use output <- result.map(
+            diff_runner.run_session(
+              request(workspace, files, chosen, configured, options),
+              engine.session_manifest(session),
+              configured,
+              engine.session_snapshot(session),
+              engine.session_catalogs(session),
+            )
+            |> result.map_error(fn(error) {
+              diff_runner.describe(
+                diff_runner.RunError(..error, snapshot_root: None),
+              )
+            }),
+          )
+          let wanted = set.from_list(list.map(chosen, fn(item) { item.id }))
+          let reported =
+            list.filter(output.results, fn(verdict) {
+              set.contains(wanted, verdict.mutant)
+            })
+          Probed(
+            results: reported,
+            mutants: accountable(chosen, reported, options.function),
+            skipped: walked_past(output.skipped, reported, output.mutants),
+            survivors_missing: missing,
+            style: style,
+            snapshot_root: output.snapshot_root,
+            unmatched_function: unmatched_function(
+              options.function,
+              output.results,
+              output.routes,
+            ),
+          )
+        }
+      }
+    },
+  )
 }
 
 /// The selection narrowed to the mutants this run is about.
@@ -536,19 +541,6 @@ fn survivors(
       keep_survivors(selected, stored)
     }
   }
-}
-
-/// Throws away the snapshot a failed run left behind, and says what failed.
-///
-/// The runner hands its copy to the caller so the generated probes can be
-/// read; a command line has nobody to read them, so the copy goes and the
-/// message is written as if there had never been one.
-fn discarding(error: diff_runner.RunError) -> String {
-  let _ = case error.snapshot_root {
-    Some(root) -> platform.delete_tree(root)
-    None -> Ok(Nil)
-  }
-  diff_runner.describe(diff_runner.RunError(..error, snapshot_root: None))
 }
 
 /// The mutants this run is accountable for reporting on.
@@ -672,13 +664,6 @@ fn assert_style(
         config.ShouldEqual -> render.ShouldEqual
       }
   }
-}
-
-fn read_manifest(workspace: String) -> Result(String, String) {
-  simplifile.read(path.join(workspace, "gleam.toml"))
-  |> result.map_error(fn(error) {
-    "could not read gleam.toml: " <> simplifile.describe_error(error)
-  })
 }
 
 // --- Reading the verdicts ----------------------------------------------------

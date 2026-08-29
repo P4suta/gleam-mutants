@@ -6,6 +6,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/set.{type Set}
 import gleam/string
 import smartest/corpus
 import smartest/evidence.{
@@ -271,6 +272,23 @@ pub fn run(entries: List(Entry), options: Options) -> Report {
 }
 
 pub fn run_entry(entry: Entry, options: Options) -> List(TestResult) {
+  run_entry_with_selection(entry, options, None)
+}
+
+/// Runs only exact leaf selectors returned by `test_ids`.
+pub fn run_entry_selected(
+  entry: Entry,
+  options: Options,
+  selectors: List(String),
+) -> List(TestResult) {
+  run_entry_with_selection(entry, options, Some(set.from_list(selectors)))
+}
+
+fn run_entry_with_selection(
+  entry: Entry,
+  options: Options,
+  selected: Option(Set(String)),
+) -> List(TestResult) {
   case options.startup_error {
     Some(reason) -> [
       basic_result(
@@ -281,8 +299,34 @@ pub fn run_entry(entry: Entry, options: Options) -> List(TestResult) {
     ]
     None -> {
       let root = evidence.test_id(entry.package, entry.module, entry.function)
-      walk(entry.plan, root, inherited_metadata(), [], options)
+      walk(entry.plan, root, inherited_metadata(), [], options, selected)
     }
+  }
+}
+
+/// Stable leaf ids in the order this entry executes them, without evaluating
+/// a callback.
+pub fn test_ids(entry: Entry) -> List(evidence.TestId) {
+  let root = evidence.test_id(entry.package, entry.module, entry.function)
+  collect_test_ids(entry.plan, root, [])
+}
+
+fn collect_test_ids(
+  value: Test,
+  root: evidence.TestId,
+  path: List(String),
+) -> List(evidence.TestId) {
+  let metadata = plan.metadata(value)
+  let path = case metadata.name {
+    Some(name) -> list.append(path, [name])
+    None -> path
+  }
+  case plan.node(value) {
+    plan.SuiteNode(name, tests) -> {
+      let path = list.append(path, [name])
+      list.flat_map(tests, fn(child) { collect_test_ids(child, root, path) })
+    }
+    plan.LeafNode(_) -> [list.fold(path, root, evidence.child_test_id)]
   }
 }
 
@@ -374,6 +418,7 @@ fn walk(
   inherited: plan.Metadata,
   path: List(String),
   options: Options,
+  selected: Option(Set(String)),
 ) -> List(TestResult) {
   let metadata = merge_metadata(inherited, plan.metadata(value))
   let path = case metadata.name {
@@ -384,11 +429,27 @@ fn walk(
     plan.SuiteNode(name, tests) -> {
       let path = list.append(path, [name])
       tests
-      |> list.flat_map(fn(child) { walk(child, root, metadata, path, options) })
+      |> list.flat_map(fn(child) {
+        walk(child, root, metadata, path, options, selected)
+      })
     }
     plan.LeafNode(leaf) -> {
       let id = list.fold(path, root, evidence.child_test_id)
-      execute_leaf(id, leaf, metadata, options)
+      let selector = evidence.test_id_to_string(id)
+      case selected {
+        Some(selected) ->
+          case set.contains(selected, selector) {
+            False -> []
+            True ->
+              runtime.with_test_context(selector, fn() {
+                execute_leaf(id, leaf, metadata, options)
+              })
+          }
+        None ->
+          runtime.with_test_context(selector, fn() {
+            execute_leaf(id, leaf, metadata, options)
+          })
+      }
     }
   }
 }

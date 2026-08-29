@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name = "adaptive_fixture"
+version = "0.0.0"
+
+[tools.gleam_mutants]
+version = 1
+
+[tools.gleam_mutants.mutation]
+operators = ["comparison-boundary"]
+
+[tools.gleam_mutants.test]
+target = "erlang"
+runtime = "erlang"
+timeout_ms = 1000
+command = ["node", "adaptive-runner.mjs"]
+
+[tools.gleam_mutants.execution]
+jobs = 2
+test_selection = "auto"
+
+[tools.gleam_mutants.cache]
+mode = "read-write"
+key = "fixture"
+
+[tools.gleam_mutants.policy]
+strict = false
+minimum_score = 100
+require_mutants = true
+
+[tools.gleam_mutants.report]
+formats = []
+history = false

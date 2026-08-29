@@ -1,15 +1,18 @@
 // SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set
 import gleam/string
 import gleam_mutants/cache
 import gleam_mutants/config.{
-  type CacheMode, type Config, type DiagnosticsMode, CacheAuto, CacheOff,
-  CacheReadWrite, Config, DiagnosticsAll, DiagnosticsErrors, DiagnosticsNone,
+  type CacheMode, type Config, type DiagnosticsMode, type TestSelection,
+  CacheAuto, CacheOff, CacheReadWrite, Config, DiagnosticsAll, DiagnosticsErrors,
+  DiagnosticsNone,
 }
 import gleam_mutants/core/bytes
 import gleam_mutants/core/catalog.{
@@ -37,6 +40,7 @@ import gleam_mutants/runtime.{type RuntimeModule}
 import gleam_mutants/snapshot.{type Snapshot}
 import gleam_mutants/stryker_html
 import gleam_mutants/stryker_report.{SourceFile}
+import gleam_mutants/test_impact
 import gleam_mutants/workspace_lock
 import simplifile
 import tomlet
@@ -62,6 +66,7 @@ pub type Options {
     operators: Option(List(Operator)),
     strict: Option(Bool),
     jobs: Option(Int),
+    test_selection: Option(TestSelection),
     timeout_ms: Option(Int),
     test_command: Option(List(String)),
     mutant_prefix: Option(String),
@@ -86,6 +91,20 @@ pub type RunOutput {
     stryker_json_path: String,
     html_report_path: String,
     exit_code: Int,
+    execution: ExecutionSummary,
+    phase_timings: List(#(String, Int)),
+  )
+}
+
+/// Human diagnostics for execution optimisations. Report JSON v1 deliberately
+/// does not include this operational data.
+pub type ExecutionSummary {
+  ExecutionSummary(
+    narrowed: Int,
+    confirmations: Int,
+    fallbacks: Int,
+    cache_hits: Int,
+    details: List(String),
   )
 }
 
@@ -112,6 +131,26 @@ pub type SourceCatalog {
   )
 }
 
+/// One immutable view of a workspace used by catalogue consumers.
+///
+/// The constructor is deliberately callback-based (`with_catalog_session`):
+/// the snapshot cannot escape its lifetime, and every success or failure is
+/// paired with exactly one disposal attempt.
+pub opaque type CatalogSession {
+  CatalogSession(
+    workspace: String,
+    gleam_toml: String,
+    config: Config,
+    options: Options,
+    changed_paths: Option(List(String)),
+    snapshot: Snapshot,
+    files: List(String),
+    catalogs: List(SourceCatalog),
+    candidates: List(Mutant),
+    catalog_ms: Int,
+  )
+}
+
 type Preflight {
   Preflight(files: List(String), catalogs: List(SourceCatalog), candidates: Int)
 }
@@ -124,8 +163,62 @@ type ExecutionContext {
   )
 }
 
+type CachedMutant {
+  CachedMutant(mutant: Mutant, outcomes: List(RuntimeOutcome))
+}
+
 type PendingRun {
-  PendingRun(mutant: Mutant, runtime: Runtime, request: platform.ProcessRequest)
+  PendingRun(
+    mutant: Mutant,
+    runtime: Runtime,
+    request: platform.ProcessRequest,
+    mode: RunMode,
+  )
+}
+
+type RunMode {
+  FullSuite
+  FallbackSuite(reason: String)
+  NarrowedSuite(runner: String, selectors: List(String))
+}
+
+type RuntimeImpact {
+  RuntimeImpact(runtime: Runtime, state: ImpactState)
+}
+
+type ImpactState {
+  ImpactDisabled
+  ImpactUnavailable(reason: String)
+  ImpactReady(test_impact.Manifest)
+}
+
+type AdaptivePlan {
+  AdaptivePlan(modes: dict.Dict(String, RunMode), details: List(String))
+}
+
+type SelectorGroup {
+  SelectorGroup(runner: String, selectors: List(String), mutants: List(String))
+}
+
+type ExecutionCounts {
+  ExecutionCounts(
+    narrowed: Int,
+    confirmations: Int,
+    fallbacks: Int,
+    cache_hits: Int,
+  )
+}
+
+type WaveOutput {
+  WaveOutput(
+    results: List(MutantResult),
+    counts: ExecutionCounts,
+    details: List(String),
+  )
+}
+
+type MutantRun {
+  MutantRun(results: List(MutantResult), summary: ExecutionSummary)
 }
 
 type Prepared {
@@ -137,6 +230,7 @@ type Prepared {
     rejected: List(RejectedMutant),
     runtimes: List(Runtime),
     runtime_module: RuntimeModule,
+    impact: List(RuntimeImpact),
     timeout_ms: Int,
     phase: pipeline.Pipeline(pipeline.Instrumented),
   )
@@ -151,6 +245,7 @@ pub fn default_options() -> Options {
     operators: None,
     strict: None,
     jobs: None,
+    test_selection: None,
     timeout_ms: None,
     test_command: None,
     mutant_prefix: None,
@@ -186,6 +281,59 @@ fn run_locked(
   options: Options,
   run_id: String,
 ) -> Result(RunOutput, String) {
+  with_catalog_session(workspace, options, fn(session) {
+    let configured = session.config
+    let snapshot = session.snapshot
+    let changed_paths = session.changed_paths
+    case preflight(session) {
+      Error(error) -> Error(error)
+      Ok(Preflight([], _, _)) ->
+        case changed_paths {
+          Some([]) ->
+            complete_empty(
+              snapshot,
+              workspace,
+              configured,
+              options,
+              run_id,
+              [],
+              True,
+              "no changed Gleam files",
+              0,
+            )
+          _ -> Error("GMU4001: selection did not match any Gleam source files")
+        }
+      Ok(Preflight(_, catalogs, 0)) ->
+        complete_empty(
+          snapshot,
+          workspace,
+          configured,
+          options,
+          run_id,
+          catalogs,
+          False,
+          "selected files contain no applicable mutation sites",
+          case configured.require_mutants {
+            True -> 1
+            False -> 0
+          },
+        )
+      Ok(_) -> execute(session, run_id)
+    }
+  })
+}
+
+fn preflight(session: CatalogSession) -> Result(Preflight, String) {
+  Ok(Preflight(session.files, session.catalogs, list.length(session.candidates)))
+}
+
+/// Captures configuration, changed paths, a pristine snapshot and its source
+/// catalogues once, lends them to `action`, then always disposes the snapshot.
+pub fn with_catalog_session(
+  workspace: String,
+  options: Options,
+  action: fn(CatalogSession) -> Result(a, String),
+) -> Result(a, String) {
   use source <- result.try(read_project_config(workspace))
   use decoded <- result.try(
     config.decode(source, platform.cpu_count())
@@ -195,57 +343,44 @@ fn run_locked(
   use _ <- result.try(validate_effective_config(configured))
   use _ <- result.try(validate_report_configuration(workspace, configured))
   use changed_paths <- result.try(resolve_changed(workspace, options.changed))
-  use snapshot <- result.try(
-    snapshot.create_excluding(workspace, [
-      configured.report.directory,
-    ]),
+  use captured <- result.try(
+    snapshot.create_excluding(workspace, [configured.report.directory]),
   )
-  let result = case preflight(snapshot, configured, changed_paths) {
-    Error(error) -> Error(error)
-    Ok(Preflight([], _, _)) ->
-      case changed_paths {
-        Some([]) ->
-          complete_empty(
-            snapshot,
-            workspace,
-            configured,
-            options,
-            run_id,
-            [],
-            True,
-            "no changed Gleam files",
-            0,
-          )
-        _ -> Error("GMU4001: selection did not match any Gleam source files")
-      }
-    Ok(Preflight(_, catalogs, 0)) ->
-      complete_empty(
-        snapshot,
-        workspace,
-        configured,
-        options,
-        run_id,
-        catalogs,
-        False,
-        "selected files contain no applicable mutation sites",
-        case configured.require_mutants {
-          True -> 1
-          False -> 0
-        },
-      )
-    Ok(_) ->
-      execute(
-        snapshot,
-        workspace,
-        source,
-        configured,
-        options,
-        run_id,
-        changed_paths,
-      )
+  let files =
+    snapshot.source_files(captured, configured.includes, configured.excludes)
+    |> selected_files(changed_paths)
+  let attempt = {
+    let catalog_started = platform.monotonic_milliseconds()
+    use catalogs <- result.try(discover_catalogs(
+      snapshot.root(captured),
+      files,
+      configured.operators,
+    ))
+    let catalog_ms = platform.monotonic_milliseconds() - catalog_started
+    let candidates =
+      list.flat_map(catalogs, fn(source_catalog) { source_catalog.mutants })
+    action(CatalogSession(
+      workspace,
+      source,
+      configured,
+      options,
+      changed_paths,
+      captured,
+      files,
+      catalogs,
+      candidates,
+      catalog_ms,
+    ))
   }
-  case result, snapshot.dispose(snapshot) {
-    Ok(output), Ok(Nil) -> Ok(output)
+  finish_session(attempt, captured)
+}
+
+fn finish_session(
+  attempt: Result(a, String),
+  captured: Snapshot,
+) -> Result(a, String) {
+  case attempt, snapshot.dispose(captured) {
+    Ok(value), Ok(Nil) -> Ok(value)
     Error(error), Ok(Nil) -> Error(error)
     Ok(_), Error(error) -> Error("GMU7002: snapshot cleanup failed: " <> error)
     Error(error), Error(cleanup_error) ->
@@ -253,29 +388,32 @@ fn run_locked(
   }
 }
 
-fn preflight(
-  snapshot: Snapshot,
-  config: Config,
-  changed_paths: Option(List(String)),
-) -> Result(Preflight, String) {
-  let files = snapshot.source_files(snapshot, config.includes, config.excludes)
-  let files = case changed_paths {
-    None -> files
-    Some(changed) ->
-      list.filter(files, fn(file) { list.contains(changed, file) })
-  }
-  use catalogs <- result.try(discover_catalogs(
-    snapshot.root(snapshot),
-    files,
-    config.operators,
-  ))
-  Ok(Preflight(
-    files,
-    catalogs,
-    catalogs
-      |> list.flat_map(fn(catalog) { catalog.mutants })
-      |> list.length,
-  ))
+pub fn session_workspace(session: CatalogSession) -> String {
+  session.workspace
+}
+
+pub fn session_manifest(session: CatalogSession) -> String {
+  session.gleam_toml
+}
+
+pub fn session_config(session: CatalogSession) -> Config {
+  session.config
+}
+
+pub fn session_snapshot(session: CatalogSession) -> Snapshot {
+  session.snapshot
+}
+
+pub fn session_files(session: CatalogSession) -> List(String) {
+  session.files
+}
+
+pub fn session_catalogs(session: CatalogSession) -> List(SourceCatalog) {
+  session.catalogs
+}
+
+pub fn session_candidates(session: CatalogSession) -> List(Mutant) {
+  session.candidates
 }
 
 pub fn list_mutants(
@@ -283,59 +421,18 @@ pub fn list_mutants(
   options: Options,
   validate: Bool,
 ) -> Result(ListOutput, String) {
-  use source <- result.try(read_project_config(workspace))
-  use decoded <- result.try(
-    config.decode(source, platform.cpu_count())
-    |> result.map_error(config.describe_error),
-  )
-  let configured = apply_options(decoded, options)
-  use _ <- result.try(validate_effective_config(configured))
-  use _ <- result.try(validate_report_configuration(workspace, configured))
-  use changed_paths <- result.try(resolve_changed(workspace, options.changed))
-  use snapshot <- result.try(
-    snapshot.create_excluding(workspace, [
-      configured.report.directory,
-    ]),
-  )
-  let result =
-    list_snapshot(
-      snapshot,
-      source,
-      configured,
-      options,
-      changed_paths,
-      validate,
-    )
-  case result, snapshot.dispose(snapshot) {
-    Ok(output), Ok(Nil) -> Ok(output)
-    Error(error), Ok(Nil) -> Error(error)
-    Ok(_), Error(error) -> Error("GMU7002: snapshot cleanup failed: " <> error)
-    Error(error), Error(cleanup_error) ->
-      Error(error <> "; snapshot cleanup failed: " <> cleanup_error)
-  }
+  with_catalog_session(workspace, options, fn(session) {
+    list_session(session, validate)
+  })
 }
 
-fn list_snapshot(
-  snapshot: Snapshot,
-  gleam_toml: String,
-  config: Config,
-  options: Options,
-  changed_paths: Option(List(String)),
+/// Lists from an already captured session without copying or rediscovering.
+pub fn list_session(
+  session: CatalogSession,
   validate: Bool,
 ) -> Result(ListOutput, String) {
-  let files = snapshot.source_files(snapshot, config.includes, config.excludes)
-  let files = case changed_paths {
-    None -> files
-    Some(changed) ->
-      list.filter(files, fn(file) { list.contains(changed, file) })
-  }
-  use catalogs <- result.try(discover_catalogs(
-    snapshot.root(snapshot),
-    files,
-    config.operators,
-  ))
-  let candidates = catalogs |> list.flat_map(fn(catalog) { catalog.mutants })
-  let changed_selection = case options.changed {
+  let candidates = session.candidates
+  let changed_selection = case session.options.changed {
     Some(_) -> True
     None -> False
   }
@@ -344,22 +441,30 @@ fn list_snapshot(
       use mutation_plan <- result.try(plan.build(
         candidates,
         changed_selection,
-        options.mutant_prefix,
+        session.options.mutant_prefix,
       ))
       Ok(ListOutput(plan.mutants(mutation_plan), [], False))
     }
     True -> {
-      let runtimes = detect_runtimes(gleam_toml, config, options.matrix)
+      let runtimes =
+        detect_runtimes(
+          session.gleam_toml,
+          session.config,
+          session.options.matrix,
+        )
       use runtime_module <- result.try(runtime.generate(
-        snapshot.root(snapshot),
-        snapshot.digest(snapshot),
+        snapshot.root(session.snapshot),
+        snapshot.digest(session.snapshot),
       ))
-      use _ <- result.try(build_targets(snapshot.root(snapshot), runtimes))
+      use _ <- result.try(build_targets(
+        snapshot.root(session.snapshot),
+        runtimes,
+      ))
       // The build above is what makes `True` true: the snapshot compiles with
       // nothing mutated in it, so a batch that fails fails over a mutant.
       use validation <- result.try(delta_validate(
-        snapshot,
-        catalogs,
+        session.snapshot,
+        session.catalogs,
         candidates,
         runtimes,
         runtime_module,
@@ -369,7 +474,7 @@ fn list_snapshot(
       use mutation_plan <- result.try(plan.build(
         valid,
         changed_selection,
-        options.mutant_prefix,
+        session.options.mutant_prefix,
       ))
       Ok(ListOutput(plan.mutants(mutation_plan), rejected, True))
     }
@@ -377,25 +482,18 @@ fn list_snapshot(
 }
 
 fn execute(
-  snapshot: Snapshot,
-  workspace: String,
-  gleam_toml: String,
-  config: Config,
-  options: Options,
+  session: CatalogSession,
   run_id: String,
-  changed_paths: Option(List(String)),
 ) -> Result(RunOutput, String) {
   let started = platform.now_milliseconds()
   let monotonic_started = platform.monotonic_milliseconds()
-  use prepared <- result.try(prepare(
-    snapshot,
-    workspace,
-    gleam_toml,
-    config,
-    options,
-    changed_paths,
-  ))
-  use results <- result.try(run_mutants(prepared))
+  let prepare_started = platform.monotonic_milliseconds()
+  use prepared <- result.try(prepare(session))
+  let prepare_ms = platform.monotonic_milliseconds() - prepare_started
+  let mutation_started = platform.monotonic_milliseconds()
+  use mutation_run <- result.try(run_mutants(prepared))
+  let mutation_ms = platform.monotonic_milliseconds() - mutation_started
+  let results = mutation_run.results
   let aggregated = list.map(results, fn(item) { item.aggregate })
   let mutation_score = score.calculate(aggregated)
   let policy =
@@ -411,8 +509,8 @@ fn execute(
       run_id: run_id,
       started_ms: started,
       duration_ms: platform.monotonic_milliseconds() - monotonic_started,
-      workspace_digest: snapshot.digest(snapshot),
-      matrix: options.matrix,
+      workspace_digest: snapshot.digest(session.snapshot),
+      matrix: session.options.matrix,
       selection: SelectionSummary(
         mode: plan.mode(prepared.mutation_plan),
         files_selected: list.length(prepared.catalogs),
@@ -462,29 +560,37 @@ fn execute(
     value -> value <> "\n"
   }
   use project_reports <- result.try(project_report.write_formats(
-    workspace,
+    session.workspace,
     prepared.config.report.directory,
     formats,
     json_report,
     projection.1,
   ))
   use report_path <- result.try(case prepared.config.report.history {
-    True -> report.save(run_report, workspace)
+    True -> report.save(run_report, session.workspace)
     False -> Ok("")
   })
-  case options.annotations, options.json {
+  case session.options.annotations, session.options.json {
     True, False -> report.emit_github(run_report)
     _, _ -> Nil
   }
   let phase = pipeline.completed(prepared.phase)
   let _ = pipeline.state(phase)
-  Ok(RunOutput(
-    run_report,
-    report_path,
-    project_reports.json_path,
-    project_reports.html_path,
-    exit_code,
-  ))
+  Ok(
+    RunOutput(
+      run_report,
+      report_path,
+      project_reports.json_path,
+      project_reports.html_path,
+      exit_code,
+      mutation_run.summary,
+      [
+        #("catalog.discover", session.catalog_ms),
+        #("engine.prepare", prepare_ms),
+        #("engine.execute", mutation_ms),
+      ],
+    ),
+  )
 }
 
 fn complete_empty(
@@ -569,13 +675,17 @@ fn complete_empty(
     True -> report.save(run_report, workspace)
     False -> Ok("")
   })
-  Ok(RunOutput(
-    run_report,
-    report_path,
-    project_reports.json_path,
-    project_reports.html_path,
-    exit_code,
-  ))
+  Ok(
+    RunOutput(
+      run_report,
+      report_path,
+      project_reports.json_path,
+      project_reports.html_path,
+      exit_code,
+      ExecutionSummary(0, 0, 0, 0, []),
+      [],
+    ),
+  )
 }
 
 fn selection_mode(options: Options) -> String {
@@ -601,26 +711,19 @@ fn validate_report_configuration(
   }
 }
 
-fn prepare(
-  snapshot: Snapshot,
-  workspace: String,
-  gleam_toml: String,
-  config: Config,
-  options: Options,
-  changed_paths: Option(List(String)),
-) -> Result(Prepared, String) {
-  let files = snapshot.source_files(snapshot, config.includes, config.excludes)
-  let files = case changed_paths {
-    None -> files
-    Some(changed) ->
-      list.filter(files, fn(path) { list.contains(changed, path) })
-  }
-  let phase0 = pipeline.discovered(workspace, files)
+fn prepare(session: CatalogSession) -> Result(Prepared, String) {
+  let snapshot = session.snapshot
+  let config = session.config
+  let options = session.options
+  let catalogs = session.catalogs
+  let candidates = session.candidates
+  let phase0 = pipeline.discovered(session.workspace, session.files)
   let phase1 = pipeline.snapshotted(phase0, snapshot.root(snapshot))
-  let runtimes = detect_runtimes(gleam_toml, config, options.matrix)
+  let runtimes = detect_runtimes(session.gleam_toml, config, options.matrix)
   use _ <- result.try(configure_deno_permissions(
     snapshot.root(snapshot),
     runtimes,
+    config.test_selection,
   ))
   use baseline <- result.try(run_baseline(
     snapshot.root(snapshot),
@@ -628,12 +731,6 @@ fn prepare(
     config,
   ))
   let phase2 = pipeline.baseline_passed(phase1, baseline.0)
-  use catalogs <- result.try(discover_catalogs(
-    snapshot.root(snapshot),
-    files,
-    config.operators,
-  ))
-  let candidates = catalogs |> list.flat_map(fn(catalog) { catalog.mutants })
   use runtime_module <- result.try(runtime.generate(
     snapshot.root(snapshot),
     snapshot.digest(snapshot),
@@ -684,11 +781,12 @@ fn prepare(
     runtime.name(runtime_module),
   ))
   use _ <- result.try(build_targets(snapshot.root(snapshot), runtimes))
-  use _ <- result.try(run_instrumented_baseline(
+  use impact <- result.try(run_instrumented_baseline(
     snapshot.root(snapshot),
     runtimes,
     config,
     baseline.1,
+    planned_mutants,
   ))
   let phase4 = pipeline.instrumented(phase3)
   Ok(Prepared(
@@ -699,6 +797,7 @@ fn prepare(
     rejected,
     runtimes,
     runtime_module,
+    impact,
     baseline.1,
     phase4,
   ))
@@ -729,6 +828,10 @@ fn apply_options(config: Config, options: Options) -> Config {
     jobs: case options.jobs {
       Some(value) -> value
       None -> config.jobs
+    },
+    test_selection: case options.test_selection {
+      Some(value) -> value
+      None -> config.test_selection
     },
     timeout_ms: case options.timeout_ms {
       Some(value) -> Some(value)
@@ -839,7 +942,7 @@ fn resolve_changed(
             changed_path != "" && string.ends_with(changed_path, ".gleam")
           })
           |> list.map(mutant.normalize_path)
-          |> list.unique
+          |> unique_preserving_order
           |> Some
           |> Ok
         }
@@ -895,13 +998,14 @@ pub fn discover_catalogs(
     catalogs
     |> list.flat_map(fn(catalog) { catalog.mutants })
     |> catalog.assign_display_ids
+  let assigned_by_path = mutants_by_path(assigned)
   catalogs
   |> list.map(fn(source_catalog) {
     SourceCatalog(
       ..source_catalog,
-      mutants: list.filter(assigned, fn(mutant) {
-        mutant.path == source_catalog.path
-      }),
+      mutants: dict.get(assigned_by_path, source_catalog.path)
+        |> result.map(list.reverse)
+        |> result.unwrap([]),
     )
   })
   |> Ok
@@ -910,6 +1014,7 @@ pub fn discover_catalogs(
 fn configure_deno_permissions(
   root: String,
   runtimes: List(Runtime),
+  test_selection: TestSelection,
 ) -> Result(Nil, String) {
   case list.contains(runtimes, Deno) {
     False -> Ok(Nil)
@@ -930,11 +1035,30 @@ fn configure_deno_permissions(
         tomlet.set_bool(document, ["javascript", "deno", "allow_read"], True)
         |> result.map_error(fn(_) { "could not set Deno read permission" }),
       )
-      use document <- result.try(
-        tomlet.set_array(document, ["javascript", "deno", "allow_env"], [
+      use document <- result.try(case test_selection {
+        config.TestSelectionFull -> Ok(document)
+        config.TestSelectionAuto ->
+          tomlet.set_bool(document, ["javascript", "deno", "allow_write"], True)
+          |> result.map_error(fn(_) { "could not set Deno write permission" })
+      })
+      let environment_names = case test_selection {
+        config.TestSelectionFull -> [
           tomlet.StringValue("GLEAM_MUTANTS_ACTIVE"),
           tomlet.StringValue("GLEAM_MUTANTS_RUNTIME"),
-        ])
+        ]
+        config.TestSelectionAuto -> [
+          tomlet.StringValue("GLEAM_MUTANTS_ACTIVE"),
+          tomlet.StringValue("GLEAM_MUTANTS_RUNTIME"),
+          tomlet.StringValue("GLEAM_MUTANTS_TEST_IMPACT_FILE"),
+          tomlet.StringValue("GLEAM_MUTANTS_TEST_SELECTION_FILE"),
+        ]
+      }
+      use document <- result.try(
+        tomlet.set_array(
+          document,
+          ["javascript", "deno", "allow_env"],
+          environment_names,
+        )
         |> result.map_error(fn(_) { "could not set Deno env permission" }),
       )
       simplifile.write(target, tomlet.to_string(document))
@@ -958,7 +1082,17 @@ fn run_baseline(
     |> list.try_map(fn(runtime) {
       let started = platform.monotonic_milliseconds()
       let process_result =
-        run_test(root, runtime, config.test_command, [], baseline_timeout)
+        run_test(
+          root,
+          runtime,
+          config.test_command,
+          [
+            #("GLEAM_MUTANTS_ACTIVE", ""),
+            #("GLEAM_MUTANTS_TEST_IMPACT_FILE", ""),
+            #("GLEAM_MUTANTS_TEST_SELECTION_FILE", ""),
+          ],
+          baseline_timeout,
+        )
       let duration = platform.monotonic_milliseconds() - started
       case process_result.timed_out, process_result.status {
         True, _ ->
@@ -995,30 +1129,81 @@ fn run_instrumented_baseline(
   runtimes: List(Runtime),
   config: Config,
   timeout_ms: Int,
-) -> Result(Nil, String) {
-  use runtime <- list.try_each(runtimes)
-  let result =
-    run_test(
-      root,
-      runtime,
-      config.test_command,
-      [#("GLEAM_MUTANTS_ACTIVE", "")],
-      timeout_ms,
-    )
-  case result.timed_out, result.status {
-    True, _ ->
-      Error(
-        "instrumented baseline timed out on " <> outcome.runtime_name(runtime),
+  mutants: List(Mutant),
+) -> Result(List(RuntimeImpact), String) {
+  list.try_map(runtimes, fn(runtime) {
+    let runtime_name = outcome.runtime_name(runtime)
+    let impact_path =
+      path.join(
+        path.join(root, ".gleam_mutants"),
+        "test-impact-"
+          <> runtime_name
+          <> "-"
+          <> platform.random_nonce()
+          <> ".json",
       )
-    False, 0 -> Ok(Nil)
-    False, _ ->
-      Error(
-        "instrumented baseline failed on "
-        <> outcome.runtime_name(runtime)
-        <> ":\n"
-        <> result.stdout
-        <> result.stderr,
-      )
+    use environment <- result.try(case config.test_selection {
+      config.TestSelectionFull ->
+        Ok([
+          #("GLEAM_MUTANTS_ACTIVE", ""),
+          #("GLEAM_MUTANTS_TEST_IMPACT_FILE", ""),
+          #("GLEAM_MUTANTS_TEST_SELECTION_FILE", ""),
+        ])
+      config.TestSelectionAuto -> {
+        use _ <- result.try(
+          simplifile.create_directory_all(path.parent(impact_path))
+          |> result.map_error(simplifile.describe_error),
+        )
+        Ok([
+          #("GLEAM_MUTANTS_ACTIVE", ""),
+          #("GLEAM_MUTANTS_RUNTIME", runtime_name),
+          #("GLEAM_MUTANTS_TEST_IMPACT_FILE", impact_path),
+          #("GLEAM_MUTANTS_TEST_SELECTION_FILE", ""),
+        ])
+      }
+    })
+    let process =
+      run_test(root, runtime, config.test_command, environment, timeout_ms)
+    use _ <- result.try(case process.timed_out, process.status {
+      True, _ -> Error("instrumented baseline timed out on " <> runtime_name)
+      False, 0 -> Ok(Nil)
+      False, _ ->
+        Error(
+          "instrumented baseline failed on "
+          <> runtime_name
+          <> ":\n"
+          <> process.stdout
+          <> process.stderr,
+        )
+    })
+    case config.test_selection {
+      config.TestSelectionFull -> Ok(RuntimeImpact(runtime, ImpactDisabled))
+      config.TestSelectionAuto ->
+        Ok(RuntimeImpact(
+          runtime,
+          read_impact_manifest(impact_path, runtime_name, mutants),
+        ))
+    }
+  })
+}
+
+fn read_impact_manifest(
+  manifest_path: String,
+  runtime_name: String,
+  mutants: List(Mutant),
+) -> ImpactState {
+  let known = list.map(mutants, fn(mutant) { mutant.id })
+  case simplifile.read(manifest_path) {
+    Error(_) -> ImpactUnavailable("runner did not provide an impact manifest")
+    Ok(source) ->
+      case test_impact.decode_manifest(source) {
+        Error(error) -> ImpactUnavailable(error)
+        Ok(manifest) ->
+          case test_impact.validate_manifest(manifest, runtime_name, known) {
+            Ok(Nil) -> ImpactReady(manifest)
+            Error(error) -> ImpactUnavailable(error)
+          }
+      }
   }
 }
 
@@ -1236,9 +1421,12 @@ pub fn instrument(
   mutants: List(Mutant),
   runtime_module: String,
 ) -> Result(Nil, String) {
+  let selected_by_path = mutants_by_path(mutants)
   use source_catalog <- list.try_each(catalogs)
   let selected =
-    list.filter(mutants, fn(mutant) { mutant.path == source_catalog.path })
+    dict.get(selected_by_path, source_catalog.path)
+    |> result.map(list.reverse)
+    |> result.unwrap([])
   case selected {
     [] -> Ok(Nil)
     _ -> {
@@ -1345,15 +1533,7 @@ fn runtime_target(runtime: Runtime) -> String {
   }
 }
 
-fn run_mutants(prepared: Prepared) -> Result(List(MutantResult), String) {
-  let worker_count =
-    int.max(
-      1,
-      int.min(
-        prepared.config.jobs,
-        list.length(plan.mutants(prepared.mutation_plan)),
-      ),
-    )
+fn run_mutants(prepared: Prepared) -> Result(MutantRun, String) {
   use cache_context <- result.try(cache_context(prepared))
   let fingerprint =
     cache.fingerprint_v1(
@@ -1365,25 +1545,376 @@ fn run_mutants(prepared: Prepared) -> Result(List(MutantResult), String) {
     )
   let pipeline.State(workspace, _, _, _, _, _) = pipeline.state(prepared.phase)
   let workspace_id = cache.workspace_id(workspace)
+  let planned = plan.mutants(prepared.mutation_plan)
+  let cached =
+    preload_cache(
+      planned,
+      prepared.runtimes,
+      prepared.config,
+      fingerprint,
+      workspace_id,
+    )
+  let missing =
+    list.filter(cached, fn(entry) {
+      list.length(entry.outcomes) < list.length(prepared.runtimes)
+    })
+  let worker_count = int.min(prepared.config.jobs, list.length(missing))
+  let cache_hits =
+    list.fold(cached, 0, fn(total, entry) {
+      total + list.length(entry.outcomes)
+    })
+  case worker_count {
+    0 ->
+      Ok(MutantRun(
+        list.map(cached, cached_result),
+        ExecutionSummary(0, 0, 0, cache_hits, impact_details(prepared.impact)),
+      ))
+    _ -> {
+      use adaptive <- result.try(prepare_adaptive_plan(prepared, missing))
+      run_cache_misses(
+        prepared,
+        planned,
+        cached,
+        missing,
+        worker_count,
+        fingerprint,
+        workspace_id,
+        adaptive,
+        cache_hits,
+      )
+    }
+  }
+}
+
+fn run_cache_misses(
+  prepared: Prepared,
+  planned: List(Mutant),
+  cached: List(CachedMutant),
+  missing: List(CachedMutant),
+  worker_count: Int,
+  fingerprint: String,
+  workspace_id: String,
+  adaptive: AdaptivePlan,
+  cache_hits: Int,
+) -> Result(MutantRun, String) {
   use workers <- result.try(create_workers(prepared.snapshot, worker_count))
+  let cached_outcomes =
+    cached
+    |> list.map(fn(entry) { #(entry.mutant.id, entry.outcomes) })
+    |> dict.from_list
   let run_result =
     run_mutant_waves(
       prepared,
-      plan.mutants(prepared.mutation_plan),
+      list.map(missing, fn(entry) { entry.mutant }),
       workers,
       worker_count,
       fingerprint,
       workspace_id,
+      cached_outcomes,
+      adaptive,
       [],
+      [],
+      ExecutionCounts(0, 0, 0, cache_hits),
     )
   let cleanup_result = dispose_workers(workers)
   case run_result, cleanup_result {
-    Ok(results), Ok(Nil) -> Ok(results)
+    Ok(wave_output), Ok(Nil) -> {
+      let measured =
+        wave_output.results
+        |> list.map(fn(item) { #(item.mutant.id, item) })
+        |> dict.from_list
+      let hits =
+        cached
+        |> list.filter(fn(entry) {
+          list.length(entry.outcomes) == list.length(prepared.runtimes)
+        })
+        |> list.map(fn(entry) { #(entry.mutant.id, cached_result(entry)) })
+        |> dict.from_list
+      let all = dict.merge(hits, measured)
+      use ordered <- result.try(
+        planned
+        |> list.try_map(fn(mutant) {
+          dict.get(all, mutant.id)
+          |> result.map_error(fn(_) { "mutation result ordering failed" })
+        }),
+      )
+      Ok(MutantRun(
+        ordered,
+        execution_summary(
+          wave_output.counts,
+          list.append(adaptive.details, wave_output.details),
+        ),
+      ))
+    }
     Error(error), Ok(Nil) -> Error(error)
     Ok(_), Error(error) -> Error("worker snapshot cleanup failed: " <> error)
     Error(error), Error(cleanup_error) ->
       Error(error <> "; worker snapshot cleanup failed: " <> cleanup_error)
   }
+}
+
+fn execution_summary(
+  counts: ExecutionCounts,
+  details: List(String),
+) -> ExecutionSummary {
+  ExecutionSummary(
+    counts.narrowed,
+    counts.confirmations,
+    counts.fallbacks,
+    counts.cache_hits,
+    unique_preserving_order(details),
+  )
+}
+
+fn impact_details(impacts: List(RuntimeImpact)) -> List(String) {
+  list.filter_map(impacts, fn(impact) {
+    case impact.state {
+      ImpactUnavailable(reason) ->
+        Ok(outcome.runtime_name(impact.runtime) <> ": fallback: " <> reason)
+      ImpactDisabled ->
+        Ok(outcome.runtime_name(impact.runtime) <> ": full suite")
+      ImpactReady(_) -> Error(Nil)
+    }
+  })
+}
+
+fn prepare_adaptive_plan(
+  prepared: Prepared,
+  missing: List(CachedMutant),
+) -> Result(AdaptivePlan, String) {
+  let initial = AdaptivePlan(dict.new(), impact_details(prepared.impact))
+  list.fold(prepared.runtimes, Ok(initial), fn(accumulator, runtime) {
+    use adaptive <- result.try(accumulator)
+    let pending =
+      list.filter(missing, fn(entry) {
+        !list.any(entry.outcomes, fn(cached) { cached.runtime == runtime })
+      })
+    case impact_state(prepared.impact, runtime) {
+      ImpactDisabled ->
+        Ok(
+          AdaptivePlan(
+            ..adaptive,
+            modes: assign_modes(adaptive.modes, pending, runtime, FullSuite),
+          ),
+        )
+      ImpactUnavailable(reason) ->
+        Ok(
+          AdaptivePlan(
+            modes: assign_modes(
+              adaptive.modes,
+              pending,
+              runtime,
+              FallbackSuite(reason),
+            ),
+            details: [
+              outcome.runtime_name(runtime) <> ": fallback: " <> reason,
+              ..adaptive.details
+            ],
+          ),
+        )
+      ImpactReady(manifest) ->
+        prepare_runtime_selections(
+          prepared,
+          adaptive,
+          pending,
+          runtime,
+          manifest,
+        )
+    }
+  })
+}
+
+fn impact_state(impacts: List(RuntimeImpact), runtime: Runtime) -> ImpactState {
+  impacts
+  |> list.find(fn(impact) { impact.runtime == runtime })
+  |> result.map(fn(impact) { impact.state })
+  |> result.unwrap(ImpactUnavailable("impact evidence is missing"))
+}
+
+fn assign_modes(
+  modes: dict.Dict(String, RunMode),
+  entries: List(CachedMutant),
+  runtime: Runtime,
+  mode: RunMode,
+) -> dict.Dict(String, RunMode) {
+  list.fold(entries, modes, fn(modes, entry) {
+    dict.insert(modes, mode_key(entry.mutant, runtime), mode)
+  })
+}
+
+fn prepare_runtime_selections(
+  prepared: Prepared,
+  adaptive: AdaptivePlan,
+  pending: List(CachedMutant),
+  runtime: Runtime,
+  manifest: test_impact.Manifest,
+) -> Result(AdaptivePlan, String) {
+  let selector_index = test_impact.selector_index(manifest)
+  let initial = #(dict.new(), [], adaptive.modes, 0)
+  let #(groups, order, modes, unreached) =
+    list.fold(pending, initial, fn(state, entry) {
+      let #(groups, order, modes, unreached) = state
+      let selectors = test_impact.selectors(selector_index, entry.mutant.id)
+      case selectors {
+        [] -> #(
+          groups,
+          order,
+          dict.insert(
+            modes,
+            mode_key(entry.mutant, runtime),
+            FallbackSuite("mutation site was not reached by a known test"),
+          ),
+          unreached + 1,
+        )
+        _ -> {
+          let key = selector_key(selectors)
+          case dict.get(groups, key) {
+            Ok(group) -> #(
+              dict.insert(
+                groups,
+                key,
+                SelectorGroup(..group, mutants: [
+                  entry.mutant.id,
+                  ..group.mutants
+                ]),
+              ),
+              order,
+              modes,
+              unreached,
+            )
+            Error(_) -> #(
+              dict.insert(
+                groups,
+                key,
+                SelectorGroup(manifest.runner, selectors, [entry.mutant.id]),
+              ),
+              [key, ..order],
+              modes,
+              unreached,
+            )
+          }
+        }
+      }
+    })
+  let runtime_name = outcome.runtime_name(runtime)
+  let details = case unreached {
+    0 -> adaptive.details
+    count -> [
+      runtime_name
+        <> ": fallback: "
+        <> int.to_string(count)
+        <> " unreached mutant(s)",
+      ..adaptive.details
+    ]
+  }
+  let #(modes, details) =
+    order
+    |> list.reverse
+    |> list.fold(#(modes, details), fn(state, key) {
+      let assert Ok(group) = dict.get(groups, key)
+      let decision = partial_baseline(prepared, runtime, group)
+      case decision {
+        Ok(Nil) -> #(
+          list.fold(group.mutants, state.0, fn(modes, mutant_id) {
+            dict.insert(
+              modes,
+              mode_key_id(mutant_id, runtime),
+              NarrowedSuite(group.runner, group.selectors),
+            )
+          }),
+          state.1,
+        )
+        Error(reason) -> #(
+          list.fold(group.mutants, state.0, fn(modes, mutant_id) {
+            dict.insert(
+              modes,
+              mode_key_id(mutant_id, runtime),
+              FallbackSuite(reason),
+            )
+          }),
+          [runtime_name <> ": fallback: " <> reason, ..state.1],
+        )
+      }
+    })
+  Ok(AdaptivePlan(modes, details))
+}
+
+fn partial_baseline(
+  prepared: Prepared,
+  runtime: Runtime,
+  group: SelectorGroup,
+) -> Result(Nil, String) {
+  use selection_path <- result.try(
+    test_impact.write_selection(
+      snapshot.root(prepared.snapshot),
+      outcome.runtime_name(runtime),
+      group.runner,
+      group.selectors,
+    )
+    |> result.map_error(fn(error) {
+      "could not write partial-suite selector: " <> error
+    }),
+  )
+  let process =
+    run_test(
+      snapshot.root(prepared.snapshot),
+      runtime,
+      prepared.config.test_command,
+      [
+        #("GLEAM_MUTANTS_ACTIVE", ""),
+        #("GLEAM_MUTANTS_RUNTIME", outcome.runtime_name(runtime)),
+        #("GLEAM_MUTANTS_TEST_IMPACT_FILE", ""),
+        #("GLEAM_MUTANTS_TEST_SELECTION_FILE", selection_path),
+      ],
+      prepared.timeout_ms,
+    )
+  case process.timed_out, process.status {
+    True, _ -> Error("partial-suite baseline timed out")
+    False, 0 -> Ok(Nil)
+    False, _ -> Error("partial-suite baseline failed")
+  }
+}
+
+fn selector_key(selectors: List(String)) -> String {
+  selectors
+  |> list.map(fn(selector) {
+    int.to_string(string.byte_size(selector)) <> ":" <> selector
+  })
+  |> string.concat
+}
+
+fn mode_key(mutant: Mutant, runtime: Runtime) -> String {
+  mode_key_id(mutant.id, runtime)
+}
+
+fn mode_key_id(mutant_id: String, runtime: Runtime) -> String {
+  mutant_id <> "\u{0}" <> outcome.runtime_name(runtime)
+}
+
+fn preload_cache(
+  mutants: List(Mutant),
+  runtimes: List(Runtime),
+  config: Config,
+  fingerprint: String,
+  workspace_id: String,
+) -> List(CachedMutant) {
+  list.map(mutants, fn(mutant) {
+    let outcomes =
+      list.filter_map(runtimes, fn(runtime) {
+        cache.read(
+          effective_cache_mode(config),
+          workspace_id,
+          fingerprint,
+          mutant,
+          runtime,
+        )
+      })
+    CachedMutant(mutant, outcomes)
+  })
+}
+
+fn cached_result(entry: CachedMutant) -> MutantResult {
+  MutantResult(entry.mutant, entry.outcomes, outcome.aggregate(entry.outcomes))
 }
 
 fn effective_cache_mode(config: Config) -> CacheMode {
@@ -1452,18 +1983,29 @@ fn run_mutant_waves(
   worker_count: Int,
   fingerprint: String,
   workspace_id: String,
-  completed: List(MutantResult),
-) -> Result(List(MutantResult), String) {
+  cached_outcomes: dict.Dict(String, List(RuntimeOutcome)),
+  adaptive: AdaptivePlan,
+  completed: List(List(MutantResult)),
+  detail_chunks: List(List(String)),
+  counts: ExecutionCounts,
+) -> Result(WaveOutput, String) {
   case remaining {
-    [] -> Ok(completed)
+    [] ->
+      Ok(WaveOutput(
+        completed |> list.reverse |> list.flatten,
+        counts,
+        detail_chunks |> list.reverse |> list.flatten,
+      ))
     _ -> {
       let wave = list.take(remaining, worker_count)
-      use results <- result.try(run_mutant_wave(
+      use output <- result.try(run_mutant_wave(
         prepared,
         wave,
         list.take(workers, list.length(wave)),
         fingerprint,
         workspace_id,
+        cached_outcomes,
+        adaptive,
       ))
       run_mutant_waves(
         prepared,
@@ -1472,7 +2014,11 @@ fn run_mutant_waves(
         worker_count,
         fingerprint,
         workspace_id,
-        list.append(completed, results),
+        cached_outcomes,
+        adaptive,
+        [output.results, ..completed],
+        [output.details, ..detail_chunks],
+        add_counts(counts, output.counts),
       )
     }
   }
@@ -1484,37 +2030,52 @@ fn run_mutant_wave(
   workers: List(Snapshot),
   fingerprint: String,
   workspace_id: String,
-) -> Result(List(MutantResult), String) {
-  use contexts <- result.try(pair_contexts(mutants, workers, []))
-  use contexts <- result.try(run_runtime_phases(
-    contexts,
-    prepared.runtimes,
-    prepared.config,
-    prepared.timeout_ms,
-    fingerprint,
-    workspace_id,
-  ))
-  contexts
-  |> list.map(fn(context) {
-    MutantResult(
-      context.mutant,
-      context.outcomes,
-      outcome.aggregate(context.outcomes),
-    )
-  })
-  |> Ok
+  cached_outcomes: dict.Dict(String, List(RuntimeOutcome)),
+  adaptive: AdaptivePlan,
+) -> Result(WaveOutput, String) {
+  use contexts <- result.try(
+    pair_contexts(mutants, workers, cached_outcomes, []),
+  )
+  use executed <- result.try(
+    run_runtime_phases(
+      contexts,
+      prepared.runtimes,
+      prepared.config,
+      prepared.timeout_ms,
+      fingerprint,
+      workspace_id,
+      adaptive,
+      ExecutionCounts(0, 0, 0, 0),
+      [],
+    ),
+  )
+  let results =
+    executed.0
+    |> list.map(fn(context) {
+      MutantResult(
+        context.mutant,
+        context.outcomes,
+        outcome.aggregate(context.outcomes),
+      )
+    })
+  Ok(WaveOutput(results, executed.1, executed.2))
 }
 
 fn pair_contexts(
   mutants: List(Mutant),
   workers: List(Snapshot),
+  cached_outcomes: dict.Dict(String, List(RuntimeOutcome)),
   contexts: List(ExecutionContext),
 ) -> Result(List(ExecutionContext), String) {
   case mutants, workers {
     [], [] -> Ok(list.reverse(contexts))
     [mutant, ..mutants], [worker, ..workers] ->
-      pair_contexts(mutants, workers, [
-        ExecutionContext(mutant, worker, []),
+      pair_contexts(mutants, workers, cached_outcomes, [
+        ExecutionContext(
+          mutant,
+          worker,
+          dict.get(cached_outcomes, mutant.id) |> result.unwrap([]),
+        ),
         ..contexts
       ])
     _, _ -> Error("worker allocation failed")
@@ -1528,30 +2089,13 @@ fn run_runtime_phases(
   timeout_ms: Int,
   fingerprint: String,
   workspace_id: String,
-) -> Result(List(ExecutionContext), String) {
+  adaptive: AdaptivePlan,
+  counts: ExecutionCounts,
+  detail_chunks: List(List(String)),
+) -> Result(#(List(ExecutionContext), ExecutionCounts, List(String)), String) {
   case runtimes {
-    [] -> Ok(contexts)
+    [] -> Ok(#(contexts, counts, detail_chunks |> list.reverse |> list.flatten))
     [runtime, ..rest] -> {
-      let contexts =
-        contexts
-        |> list.map(fn(context) {
-          case
-            cache.read(
-              effective_cache_mode(config),
-              workspace_id,
-              fingerprint,
-              context.mutant,
-              runtime,
-            )
-          {
-            Ok(cached) ->
-              ExecutionContext(
-                ..context,
-                outcomes: list.append(context.outcomes, [cached]),
-              )
-            Error(_) -> context
-          }
-        })
       let pending =
         contexts
         |> list.filter_map(fn(context) {
@@ -1559,62 +2103,54 @@ fn run_runtime_phases(
             list.any(context.outcomes, fn(value) { value.runtime == runtime })
           {
             True -> Error(Nil)
-            False -> {
-              let #(executable, arguments) =
-                command_for(runtime, config.test_command)
-              Ok(PendingRun(
-                context.mutant,
-                runtime,
-                platform.ProcessRequest(
-                  executable,
-                  arguments,
-                  snapshot.root(context.worker),
-                  [
-                    #("GLEAM_MUTANTS_ACTIVE", context.mutant.id),
-                    #("GLEAM_MUTANTS_RUNTIME", outcome.runtime_name(runtime)),
-                  ],
-                  timeout_ms,
-                ),
-              ))
-            }
+            False ->
+              Ok(pending_run(context, runtime, config, timeout_ms, adaptive))
           }
         })
-      let results =
+      let preliminary_results =
         pending
         |> list.map(fn(run) { run.request })
         |> platform.run_process_batch(config.jobs)
-      use completed <- result.try(zip_completed(pending, results, []))
+      use preliminary <- result.try(
+        zip_completed(pending, preliminary_results, []),
+      )
+      let confirmations =
+        preliminary
+        |> list.filter_map(fn(completed) {
+          let #(run, timed) = completed
+          case run.mode, process_outcome(timed).0 {
+            NarrowedSuite(_, _), Killed -> Error(Nil)
+            NarrowedSuite(_, _), _ -> Ok(full_suite_confirmation(run))
+            _, _ -> Error(Nil)
+          }
+        })
+      let confirmation_results =
+        confirmations
+        |> list.map(fn(run) { run.request })
+        |> platform.run_process_batch(config.jobs)
+      use confirmed <- result.try(
+        zip_completed(confirmations, confirmation_results, []),
+      )
       use contexts <- result.try(
         contexts
         |> list.try_map(fn(context) {
           case
-            list.find(completed, fn(item) {
-              item.0.mutant.id == context.mutant.id
+            list.find(preliminary, fn(item) {
+              item.0.request.working_directory == snapshot.root(context.worker)
             })
           {
             Error(_) -> Ok(context)
             Ok(#(run, timed)) -> {
-              let process = timed.process
-              let raw_output = truncate(process.stdout <> process.stderr)
-              let value: Outcome = case process.timed_out, process.status {
-                True, _ -> TimedOut
-                False, 0 -> Survived
-                False, -2 -> TestError(raw_output)
-                False, 1 -> Killed
-                False, _ -> TestError(raw_output)
-              }
+              let final_timed =
+                confirmed
+                |> list.find(fn(item) {
+                  item.0.request.working_directory
+                  == run.request.working_directory
+                })
+                |> result.map(fn(item) { item.1 })
+                |> result.unwrap(timed)
               let runtime_outcome =
-                RuntimeOutcome(
-                  run.runtime,
-                  value,
-                  timed.duration_ms,
-                  diagnostic_output(
-                    config.report.diagnostics,
-                    value,
-                    raw_output,
-                  ),
-                  False,
-                )
+                measured_outcome(run.runtime, final_timed, config)
               use _ <- result.try(cache.write(
                 effective_cache_mode(config),
                 workspace_id,
@@ -1632,6 +2168,23 @@ fn run_runtime_phases(
           }
         }),
       )
+      let phase_counts =
+        ExecutionCounts(
+          count_narrowed(pending),
+          list.length(confirmations),
+          count_fallbacks(pending),
+          0,
+        )
+      let phase_details =
+        pending
+        |> list.filter_map(fn(run) {
+          case run.mode {
+            FallbackSuite(reason) ->
+              Ok(outcome.runtime_name(run.runtime) <> ": fallback: " <> reason)
+            _ -> Error(Nil)
+          }
+        })
+        |> unique_preserving_order
       run_runtime_phases(
         contexts,
         rest,
@@ -1639,9 +2192,203 @@ fn run_runtime_phases(
         timeout_ms,
         fingerprint,
         workspace_id,
+        adaptive,
+        add_counts(counts, phase_counts),
+        [phase_details, ..detail_chunks],
       )
     }
   }
+}
+
+fn pending_run(
+  context: ExecutionContext,
+  runtime: Runtime,
+  config: Config,
+  timeout_ms: Int,
+  adaptive: AdaptivePlan,
+) -> PendingRun {
+  let mode =
+    dict.get(adaptive.modes, mode_key(context.mutant, runtime))
+    |> result.unwrap(FullSuite)
+  case mode {
+    NarrowedSuite(runner, selectors) ->
+      case
+        test_impact.write_selection(
+          snapshot.root(context.worker),
+          outcome.runtime_name(runtime),
+          runner,
+          selectors,
+        )
+      {
+        Ok(selection_path) ->
+          process_run(context, runtime, config, timeout_ms, mode, [
+            #("GLEAM_MUTANTS_TEST_IMPACT_FILE", ""),
+            #("GLEAM_MUTANTS_TEST_SELECTION_FILE", selection_path),
+          ])
+        Error(error) ->
+          process_run(
+            context,
+            runtime,
+            config,
+            timeout_ms,
+            FallbackSuite("could not write worker selector: " <> error),
+            protocol_disabled_environment(),
+          )
+      }
+    _ ->
+      process_run(
+        context,
+        runtime,
+        config,
+        timeout_ms,
+        mode,
+        protocol_disabled_environment(),
+      )
+  }
+}
+
+fn process_run(
+  context: ExecutionContext,
+  runtime: Runtime,
+  config: Config,
+  timeout_ms: Int,
+  mode: RunMode,
+  extra_environment: List(#(String, String)),
+) -> PendingRun {
+  let #(executable, arguments) = command_for(runtime, config.test_command)
+  PendingRun(
+    context.mutant,
+    runtime,
+    platform.ProcessRequest(
+      executable,
+      arguments,
+      snapshot.root(context.worker),
+      list.append(
+        [
+          #("GLEAM_MUTANTS_ACTIVE", context.mutant.id),
+          #("GLEAM_MUTANTS_RUNTIME", outcome.runtime_name(runtime)),
+        ],
+        extra_environment,
+      ),
+      timeout_ms,
+    ),
+    mode,
+  )
+}
+
+fn full_suite_confirmation(run: PendingRun) -> PendingRun {
+  PendingRun(
+    ..run,
+    request: platform.ProcessRequest(..run.request, environment: [
+      #("GLEAM_MUTANTS_ACTIVE", run.mutant.id),
+      #("GLEAM_MUTANTS_RUNTIME", outcome.runtime_name(run.runtime)),
+      #("GLEAM_MUTANTS_TEST_IMPACT_FILE", ""),
+      #("GLEAM_MUTANTS_TEST_SELECTION_FILE", ""),
+    ]),
+    mode: FullSuite,
+  )
+}
+
+fn protocol_disabled_environment() -> List(#(String, String)) {
+  [
+    #("GLEAM_MUTANTS_TEST_IMPACT_FILE", ""),
+    #("GLEAM_MUTANTS_TEST_SELECTION_FILE", ""),
+  ]
+}
+
+fn process_outcome(timed: platform.TimedProcessResult) -> #(Outcome, String) {
+  let process = timed.process
+  let raw_output = truncate(process.stdout <> process.stderr)
+  let value: Outcome = case process.timed_out, process.status {
+    True, _ -> TimedOut
+    False, 0 -> Survived
+    False, -2 -> TestError(raw_output)
+    False, 1 -> Killed
+    False, _ -> TestError(raw_output)
+  }
+  #(value, raw_output)
+}
+
+fn measured_outcome(
+  runtime: Runtime,
+  timed: platform.TimedProcessResult,
+  config: Config,
+) -> RuntimeOutcome {
+  let #(value, raw_output) = process_outcome(timed)
+  RuntimeOutcome(
+    runtime,
+    value,
+    timed.duration_ms,
+    diagnostic_output(config.report.diagnostics, value, raw_output),
+    False,
+  )
+}
+
+fn count_narrowed(pending: List(PendingRun)) -> Int {
+  pending
+  |> list.filter(fn(run) {
+    case run.mode {
+      NarrowedSuite(_, _) -> True
+      _ -> False
+    }
+  })
+  |> list.length
+}
+
+fn count_fallbacks(pending: List(PendingRun)) -> Int {
+  pending
+  |> list.filter(fn(run) {
+    case run.mode {
+      FallbackSuite(_) -> True
+      _ -> False
+    }
+  })
+  |> list.length
+}
+
+fn add_counts(
+  left: ExecutionCounts,
+  right: ExecutionCounts,
+) -> ExecutionCounts {
+  ExecutionCounts(
+    left.narrowed + right.narrowed,
+    left.confirmations + right.confirmations,
+    left.fallbacks + right.fallbacks,
+    left.cache_hits + right.cache_hits,
+  )
+}
+
+fn selected_files(
+  files: List(String),
+  changed_paths: Option(List(String)),
+) -> List(String) {
+  case changed_paths {
+    None -> files
+    Some(changed) -> {
+      let changed = set.from_list(changed)
+      list.filter(files, fn(file) { set.contains(changed, file) })
+    }
+  }
+}
+
+fn unique_preserving_order(values: List(a)) -> List(a) {
+  values
+  |> list.fold(#(set.new(), []), fn(state, value) {
+    case set.contains(state.0, value) {
+      True -> state
+      False -> #(set.insert(state.0, value), [value, ..state.1])
+    }
+  })
+  |> fn(state) { list.reverse(state.1) }
+}
+
+/// Mutants grouped by normalised path. Values are reversed so insertion stays
+/// logarithmic and callers can restore discovery order once per path.
+fn mutants_by_path(mutants: List(Mutant)) -> dict.Dict(String, List(Mutant)) {
+  list.fold(mutants, dict.new(), fn(grouped, mutant) {
+    let existing = dict.get(grouped, mutant.path) |> result.unwrap([])
+    dict.insert(grouped, mutant.path, [mutant, ..existing])
+  })
 }
 
 fn zip_completed(

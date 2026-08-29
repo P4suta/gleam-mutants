@@ -43,6 +43,12 @@ pub type DiagnosticsMode {
   DiagnosticsAll
 }
 
+/// Whether a compatible runner may narrow each mutant to impacted tests.
+pub type TestSelection {
+  TestSelectionAuto
+  TestSelectionFull
+}
+
 /// How generated tests state their expectation.
 pub type AssertStyle {
   /// The `assert <call> == <expected>` keyword form.
@@ -100,6 +106,7 @@ pub type Config {
     timeout_ms: Option(Int),
     baseline_runs: Int,
     jobs: Int,
+    test_selection: TestSelection,
     cache_mode: CacheMode,
     cache_key: Option(String),
     cache_files: List(String),
@@ -133,6 +140,7 @@ pub fn defaults(cpu_count: Int) -> Config {
     timeout_ms: None,
     baseline_runs: 1,
     jobs: int.max(1, int.min(cpu_count, 8)),
+    test_selection: TestSelectionAuto,
     cache_mode: CacheAuto,
     cache_key: None,
     cache_files: [],
@@ -252,6 +260,16 @@ fn decode_document(
     document,
     ["tools", "gleam_mutants", "execution", "jobs"],
     base.jobs,
+  ))
+  use test_selection_name <- result.try(optional_string(
+    source,
+    document,
+    ["tools", "gleam_mutants", "execution", "test_selection"],
+    test_selection_name(base.test_selection),
+  ))
+  use test_selection <- result.try(decode_test_selection(
+    source,
+    test_selection_name,
   ))
   use cache_name <- result.try(optional_string(
     source,
@@ -504,6 +522,7 @@ fn decode_document(
     timeout_ms: timeout_ms,
     baseline_runs: baseline_runs,
     jobs: jobs,
+    test_selection: test_selection,
     cache_mode: cache_mode,
     cache_key: cache_key,
     cache_files: cache_files,
@@ -558,7 +577,7 @@ fn validate_unknown_keys(
       "timeout_ms",
       "baseline_runs",
     ]),
-    #(["tools", "gleam_mutants", "execution"], ["jobs"]),
+    #(["tools", "gleam_mutants", "execution"], ["jobs", "test_selection"]),
     #(["tools", "gleam_mutants", "cache"], ["mode", "key", "files", "env"]),
     #(["tools", "gleam_mutants", "policy"], [
       "strict",
@@ -975,6 +994,22 @@ fn decode_cache(
   }
 }
 
+pub fn decode_test_selection(
+  source: String,
+  value: String,
+) -> Result(TestSelection, ConfigError) {
+  case value {
+    "auto" -> Ok(TestSelectionAuto)
+    "full" -> Ok(TestSelectionFull)
+    _ ->
+      Error(error_at(
+        source,
+        "test_selection",
+        "execution.test_selection must be auto or full",
+      ))
+  }
+}
+
 fn decode_diagnostics(
   source: String,
   value: String,
@@ -1048,6 +1083,13 @@ fn cache_name(mode: CacheMode) -> String {
     CacheReadOnly -> "read-only"
     CacheWriteOnly -> "write-only"
     CacheReadWrite -> "read-write"
+  }
+}
+
+pub fn test_selection_name(selection: TestSelection) -> String {
+  case selection {
+    TestSelectionAuto -> "auto"
+    TestSelectionFull -> "full"
   }
 }
 
@@ -1166,9 +1208,15 @@ pub fn initialise(source: String) -> Result(#(String, Bool), ConfigError) {
     ["tools", "gleam_mutants", "cache", "mode"],
     "auto",
   ))
-  use strict <- result.try(ensure_bool(
+  use test_selection <- result.try(ensure_string(
     source,
     cache_mode.0,
+    ["tools", "gleam_mutants", "execution", "test_selection"],
+    "auto",
+  ))
+  use strict <- result.try(ensure_bool(
+    source,
+    test_selection.0,
     ["tools", "gleam_mutants", "policy", "strict"],
     False,
   ))
@@ -1225,6 +1273,7 @@ pub fn initialise(source: String) -> Result(#(String, Bool), ConfigError) {
   let changed =
     version.1
     || cache_mode.1
+    || test_selection.1
     || strict.1
     || minimum.1
     || require_mutants.1

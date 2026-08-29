@@ -63,6 +63,9 @@ version = 1
 [tools.gleam_mutants.cache]
 mode = "auto"
 
+[tools.gleam_mutants.execution]
+test_selection = "auto"
+
 [tools.gleam_mutants.policy]
 strict = false
 minimum_score = 100

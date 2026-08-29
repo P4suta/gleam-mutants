@@ -277,7 +277,7 @@ fn excluded(relative: String, excluded_directories: List(String)) -> Bool {
     |> string.split("/")
   list.any(segments, fn(segment) {
     list.contains(
-      [".git", "build", tool_directory, ".mise", "node_modules"],
+      [".git", "build", tool_directory, ".smartest", ".mise", "node_modules"],
       segment,
     )
   })

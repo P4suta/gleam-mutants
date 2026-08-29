@@ -240,7 +240,40 @@ pub fn run(request: Request) -> Result(RunOutput, RunError) {
       ]),
     ),
   )
-  run_snapshot(Request(..request, files: files), configured, snapshot)
+  run_snapshot(
+    Request(..request, files: files),
+    configured,
+    snapshot,
+    None,
+    True,
+  )
+}
+
+/// Runs a differential probe in an engine catalogue session.
+///
+/// The caller owns `snapshot`; this function neither copies nor disposes it.
+/// `catalogs` must have been discovered from that same pristine snapshot.
+pub fn run_session(
+  request: Request,
+  gleam_toml: String,
+  configured: Config,
+  snapshot: Snapshot,
+  catalogs: List(SourceCatalog),
+) -> Result(RunOutput, RunError) {
+  use _ <- result.try(unstarted(check_target(configured, gleam_toml)))
+  use files <- result.try(unstarted(distinct_sources(request.files)))
+  let wanted = set.from_list(files)
+  let catalogs =
+    list.filter(catalogs, fn(source_catalog) {
+      set.contains(wanted, source_catalog.path)
+    })
+  run_snapshot(
+    Request(..request, files: files),
+    configured,
+    snapshot,
+    Some(catalogs),
+    False,
+  )
 }
 
 /// A failure with no snapshot behind it: either nothing had been copied yet,
@@ -348,15 +381,22 @@ fn run_snapshot(
   request: Request,
   configured: Config,
   snapshot: Snapshot,
+  existing_catalogs: Option(List(SourceCatalog)),
+  dispose_on_prepare_error: Bool,
 ) -> Result(RunOutput, RunError) {
   let root = snapshot.root(snapshot)
-  case prepare(request, configured, snapshot) {
+  case prepare(request, configured, snapshot, existing_catalogs) {
     // Nothing has been generated yet, so the copy holds nothing worth reading:
     // throw it away rather than leak a workspace over a mistyped path, and
     // hand the caller a failure with no snapshot in it.
     Error(reason) -> {
-      let _ = platform.delete_tree(root)
-      Error(coded(reason, None))
+      case dispose_on_prepare_error {
+        True -> {
+          let _ = platform.delete_tree(root)
+          Error(coded(reason, None))
+        }
+        False -> Error(coded(reason, Some(root)))
+      }
     }
     Ok(prepared) -> {
       let compile_jobs =
@@ -425,6 +465,7 @@ fn prepare(
   request: Request,
   configured: Config,
   snapshot: Snapshot,
+  existing_catalogs: Option(List(SourceCatalog)),
 ) -> Result(Prepared, String) {
   let root = snapshot.root(snapshot)
   let tag = string.lowercase(string.slice(snapshot.digest(snapshot), 0, 12))
@@ -433,12 +474,14 @@ fn prepare(
     request.files,
     snapshot.source_files(snapshot, configured.includes, configured.excludes),
   ))
-  use catalogs <- result.try(
-    engine.discover_catalogs(root, request.files, case request.operators {
-      [] -> configured.operators
-      chosen -> chosen
-    }),
-  )
+  use catalogs <- result.try(case existing_catalogs {
+    Some(catalogs) -> Ok(catalogs)
+    None ->
+      engine.discover_catalogs(root, request.files, case request.operators {
+        [] -> configured.operators
+        chosen -> chosen
+      })
+  })
   use package <- result.try(package_types.annotate_workspace_with_dependencies(
     root,
     request.workspace,

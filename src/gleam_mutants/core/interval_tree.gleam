@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import gleam/bool
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/string_tree.{type StringTree}
 import gleam_mutants/core/bytes
 import gleam_mutants/core/mutant.{type Mutant}
 import gleam_mutants/core/span
@@ -17,6 +18,10 @@ type Node {
   Node(span: span.Span, mutants: List(Mutant), children: List(Node))
 }
 
+type FlatNode {
+  FlatNode(span: span.Span, mutants: List(Mutant))
+}
+
 pub type ForestError {
   PartialOverlap(first: Mutant, second: Mutant)
   SpanOutsideSource(mutant: Mutant)
@@ -26,52 +31,105 @@ pub fn build(
   source: String,
   mutants: List(Mutant),
 ) -> Result(Forest, ForestError) {
-  use _ <- result.try(validate(source, mutants))
-  mutants
-  |> list.sort(fn(a, b) { span.compare(a.span, b.span) })
-  |> list.try_fold([], insert)
-  |> result.map(Forest)
+  let sorted = list.sort(mutants, fn(a, b) { span.compare(a.span, b.span) })
+  use _ <- result.try(validate(source, sorted))
+  let grouped = group_equal_spans(sorted, [])
+  let #(nodes, _) = parse_nodes(grouped, None)
+  Ok(Forest(nodes))
 }
 
 fn validate(source: String, mutants: List(Mutant)) -> Result(Nil, ForestError) {
   let source_length = string.byte_size(source)
-  use mutant <- list.try_each(mutants)
-  use <- bool.guard(
-    when: span.start(mutant.span) < 0 || span.end(mutant.span) > source_length,
-    return: Error(SpanOutsideSource(mutant)),
-  )
-  use other <- list.try_each(mutants)
-  use <- bool.guard(
-    when: mutant.id != other.id
-      && span.partially_overlaps(mutant.span, other.span),
-    return: Error(PartialOverlap(mutant, other)),
-  )
-  Ok(Nil)
+  validate_sorted(mutants, source_length, [])
 }
 
-fn insert(
-  nodes: List(Node),
-  mutant: Mutant,
-) -> Result(List(Node), ForestError) {
-  case nodes {
-    [] -> Ok([Node(mutant.span, [mutant], [])])
-    [Node(node_span, node_mutants, children) as node, ..rest] ->
+fn validate_sorted(
+  remaining: List(Mutant),
+  source_length: Int,
+  active: List(Mutant),
+) -> Result(Nil, ForestError) {
+  case remaining {
+    [] -> Ok(Nil)
+    [mutant, ..rest] -> {
       case
-        span.equal(node_span, mutant.span),
-        span.strictly_contains(node_span, mutant.span),
-        span.end(mutant.span) <= span.start(node_span)
+        span.start(mutant.span) < 0 || span.end(mutant.span) > source_length
       {
-        True, _, _ ->
-          Ok([Node(node_span, [mutant, ..node_mutants], children), ..rest])
-        False, True, _ -> {
-          use updated <- result.try(insert(children, mutant))
-          Ok([Node(node_span, node_mutants, updated), ..rest])
+        True -> Error(SpanOutsideSource(mutant))
+        False -> {
+          let active = drop_finished(active, span.start(mutant.span))
+          case active {
+            [parent, ..] ->
+              case
+                span.equal(parent.span, mutant.span),
+                span.end(mutant.span) > span.end(parent.span)
+              {
+                True, _ -> validate_sorted(rest, source_length, active)
+                False, True -> Error(PartialOverlap(parent, mutant))
+                False, False ->
+                  validate_sorted(rest, source_length, [mutant, ..active])
+              }
+            _ -> validate_sorted(rest, source_length, [mutant, ..active])
+          }
         }
-        False, False, True ->
-          Ok([Node(mutant.span, [mutant], []), node, ..rest])
-        False, False, False -> {
-          use updated <- result.try(insert(rest, mutant))
-          Ok([node, ..updated])
+      }
+    }
+  }
+}
+
+fn drop_finished(active: List(Mutant), start: Int) -> List(Mutant) {
+  case active {
+    [parent, ..rest] ->
+      case start >= span.end(parent.span) {
+        True -> drop_finished(rest, start)
+        False -> active
+      }
+    _ -> active
+  }
+}
+
+fn group_equal_spans(
+  remaining: List(Mutant),
+  grouped: List(FlatNode),
+) -> List(FlatNode) {
+  case remaining {
+    [] -> list.reverse(grouped)
+    [mutant, ..rest] -> {
+      let #(same, rest) =
+        list.split_while(rest, fn(other) { span.equal(mutant.span, other.span) })
+      group_equal_spans(rest, [
+        FlatNode(mutant.span, [mutant, ..same]),
+        ..grouped
+      ])
+    }
+  }
+}
+
+fn parse_nodes(
+  remaining: List(FlatNode),
+  limit: Option(Int),
+) -> #(List(Node), List(FlatNode)) {
+  case remaining {
+    [] -> #([], [])
+    [flat, ..rest] ->
+      case limit {
+        Some(end) ->
+          case span.start(flat.span) >= end {
+            True -> #([], remaining)
+            False -> {
+              let #(children, after_children) =
+                parse_nodes(rest, Some(span.end(flat.span)))
+              let node = Node(flat.span, flat.mutants, children)
+              let #(siblings, after_siblings) =
+                parse_nodes(after_children, limit)
+              #([node, ..siblings], after_siblings)
+            }
+          }
+        None -> {
+          let #(children, after_children) =
+            parse_nodes(rest, Some(span.end(flat.span)))
+          let node = Node(flat.span, flat.mutants, children)
+          let #(siblings, after_siblings) = parse_nodes(after_children, limit)
+          #([node, ..siblings], after_siblings)
         }
       }
   }
@@ -89,6 +147,7 @@ pub fn render(
     string.byte_size(source),
     runtime_module,
   )
+  |> string_tree.to_string
 }
 
 fn render_nodes(
@@ -97,17 +156,24 @@ fn render_nodes(
   cursor: Int,
   limit: Int,
   runtime_module: String,
-) -> String {
+) -> StringTree {
   case nodes {
-    [] -> bytes.unsafe_slice(source, cursor, limit)
+    [] -> bytes.unsafe_slice(source, cursor, limit) |> string_tree.from_string
     [node, ..rest] ->
-      bytes.unsafe_slice(source, cursor, span.start(node.span))
-      <> render_node(source, node, runtime_module)
-      <> render_nodes(source, rest, span.end(node.span), limit, runtime_module)
+      string_tree.concat([
+        bytes.unsafe_slice(source, cursor, span.start(node.span))
+          |> string_tree.from_string,
+        render_node(source, node, runtime_module),
+        render_nodes(source, rest, span.end(node.span), limit, runtime_module),
+      ])
   }
 }
 
-fn render_node(source: String, node: Node, runtime_module: String) -> String {
+fn render_node(
+  source: String,
+  node: Node,
+  runtime_module: String,
+) -> StringTree {
   let original =
     render_nodes(
       source,
@@ -120,14 +186,13 @@ fn render_node(source: String, node: Node, runtime_module: String) -> String {
   node.mutants
   |> list.sort(fn(a, b) { string.compare(a.id, b.id) })
   |> list.fold(original, fn(rendered, mutant) {
-    runtime_module
-    <> ".select("
-    <> string.inspect(mutant.id)
-    <> ", fn() { "
-    <> rendered
-    <> " }, fn() { "
-    <> mutant.replacement
-    <> " })"
+    string_tree.concat([
+      string_tree.from_string(
+        runtime_module <> ".select(" <> string.inspect(mutant.id) <> ", fn() { ",
+      ),
+      rendered,
+      string_tree.from_string(" }, fn() { " <> mutant.replacement <> " })"),
+    ])
   })
 }
 

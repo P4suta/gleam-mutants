@@ -4,14 +4,12 @@
 import gleam/io
 import gleam/json
 import gleam/list
-import gleam/result
 import gleam/string
-import gleam_mutants/core/catalog
+import gleam_mutants/core/bytes
 import gleam_mutants/core/operator
-import gleam_mutants/core/path
+import gleam_mutants/engine
 import gleam_mutants/platform
 import gleam_mutants/snapshot
-import simplifile
 
 pub fn main() {
   let assert [workspace] = platform.arguments()
@@ -20,22 +18,21 @@ pub fn main() {
   let snapshot_ms = platform.monotonic_milliseconds() - snapshot_started
   let discovery_started = platform.monotonic_milliseconds()
   let files = snapshot.source_files(copy, ["src/**/*.gleam"], [])
-  let assert Ok(counts) =
-    list.try_map(files, fn(relative) {
-      use source <- result.try(
-        simplifile.read(path.join(snapshot.root(copy), relative))
-        |> result.map_error(simplifile.describe_error),
-      )
-      use mutants <- result.try(
-        catalog.discover(relative, source, operator.all())
-        |> result.map_error(string.inspect),
-      )
-      Ok(list.length(mutants.mutants))
-    })
+  let assert Ok(catalogs) =
+    engine.discover_catalogs(snapshot.root(copy), files, operator.all())
   let discovery_ms = platform.monotonic_milliseconds() - discovery_started
-  let mutants = list.fold(counts, 0, fn(total, count) { total + count })
+  let ids =
+    catalogs
+    |> list.flat_map(fn(catalog) {
+      list.map(catalog.mutants, fn(mutant) { mutant.id })
+    })
+  let mutants = list.length(ids)
+  let order_digest =
+    ids |> list.map(fn(id) { "64:" <> id }) |> string.concat |> bytes.sha256
   assert list.length(files) == 1000
-  assert mutants >= 10_000
+  assert mutants == 20_000
+  assert order_digest
+    == "343CD84AD684297CCB740F7ED7398AE4AF924D110CF09A73CFA6A0C67CBAF42C"
   assert snapshot_ms <= 60_000
   assert discovery_ms <= 60_000
   let assert Ok(Nil) = snapshot.dispose(copy)
@@ -43,6 +40,7 @@ pub fn main() {
     json.object([
       #("files", json.int(list.length(files))),
       #("mutants", json.int(mutants)),
+      #("order_digest", json.string(order_digest)),
       #("snapshot_ms", json.int(snapshot_ms)),
       #("discovery_ms", json.int(discovery_ms)),
     ])

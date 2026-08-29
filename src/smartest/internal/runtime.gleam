@@ -28,6 +28,16 @@ fn attempt_ffi(
 @external(javascript, "./smartest_runtime_ffi.mjs", "runtime_name")
 fn runtime_name() -> String
 
+@external(erlang, "smartest_runtime_ffi", "with_test_context")
+@external(javascript, "./smartest_runtime_ffi.mjs", "with_test_context")
+fn with_test_context_ffi(id: String, callback: fn() -> a) -> a
+
+/// Runs a single leaf under the context consumed by instrumented mutation
+/// sites, restoring any outer context even when the callback fails.
+pub fn with_test_context(id: String, callback: fn() -> a) -> a {
+  with_test_context_ffi(id, callback)
+}
+
 pub fn capture(callback: fn() -> Nil, timeout_ms: Int) -> plan.Evaluation {
   let #(status, message, duration_ms) = capture_ffi(callback, timeout_ms)
   case status {
