@@ -4,20 +4,20 @@
 // `gleam deps download`, retried past a Hex API that is refusing to answer.
 //
 // Every checked-in `manifest.toml` pins what to fetch, so a warm package cache
-// answers this without a network call at all. A cold one still has to reach
-// Hex, and Hex rate-limits by address: a hosted runner shares its address with
-// everyone else on that host, so a refusal says nothing about this repository
-// and retrying a moment later usually works. Only that refusal is retried —
-// a manifest that does not resolve, or a checksum that does not match, fails
-// on the first attempt the way it should.
+// answers this without a network call at all. What is left is the projects
+// that cannot be locked ahead of time -- the throwaway consumers `package.mjs`
+// generates to install each artifact into -- and a cold cache. Those still
+// reach Hex, and Hex rate-limits by address: a hosted runner shares its
+// address with everyone else on that host, so a refusal says nothing about
+// this repository and waiting a little answers it. Only that refusal is
+// retried: a manifest that does not resolve, or a checksum that does not
+// match, fails on the first attempt the way it should.
 
 import childProcess from "node:child_process";
 import process from "node:process";
+import url from "node:url";
 
-const directories = process.argv.slice(2);
-if (directories.length === 0) directories.push(process.cwd());
-
-const attempts = 4;
+const attempts = 6;
 const firstDelayMs = 2000;
 
 /** Whether a failed attempt is worth repeating. */
@@ -38,10 +38,11 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function download(directory) {
+export function download(directory, environment = process.env) {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const result = childProcess.spawnSync("gleam", ["deps", "download"], {
       cwd: directory,
+      env: environment,
       encoding: "utf8",
       shell: false,
       maxBuffer: 8 * 1024 * 1024,
@@ -59,4 +60,8 @@ function download(directory) {
   }
 }
 
-for (const directory of directories) download(directory);
+if (process.argv[1] && import.meta.url === url.pathToFileURL(process.argv[1]).href) {
+  const directories = process.argv.slice(2);
+  if (directories.length === 0) directories.push(process.cwd());
+  for (const directory of directories) download(directory);
+}
