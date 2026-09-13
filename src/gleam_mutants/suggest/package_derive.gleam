@@ -5,6 +5,7 @@
 
 import girard
 import glance
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -321,7 +322,15 @@ fn derive_custom(
   custom: glance.CustomType,
   arguments: List(GenSpec),
 ) -> Result(GenSpec, String) {
-  case custom.publicity, custom.opaque_ {
+  // A type with no constructors at all is external: its representation lives
+  // in Erlang or JavaScript and Gleam never names it. That is the same
+  // situation an `opaque` type is in from outside its module -- a value can
+  // only be made and read through the public API -- so it is answered the same
+  // way. Falling through to the ordinary path instead reported `Dict` as a
+  // "recursive type with no base case", which is true of the empty variant
+  // list and true of nothing a reader would recognise.
+  let hidden = custom.opaque_ || custom.variants == []
+  case custom.publicity, hidden {
     glance.Private, _ ->
       Error("private type " <> module_name <> "." <> custom.name)
     _, True ->
@@ -569,6 +578,21 @@ fn compatible_opaque_pair(
   functions: List(#(glance.Function, girard.Scheme)),
 ) -> Result(#(genspec.OpaqueProvider, genspec.OpaqueObserver), Nil) {
   providers
+  // A constructor reached through another hidden type is not a value anyone
+  // can reason about: `atom.cast_from_dynamic(dynamic.string("a"))` type
+  // checks and means nothing. Build a hidden type out of ordinary values or
+  // not at all.
+  |> list.filter(fn(provider) {
+    !list.any(provider.parameters, mentions_hidden)
+  })
+  // A constructor that takes nothing builds one value and only ever that
+  // value, so a search over it has one case to try: `dict.new()` is a dict,
+  // but it is always the empty one. Prefer a constructor with arguments
+  // wherever the type offers both, and keep source order within each group so
+  // the choice stays the same from run to run.
+  |> list.sort(fn(left, right) {
+    int.compare(constructor_rank(left), constructor_rank(right))
+  })
   |> list.find_map(fn(provider) {
     functions
     |> list.find_map(fn(entry) {
@@ -586,6 +610,31 @@ fn compatible_opaque_pair(
       |> result.map(fn(observer) { #(provider, observer) })
     })
   })
+}
+
+/// Whether a specification reaches a type built through someone's public API.
+fn mentions_hidden(spec: GenSpec) -> Bool {
+  case spec {
+    OpaqueSpec(_, _, _, _, _, _) -> True
+    ListSpec(element) -> mentions_hidden(element)
+    OptionSpec(inner) -> mentions_hidden(inner)
+    ResultSpec(ok, error) -> mentions_hidden(ok) || mentions_hidden(error)
+    TupleSpec(elements) -> list.any(elements, mentions_hidden)
+    FunctionSpec(_, result) -> mentions_hidden(result)
+    CustomSpec(_, _, variants) | ImportedCustomSpec(_, _, _, variants) ->
+      list.any(variants, fn(variant) {
+        list.any(variant.fields, fn(field) { mentions_hidden(field.spec) })
+      })
+    _ -> False
+  }
+}
+
+/// Constructors that take arguments sort before ones that take none.
+fn constructor_rank(provider: genspec.OpaqueProvider) -> Int {
+  case provider.parameters {
+    [] -> 1
+    _ -> 0
+  }
 }
 
 fn observer_candidate(

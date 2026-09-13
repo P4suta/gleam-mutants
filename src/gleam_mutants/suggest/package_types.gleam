@@ -59,13 +59,125 @@ pub fn annotate_with_resolver(
     }
   }
   use _ <- result.try(ensure_imports(parsed, resolver, target))
+  let dependencies = dependency_closure(parsed, source_dict, resolver, target)
   let options =
     girard.default_options()
     |> girard.with_target(target)
     |> girard.with_resolver(resolver)
-  let inferred = girard.annotate_package(parsed, options)
+  // The dependencies are annotated alongside the package rather than after
+  // it, because `annotate_package` shares one inference cache across the
+  // list: a module imported by several is inferred once. Girard was already
+  // inferring these to type the package that imports them; listing them only
+  // keeps the answers.
+  let inferred =
+    girard.annotate_package(
+      list.append(
+        parsed,
+        list.map(dependencies, fn(entry) { #(entry.0, entry.1) }),
+      ),
+      options,
+    )
+  // Only the package's own modules have to be inferred. A dependency that
+  // cannot be is simply one whose types are not offered, which is where this
+  // started.
   use _ <- result.try(ensure_every_module(parsed, inferred))
-  Ok(PackageIndex(source_dict, module_dict, inferred, target))
+  Ok(PackageIndex(
+    dict.merge(
+      into: dict.from_list(
+        list.map(dependencies, fn(entry) { #(entry.0, entry.2) }),
+      ),
+      from: source_dict,
+    ),
+    dict.merge(
+      into: dict.from_list(
+        list.map(dependencies, fn(entry) { #(entry.0, entry.1) }),
+      ),
+      from: module_dict,
+    ),
+    inferred,
+    target,
+  ))
+}
+
+/// How many dependency modules are worth pulling in behind one package.
+///
+/// A package's own imports reach the whole of whatever it depends on, and
+/// there is no reason to type a graph without end to answer a question about
+/// one function. The bound is generous enough for a real dependency tree and
+/// small enough that nothing runs away.
+const dependency_limit = 400
+
+/// Every module the package imports, and every module those import, parsed.
+///
+/// Only this package's own modules used to be indexed, so a type of a
+/// dependency -- `gleam/order.Order`, `gleam/dict.Dict` -- arrived at the
+/// derivation as a module nobody had heard of, and was reported that way. The
+/// modules were already being read, by the resolver Girard types against;
+/// keeping them is what lets a generator be built for the types they declare.
+///
+/// Resolution is deliberately fail-open. A module that cannot be read or
+/// parsed is left out, and asking about one of its types goes back to saying
+/// so. Failing the run instead would make a dependency this tool cannot parse
+/// into a reason not to suggest a test for anything at all.
+fn dependency_closure(
+  parsed: List(#(String, glance.Module)),
+  own: Dict(String, String),
+  resolver: girard.Resolver,
+  target: girard.Target,
+) -> List(#(String, glance.Module, String)) {
+  let wanted =
+    list.flat_map(parsed, fn(entry) { imported_modules(entry.1, target) })
+  gather(wanted, own, dict.new(), [], resolver, target, dependency_limit)
+}
+
+fn gather(
+  pending: List(String),
+  own: Dict(String, String),
+  seen: Dict(String, Nil),
+  found: List(#(String, glance.Module, String)),
+  resolver: girard.Resolver,
+  target: girard.Target,
+  budget: Int,
+) -> List(#(String, glance.Module, String)) {
+  case pending, budget {
+    [], _ -> list.reverse(found)
+    _, budget if budget <= 0 -> list.reverse(found)
+    [module, ..rest], _ ->
+      case dict.has_key(own, module) || dict.has_key(seen, module) {
+        True -> gather(rest, own, seen, found, resolver, target, budget)
+        False -> {
+          let seen = dict.insert(seen, module, Nil)
+          case resolver(module) {
+            Error(_) -> gather(rest, own, seen, found, resolver, target, budget)
+            Ok(source) ->
+              case glance.module(source) {
+                Error(_) ->
+                  gather(rest, own, seen, found, resolver, target, budget)
+                Ok(parsed) ->
+                  gather(
+                    list.append(rest, imported_modules(parsed, target)),
+                    own,
+                    seen,
+                    [#(module, parsed, source), ..found],
+                    resolver,
+                    target,
+                    budget - 1,
+                  )
+              }
+          }
+        }
+      }
+  }
+}
+
+/// The modules one parsed module imports on the target being typed.
+fn imported_modules(
+  module: glance.Module,
+  target: girard.Target,
+) -> List(String) {
+  module.imports
+  |> list.filter(import_on_target(_, target))
+  |> list.map(fn(definition) { definition.definition.module })
 }
 
 /// Refuses to turn a missing external interface into a collection of

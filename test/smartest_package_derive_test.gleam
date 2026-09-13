@@ -112,12 +112,13 @@ pub fn smartest_package_derivation_probes_a_free_type_variable_at_int_test() {
   assert plan.return_spec == None
 }
 
-/// A type of a dependency says so, rather than reading like a typo.
+/// A dependency's public type is generated, not reported as a stranger.
 ///
-/// Only this package's own modules are indexed, so a dependency's type arrives
-/// at the derivation as a module nobody has heard of. What the reader is told
-/// has to be the limit, not the index's own words for it.
-pub fn smartest_package_derivation_names_a_dependency_type_as_such_test() {
+/// Only this package's own modules used to be indexed, so `gleam/order.Order`
+/// -- an ordinary three-variant enum -- arrived at the derivation as a module
+/// nobody had heard of. The modules were already being read to type the
+/// package that imports them; keeping them is all this takes.
+pub fn smartest_package_derivation_generates_a_dependency_type_test() {
   let source =
     "import gleam/order\n\npub fn keep(value: order.Order) -> order.Order {\n"
     <> "  value\n}"
@@ -127,11 +128,68 @@ pub fn smartest_package_derivation_names_a_dependency_type_as_such_test() {
       girard.Erlang,
     )
 
-  assert package_derive.function(index, "demo/keep", "keep")
-    == Error(
-      "parameter value: type gleam/order.Order comes from another package, "
-      <> "which suggest cannot generate values for",
+  let assert Ok(plan) = package_derive.function(index, "demo/keep", "keep")
+  assert plan.parameters
+    == [
+      ParameterPlan(
+        "value",
+        None,
+        ImportedCustomSpec("gleam/order", "Order", [], [
+          VariantSpec("Lt", []),
+          VariantSpec("Eq", []),
+          VariantSpec("Gt", []),
+        ]),
+      ),
+    ]
+}
+
+/// A type with no constructors is built through its own public API.
+///
+/// `Dict` declares no variants at all: its representation is the runtime's,
+/// not Gleam's, which is the position an `opaque` type is in from outside its
+/// module. Answering it the same way is what turns "recursive type Dict has no
+/// base case" -- true of the empty variant list and of nothing a reader would
+/// recognise -- into a value a test can be written with.
+pub fn smartest_package_derivation_builds_an_external_type_through_its_api_test() {
+  let source =
+    "import gleam/dict\n\npub fn size(values: dict.Dict(Int, Int)) -> Int {\n"
+    <> "  dict.size(values)\n}"
+  let assert Ok(index) =
+    package_types.annotate(
+      [package_types.ModuleSource("demo/sized", source)],
+      girard.Erlang,
     )
+
+  let assert Ok(plan) = package_derive.function(index, "demo/sized", "size")
+  let assert [ParameterPlan(_, _, spec)] = plan.parameters
+  let assert OpaqueSpec("gleam/dict", "Dict", _, provider, observer, _) = spec
+  // `dict.new()` is a dict and always the same one. A constructor that takes
+  // something is preferred wherever the type offers both, so the search has
+  // more than one case to try.
+  assert provider.function == "from_list"
+  assert observer.function == "to_list"
+}
+
+/// One hidden type is not built out of another.
+///
+/// `atom.cast_from_dynamic(dynamic.string("a"))` type checks and means
+/// nothing. Refusing a constructor whose arguments are themselves built
+/// through someone's public API is what leaves `atom.create` to be found.
+pub fn smartest_package_derivation_does_not_chain_hidden_types_test() {
+  let source =
+    "import gleam/erlang/atom\n\npub fn name(value: atom.Atom) -> String {\n"
+    <> "  atom.to_string(value)\n}"
+  let assert Ok(index) =
+    package_types.annotate(
+      [package_types.ModuleSource("demo/named", source)],
+      girard.Erlang,
+    )
+
+  let assert Ok(plan) = package_derive.function(index, "demo/named", "name")
+  let assert [ParameterPlan(_, _, spec)] = plan.parameters
+  let assert OpaqueSpec("gleam/erlang/atom", "Atom", _, provider, _, _) = spec
+  assert provider.function == "create"
+  assert provider.parameters == [StringSpec]
 }
 
 /// A function-typed parameter is generated as a constant function.
@@ -140,8 +198,7 @@ pub fn smartest_package_derivation_names_a_dependency_type_as_such_test() {
 /// printed, and a generated test has to write down the input it was run on.
 pub fn smartest_package_derivation_generates_a_function_argument_test() {
   let source =
-    "pub fn apply(f: fn(Int, Int) -> Bool, x: Int) -> Bool {\n"
-    <> "  f(x, x)\n}"
+    "pub fn apply(f: fn(Int, Int) -> Bool, x: Int) -> Bool {\n  f(x, x)\n}"
   let assert Ok(index) =
     package_types.annotate(
       [package_types.ModuleSource("demo/apply", source)],
