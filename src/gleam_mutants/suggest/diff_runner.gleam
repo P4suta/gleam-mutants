@@ -751,7 +751,18 @@ fn plan_module(
   let module = module_name(source_catalog.path)
   let probe_module = "gleam_mutants_probe_" <> tag <> "_" <> flatten(module)
   let considered = filter_targets(request.function_filter, targets)
-  let routing = select.route_private(parsed, considered)
+  // Which public entry a private function's mutants ride out on is settled
+  // against the same classifier that will be asked to probe it, so a caller
+  // whose own parameters cannot be generated does not take the mutants of
+  // everything it happens to reach down with it.
+  let routing =
+    select.route_private(parsed, considered, fn(function) {
+      result.is_ok(case package {
+        Some(package) ->
+          classify_package(package, module: module, function: function)
+        None -> classify(context, function)
+      })
+    })
   let #(probing, left_alone) =
     split_excluded(request.exclude_functions, routing.targets)
   let judged =
