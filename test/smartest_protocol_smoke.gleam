@@ -28,8 +28,11 @@ pub fn main() {
 /// the file relative to the directory the process is already in is what stops
 /// that, because a name cannot disagree with itself.
 ///
-/// `ln` is POSIX, and a Windows runner that makes no link is answered with a
-/// skip rather than a failure over something no change of ours can fix.
+/// `ln` is POSIX, and Windows makes a copy of the directory rather than a link
+/// to it unless the account may create one. Nothing is being asserted about a
+/// copy -- it is reached by the name it has, so there is no second spelling to
+/// disagree over -- so a platform that made one is answered with a skip rather
+/// than a failure over something no change of ours can fix.
 fn verify_symlinked_workspace(runtime: String) -> Nil {
   let root = platform.current_directory()
   let link =
@@ -38,9 +41,17 @@ fn verify_symlinked_workspace(runtime: String) -> Nil {
       "gleam-mutants-protocol-link-" <> platform.random_nonce(),
     )
   let linked = platform.run_process("ln", ["-s", root, link], root, [], 10_000)
-  case linked.status == 0 {
-    False ->
+  let is_link = case simplifile.link_info(link) {
+    Ok(info) -> simplifile.file_info_type(info) == simplifile.Symlink
+    Error(_) -> False
+  }
+  case linked.status == 0 && is_link {
+    False -> {
+      // `rm` without `-r` removes a link and refuses a directory, so a copy
+      // is left where it cannot be mistaken for the workspace it copied.
+      let _ = platform.run_process("rm", [link], root, [], 10_000)
       io.println("skipped: this platform made no symbolic link to a workspace")
+    }
     True -> {
       let name =
         "smartest-protocol-link-"
