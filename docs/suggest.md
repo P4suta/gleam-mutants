@@ -293,12 +293,21 @@ type** is never constructed.
 
 A **private function** is not probed directly; its mutants are explored through
 the nearest public function that reaches it, and only one no public function
-reaches at all is reported as unsupported. Still unsupported, and reported as
-such: **function-typed arguments**, types from a **dependency package** rather
-than your own, and types that are external to Gleam altogether. A mutant that
-is not inside any function of its module, such as one in a module constant,
-cannot be switched on at run time and is unsupported for that reason rather
-than for want of an input.
+reaches at all is reported as unsupported.
+
+A **function-typed parameter** is generated as a function of the right arity
+that ignores what it is given and answers a generated value, and the test
+written for it says exactly that: `fn(_) { 3 }`. It is a real limit as well as
+a convenience — a constant function cannot tell apart a mutant that changes
+what is *passed* to it, `f(x)` for `f(x + 1)`, and such a mutant comes back
+indistinguishable. A function nested inside another type, as in `List(fn(Int)
+-> Int)`, is still unsupported: there is no one result to carry.
+
+Still unsupported, and reported as such: types from a **dependency package**
+rather than your own, and types that are external to Gleam altogether. A mutant
+that is not inside any function of its module, such as one in a module
+constant, cannot be switched on at run time and is unsupported for that reason
+rather than for want of an input.
 
 Functions named in `exclude_functions` are skipped without being compiled into
 a probe at all, and their mutants are reported as unsupported.
