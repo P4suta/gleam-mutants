@@ -228,37 +228,47 @@ fn boundary_problems(output: SuggestOutput) -> List(String) {
   }
 }
 
-/// `abs` holds the two mutants no input tells apart, and nothing else does.
+/// `abs` holds two of the mutants no input tells apart, and `applies` the
+/// third — `f(x) + 0` and `f(x) - 0` are the same arithmetic, whatever `f` is.
 fn indistinguishable_problems(output: SuggestOutput) -> List(String) {
   let functions =
     output.indistinguishable
     |> list.map(fn(entry) { entry.function })
     |> list.sort(string.compare)
   expect(
-    functions == ["abs", "abs"],
+    functions == ["abs", "abs", "applies"],
     "the mutants no input told apart belong to "
       <> string.inspect(functions)
-      <> ", expected the two equivalent `abs` mutants",
+      <> ", expected the two equivalent `abs` mutants and the `applies` one",
   )
 }
 
-/// A function-typed parameter is reported, with a reason that says so.
+/// A function-typed parameter is probed, and the function is written down.
+///
+/// The value that separates a mutant has to be one a reader can type into a
+/// test, and a closure the probe kept to itself is not: what comes back is
+/// `fn(_) { … }` around the value the generated function answers with.
 fn unsupported_problems(output: SuggestOutput) -> List(String) {
   let applies =
     list.filter(output.unsupported, fn(entry) { entry.function == "applies" })
+  let written =
+    list.filter(output.suggestions, fn(entry) {
+      entry.function == "applies"
+      && list.any(entry.inputs, string.contains(_, "fn(_) {"))
+    })
   list.flatten([
     expect(
-      applies != [],
-      "no `applies` mutant was reported as unsupported; the unsupported "
-        <> "functions are "
-        <> string.inspect(
-        list.map(output.unsupported, fn(entry) { entry.function }),
-      ),
+      applies == [],
+      "an `applies` mutant is unsupported, expected its function-typed "
+        <> "parameter to be generated: "
+        <> string.inspect(list.map(applies, fn(entry) { entry.reason })),
     ),
     expect(
-      list.all(applies, fn(entry) { string.contains(entry.reason, "function") }),
-      "an `applies` mutant gives a reason that never mentions `function`: "
-        <> string.inspect(list.map(applies, fn(entry) { entry.reason })),
+      written != [],
+      "no `applies` suggestion wrote its function argument down: "
+        <> string.inspect(
+        list.map(output.suggestions, fn(entry) { entry.inputs }),
+      ),
     ),
   ])
 }

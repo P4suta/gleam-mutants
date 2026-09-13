@@ -81,7 +81,7 @@ fn problems(
     maybe_double_problems(output, mutants),
     join_problems(output, mutants),
     private_route_problems(output, source, mutants),
-    unsupported_problems(output, "applies", "function"),
+    function_argument_problems(output),
     skipped_problems(output),
   ])
 }
@@ -212,7 +212,43 @@ fn survivor_problems(
 /// relocated verdict cannot pass for the right one.
 const expected_survivors = [
   "abs line 23: 0 -> 1", "abs line 23: value < 0 -> value <= 0",
+  "applies line 59: f(x) + 0 -> f(x) - 0",
 ]
+
+/// A function-typed parameter is generated, and written down as a function.
+///
+/// `applies(f, x)` is called with a constant function of the right arity, and
+/// the input a test would be written with has to say so: a reader cannot type
+/// a closure the probe kept to itself. The mutant that survives here survives
+/// for its own reason — `+ 0` and `- 0` are the same arithmetic — and is
+/// accounted for as indistinguishable rather than as unsupported.
+fn function_argument_problems(output: diff_runner.RunOutput) -> List(String) {
+  let reported =
+    list.filter(output.results, fn(probe) { probe.function == "applies" })
+  let unsupported =
+    list.filter(reported, fn(probe) { probe.status == Unsupported })
+  let written =
+    list.filter(reported, fn(probe) {
+      list.any(probe.inputs, string.contains(_, "fn(_) {"))
+    })
+  list.flatten([
+    expect(
+      reported != [],
+      "no results were reported for `applies`, expected it to be probed",
+    ),
+    expect(
+      unsupported == [],
+      int.to_string(list.length(unsupported))
+        <> " results for `applies` are unsupported, expected none: "
+        <> string.inspect(list.map(unsupported, fn(probe) { probe.reason })),
+    ),
+    expect(
+      written != [],
+      "no result for `applies` wrote its function argument down: "
+        <> string.inspect(list.map(reported, fn(probe) { probe.inputs })),
+    ),
+  ])
+}
 
 /// `value > 0` becoming `value >= 0` is told apart by `0` and nothing else.
 fn is_positive_problems(
@@ -411,45 +447,6 @@ fn join_problems(
   list.append(rejected, neutral)
 }
 
-/// Mutants of a function the probe cannot call are still reported, as
-/// unsupported, with a reason that says which wall was hit.
-fn unsupported_problems(
-  output: diff_runner.RunOutput,
-  function: String,
-  fragment: String,
-) -> List(String) {
-  let reported =
-    list.filter(output.results, fn(probe) { probe.function == function })
-  let statuses =
-    list.filter(reported, fn(probe) { probe.status != Unsupported })
-  let reasons =
-    list.filter(reported, fn(probe) { !string.contains(probe.reason, fragment) })
-  list.flatten([
-    expect(
-      reported != [],
-      "no results were reported for " <> function <> ", expected unsupported",
-    ),
-    expect(
-      statuses == [],
-      int.to_string(list.length(statuses))
-        <> " results for "
-        <> function
-        <> " are not unsupported: "
-        <> string.inspect(list.map(statuses, describe)),
-    ),
-    expect(
-      reasons == [],
-      int.to_string(list.length(reasons))
-        <> " results for "
-        <> function
-        <> " give a reason that never mentions `"
-        <> fragment
-        <> "`: "
-        <> string.inspect(list.map(reasons, fn(probe) { probe.reason })),
-    ),
-  ])
-}
-
 /// The functions the runner walked past are named in the skipped list.
 fn skipped_problems(output: diff_runner.RunOutput) -> List(String) {
   let skipped = fn(name: String) -> Bool {
@@ -464,8 +461,9 @@ fn skipped_problems(output: diff_runner.RunOutput) -> List(String) {
         <> string.inspect(output.skipped),
     ),
     expect(
-      skipped("applies"),
-      "`applies` is missing from the skipped list: "
+      !skipped("applies"),
+      "`applies` was skipped, expected its function-typed parameter to be "
+        <> "generated: "
         <> string.inspect(output.skipped),
     ),
     expect(

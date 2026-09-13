@@ -1157,7 +1157,10 @@ fn run_instrumented_baseline(
         Ok([
           #("GLEAM_MUTANTS_ACTIVE", ""),
           #("GLEAM_MUTANTS_RUNTIME", runtime_name),
-          #("GLEAM_MUTANTS_TEST_IMPACT_FILE", impact_path),
+          #(
+            "GLEAM_MUTANTS_TEST_IMPACT_FILE",
+            test_impact.protocol_name(impact_path),
+          ),
           #("GLEAM_MUTANTS_TEST_SELECTION_FILE", ""),
         ])
       }
@@ -1864,7 +1867,10 @@ fn partial_baseline(
         #("GLEAM_MUTANTS_ACTIVE", ""),
         #("GLEAM_MUTANTS_RUNTIME", outcome.runtime_name(runtime)),
         #("GLEAM_MUTANTS_TEST_IMPACT_FILE", ""),
-        #("GLEAM_MUTANTS_TEST_SELECTION_FILE", selection_path),
+        #(
+          "GLEAM_MUTANTS_TEST_SELECTION_FILE",
+          test_impact.protocol_name(selection_path),
+        ),
       ],
       prepared.timeout_ms,
     )
@@ -2223,7 +2229,10 @@ fn pending_run(
         Ok(selection_path) ->
           process_run(context, runtime, config, timeout_ms, mode, [
             #("GLEAM_MUTANTS_TEST_IMPACT_FILE", ""),
-            #("GLEAM_MUTANTS_TEST_SELECTION_FILE", selection_path),
+            #(
+              "GLEAM_MUTANTS_TEST_SELECTION_FILE",
+              test_impact.protocol_name(selection_path),
+            ),
           ])
         Error(error) ->
           process_run(

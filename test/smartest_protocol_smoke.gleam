@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import gleam/io
 import gleam/list
 import gleam/string
 import gleam_mutants/core/path
@@ -14,6 +15,93 @@ pub fn main() {
     selected -> selected
   }
   list.each(runtimes, verify_runtime)
+  list.each(runtimes, verify_symlinked_workspace)
+}
+
+/// The protocol survives a working directory reached through a symbolic link.
+///
+/// macOS answers `getcwd` with the `/private/var` that a `/var` path resolves
+/// to, so a snapshot under the temporary directory has two spellings: the one
+/// the engine built its paths from and the one the test process is told it is
+/// in. A runner that compares those as strings refuses its own protocol file,
+/// which turns adaptive selection off and fails a test nobody wrote. Naming
+/// the file relative to the directory the process is already in is what stops
+/// that, because a name cannot disagree with itself.
+///
+/// `ln` is POSIX, and Windows makes a copy of the directory rather than a link
+/// to it unless the account may create one. Nothing is being asserted about a
+/// copy -- it is reached by the name it has, so there is no second spelling to
+/// disagree over -- so a platform that made one is answered with a skip rather
+/// than a failure over something no change of ours can fix.
+fn verify_symlinked_workspace(runtime: String) -> Nil {
+  let root = platform.current_directory()
+  let link =
+    path.join(
+      platform.temporary_directory(),
+      "gleam-mutants-protocol-link-" <> platform.random_nonce(),
+    )
+  let linked = platform.run_process("ln", ["-s", root, link], root, [], 10_000)
+  let is_link = case simplifile.link_info(link) {
+    Ok(info) -> simplifile.file_info_type(info) == simplifile.Symlink
+    Error(_) -> False
+  }
+  case linked.status == 0 && is_link {
+    False -> {
+      // `rm` without `-r` removes a link and refuses a directory, so a copy
+      // is left where it cannot be mistaken for the workspace it copied.
+      let _ = platform.run_process("rm", [link], root, [], 10_000)
+      io.println("skipped: this platform made no symbolic link to a workspace")
+    }
+    True -> {
+      let name =
+        "smartest-protocol-link-"
+        <> runtime
+        <> "-"
+        <> platform.random_nonce()
+        <> ".json"
+      // The engine names its protocol files under a snapshot root it took
+      // from `TMPDIR`, and the link is that spelling here: the one `getcwd`
+      // will not answer with.
+      let through_link = path.join(path.join(link, ".gleam_mutants"), name)
+      let refused =
+        run_in(link, runtime, [
+          #("GLEAM_MUTANTS_ACTIVE", ""),
+          #("GLEAM_MUTANTS_RUNTIME", runtime),
+          #("GLEAM_MUTANTS_TEST_IMPACT_FILE", through_link),
+          #("SMARTEST_FILTER", "smartest_native_fixture"),
+        ])
+      let accepted =
+        run_in(link, runtime, [
+          #("GLEAM_MUTANTS_ACTIVE", ""),
+          #("GLEAM_MUTANTS_RUNTIME", runtime),
+          #(
+            "GLEAM_MUTANTS_TEST_IMPACT_FILE",
+            test_impact.protocol_name(through_link),
+          ),
+          #("SMARTEST_FILTER", "smartest_native_fixture"),
+        ])
+      // `rm` without `-r` unlinks the link and can never reach the workspace
+      // it points at, which `delete_tree` gives no such promise about.
+      let _ = platform.run_process("rm", [link], root, [], 10_000)
+
+      // The absolute name is refused, which is the whole reason the relative
+      // one is what the engine hands over.
+      assert refused.status != 0
+      assert string.contains(
+        refused.stdout <> refused.stderr,
+        "impact file must be below .gleam_mutants",
+      )
+
+      assert accepted.status == 0
+      let written = path.join(path.join(root, ".gleam_mutants"), name)
+      let assert Ok(source) = simplifile.read(written)
+      let assert Ok(manifest) = test_impact.decode_manifest(source)
+      assert manifest.runtime == runtime
+      assert manifest.complete
+      let assert Ok(Nil) = simplifile.delete_file(at: written)
+      Nil
+    }
+  }
 }
 
 fn verify_runtime(runtime: String) -> Nil {
@@ -32,7 +120,7 @@ fn verify_runtime(runtime: String) -> Nil {
     run(runtime, [
       #("GLEAM_MUTANTS_ACTIVE", ""),
       #("GLEAM_MUTANTS_RUNTIME", runtime),
-      #("GLEAM_MUTANTS_TEST_IMPACT_FILE", impact),
+      #("GLEAM_MUTANTS_TEST_IMPACT_FILE", test_impact.protocol_name(impact)),
       #("SMARTEST_FILTER", "smartest_native_fixture"),
     ])
   assert baseline.status == 0
@@ -51,7 +139,10 @@ fn verify_runtime(runtime: String) -> Nil {
     run(runtime, [
       #("GLEAM_MUTANTS_ACTIVE", ""),
       #("GLEAM_MUTANTS_RUNTIME", runtime),
-      #("GLEAM_MUTANTS_TEST_SELECTION_FILE", selection),
+      #(
+        "GLEAM_MUTANTS_TEST_SELECTION_FILE",
+        test_impact.protocol_name(selection),
+      ),
       #("SMARTEST_FILTER", "smartest_native_fixture"),
     ])
   assert narrowed.status == 0
@@ -70,7 +161,10 @@ fn verify_runtime(runtime: String) -> Nil {
     run(runtime, [
       #("GLEAM_MUTANTS_ACTIVE", ""),
       #("GLEAM_MUTANTS_RUNTIME", runtime),
-      #("GLEAM_MUTANTS_TEST_IMPACT_FILE", legacy_impact),
+      #(
+        "GLEAM_MUTANTS_TEST_IMPACT_FILE",
+        test_impact.protocol_name(legacy_impact),
+      ),
       #("SMARTEST_FILTER", "stable_id_is_path_separator_portable"),
     ])
   assert legacy_baseline.status == 0
@@ -86,7 +180,10 @@ fn verify_runtime(runtime: String) -> Nil {
     run(runtime, [
       #("GLEAM_MUTANTS_ACTIVE", ""),
       #("GLEAM_MUTANTS_RUNTIME", runtime),
-      #("GLEAM_MUTANTS_TEST_SELECTION_FILE", legacy_selection),
+      #(
+        "GLEAM_MUTANTS_TEST_SELECTION_FILE",
+        test_impact.protocol_name(legacy_selection),
+      ),
       #("SMARTEST_FILTER", "stable_id_is_path_separator_portable"),
     ])
   assert legacy_narrowed.status == 0
@@ -98,7 +195,7 @@ fn verify_runtime(runtime: String) -> Nil {
     run(runtime, [
       #("GLEAM_MUTANTS_ACTIVE", ""),
       #("GLEAM_MUTANTS_RUNTIME", runtime),
-      #("GLEAM_MUTANTS_TEST_SELECTION_FILE", unknown),
+      #("GLEAM_MUTANTS_TEST_SELECTION_FILE", test_impact.protocol_name(unknown)),
       #("SMARTEST_FILTER", "smartest_native_fixture"),
     ])
   assert rejected.status != 0
@@ -120,6 +217,14 @@ fn verify_runtime(runtime: String) -> Nil {
 }
 
 fn run(runtime: String, environment: List(#(String, String))) {
+  run_in(platform.current_directory(), runtime, environment)
+}
+
+fn run_in(
+  directory: String,
+  runtime: String,
+  environment: List(#(String, String)),
+) {
   let arguments = case runtime {
     "erlang" -> ["test", "--target", "erlang"]
     javascript -> [
@@ -130,11 +235,5 @@ fn run(runtime: String, environment: List(#(String, String))) {
       javascript,
     ]
   }
-  platform.run_process(
-    "gleam",
-    arguments,
-    platform.current_directory(),
-    environment,
-    30_000,
-  )
+  platform.run_process("gleam", arguments, directory, environment, 30_000)
 }

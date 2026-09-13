@@ -11,8 +11,8 @@ import gleam/result
 import gleam/string
 import gleam_mutants/suggest/genspec.{
   type GenSpec, type VariantSpec, BitArraySpec, BoolSpec, CustomSpec, FieldSpec,
-  FloatSpec, ImportedCustomSpec, ImportedModuleAccess, IntSpec, ListSpec,
-  NilSpec, OpaqueObserver, OpaqueProvider, OpaqueSpec, OptionProvider,
+  FloatSpec, FunctionSpec, ImportedCustomSpec, ImportedModuleAccess, IntSpec,
+  ListSpec, NilSpec, OpaqueObserver, OpaqueProvider, OpaqueSpec, OptionProvider,
   OptionSpec, RecursiveRef, ResultProvider, ResultSpec, StringSpec,
   TargetModuleAccess, TupleSpec, ValueProvider, VariantSpec,
 }
@@ -82,7 +82,7 @@ fn derive_parameters(
     [parameter, ..parameter_rest], [type_, ..type_rest] -> {
       let name = parameter_name(parameter.name)
       use spec <- result.try(
-        derive_girard(package, target_module, target_module, scope, type_)
+        derive_parameter_type(package, target_module, scope, type_)
         |> result.map_error(fn(reason) {
           "parameter " <> name <> ": " <> reason
         }),
@@ -97,6 +97,38 @@ fn derive_parameters(
       Ok([ParameterPlan(name, parameter.label, spec), ..rest])
     }
     _, _ -> Error("inferred function arity does not match its source")
+  }
+}
+
+/// One whole parameter, where a function type is something we can answer.
+///
+/// A function-typed parameter is generated as a function of the right arity
+/// that ignores what it is given and answers a generated value, which is
+/// enough to call the function under test and enough to write down in a test.
+/// It is deliberately only offered for a parameter *as a whole*: the value
+/// carried through the probe is the result, and a result cannot be lifted out
+/// of `List(fn(Int) -> Int)` the way it can out of `fn(Int) -> Int`.
+///
+/// What it cannot do is tell apart a mutant that changes what is passed *to*
+/// the function -- `f(x)` for `f(x + 1)` -- since a constant function answers
+/// the same either way. Such a mutant is reported as indistinguishable, which
+/// is what it is rather than a gap in the search.
+fn derive_parameter_type(
+  package: PackageIndex,
+  target_module: String,
+  scope: Scope,
+  type_: girard.Type,
+) -> Result(GenSpec, String) {
+  case type_ {
+    girard.Fn(arguments, return) ->
+      derive_girard(package, target_module, target_module, scope, return)
+      |> result.map(FunctionSpec(list.length(arguments), _))
+      |> result.map_error(fn(reason) {
+        "a function-typed value can be generated only when its result can be, "
+        <> "and this one's cannot: "
+        <> reason
+      })
+    _ -> derive_girard(package, target_module, target_module, scope, type_)
   }
 }
 
@@ -151,8 +183,19 @@ fn derive_girard(
       )
       derive_nominal(package, target_module, module, scope, name, arguments)
     }
-    girard.Fn(_, _) -> Error("function-typed values are not supported")
-    girard.Var(_) -> Error("unconstrained generic type cannot be generated")
+    girard.Fn(_, _) ->
+      Error(
+        "a function-typed value is supported as a whole parameter, not nested "
+        <> "inside another type",
+      )
+    // A free type variable is instantiated at `Int`. Gleam has no type
+    // classes, so every instantiation of one type-checks, and instantiating
+    // consistently is what matters: a probe of `fn(a, a) -> Bool` has to hand
+    // the function two values it could really be called with. Refusing
+    // instead — which this did until the package-wide view replaced the
+    // single-module one — leaves every genuinely generic function unprobed,
+    // and a mutant inside one unaccounted for.
+    girard.Var(_) -> Ok(IntSpec)
     girard.Tuple(elements) ->
       elements
       |> list.try_map(derive_girard(
@@ -216,7 +259,20 @@ fn derive_nominal(
   name: String,
   arguments: List(GenSpec),
 ) -> Result(GenSpec, String) {
-  use module <- result.try(package_types.parsed_module(package, module_name))
+  // Only this package's own modules are indexed, so a type of a dependency
+  // arrives here as a module nobody has heard of. Saying that, rather than
+  // repeating the index's own words, is the difference between a reader
+  // looking for a typo and a reader reading a limit.
+  use module <- result.try(
+    package_types.parsed_module(package, module_name)
+    |> result.replace_error(
+      "type "
+      <> module_name
+      <> "."
+      <> name
+      <> " comes from another package, which suggest cannot generate values for",
+    ),
+  )
   case find_alias(module, name), find_custom(module, name) {
     Ok(alias), _ ->
       derive_alias(package, target_module, module_name, scope, alias, arguments)
@@ -865,6 +921,7 @@ fn references(spec: GenSpec, name: String) -> Bool {
       list.any(arguments, references(_, name))
       || list.any(provider.parameters, references(_, name))
       || references(observer.result, name)
+    FunctionSpec(_, result) -> references(result, name)
     _ -> False
   }
 }
