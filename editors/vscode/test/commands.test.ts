@@ -263,13 +263,13 @@ describe("suggestFile", () => {
   it("reports a failed run instead of an empty list", async () => {
     host.reply("suggest", {
       code: 2,
-      stderr: "gleam-mutants: GMU8001: suggest supports the Erlang target only\n",
+      stderr: "gleam-mutants: GMU8003: the snapshot did not compile\n",
     });
 
     await suggestFile(host, FILE);
 
     expect(host.picks).toEqual([]);
-    expect(host.onlyMessage("error").message).toContain("GMU8001");
+    expect(host.onlyMessage("error").message).toContain("GMU8003");
   });
 
   it("falls back to the file the editor is showing", async () => {

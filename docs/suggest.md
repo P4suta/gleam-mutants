@@ -9,9 +9,13 @@ A surviving mutant is a change to your source that every test still passes on.
 `suggest` looks for the call that would have noticed, `explain` shows one of
 them in detail, and `apply` writes the tests into your project.
 
-These three commands run on the **Erlang target only**. They compile and run
-generated probe code, and only the Erlang runtime is supported for that today.
-`run`, `list`, and reporting are unaffected and still cover every runtime.
+These three commands run on **every runtime**: Erlang, Node, Deno and Bun. The
+probe is built the way the code under test is built, so the mutants it switches
+are the ones you ship. A call that panics is caught and one that never returns
+is taken back, on every runtime — Erlang from a monitored process, the three
+JavaScript runtimes by terminating the worker the probe body runs in and
+restarting it past the mutant it died on. Such a mutant is reported as
+unsupported rather than costing the module its verdicts.
 
 ## What it does
 
@@ -456,7 +460,7 @@ pick.
 
 The extension runs this CLI — it does not reimplement any of it — so
 everything on this page holds inside the editor too, the side effects of
-probing above and the Erlang-only support first among them. It is built from
+probing above and which runtimes are probed first among them. It is built from
 source; see [`editors/vscode/README.md`](../editors/vscode/README.md).
 
 ## Error codes
@@ -465,7 +469,6 @@ All three commands share the `GMU8xxx` range. Every one of these exits 2.
 
 | Code | Meaning |
 | --- | --- |
-| `GMU8001` | the workspace's tests run on JavaScript, which these commands do not support |
 | `GMU8002` | a selected file is not a Gleam source covered by the mutation includes |
 | `GMU8003` | the snapshot did not compile, before or after instrumenting |
 | `GMU8004` | a probe timed out, exited non-zero, or wrote no results file |
@@ -491,10 +494,10 @@ Two diagnostics are warnings rather than failures.
 A third path turns any code in this range into a warning: `run --suggest`
 reports a suggestion step that failed under the code that step raised, because
 the run itself already graded its mutants and succeeded. A workspace whose
-tests run on JavaScript therefore ends a successful `run --suggest` with
+snapshot will not compile therefore ends a successful `run --suggest` with
 
 ```text
-gleam-mutants: GMU8001: suggest supports the Erlang target only
+gleam-mutants: GMU8003: the snapshot did not compile
 ```
 
 rather than failing it. Run `suggest` on its own to get the same refusal as an

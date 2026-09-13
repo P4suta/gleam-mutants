@@ -105,12 +105,18 @@ the only executable scripts and are authorized by CSP hashes.
 `suggest`, `explain`, and `apply` do not run the test suite at all. The probe
 copies the workspace into a disposable snapshot and generates, per module, a
 probe module that calls each public function twice on the same input: once
-with no mutant active and once per mutant of that function. Each call runs in
-a monitored process of the same VM whose process dictionary names the active
-mutant, so a panic and a timeout are contained without a new OS process and
-both answers are compared directly rather than inferred from a red suite.
-This is why the three commands are Erlang-only: only that runtime's
-in-process switch and isolation are supported today.
+with no mutant active and once per mutant of that function, and both answers
+are compared directly rather than inferred from a red suite. On Erlang each
+call runs in a monitored process of the same VM whose process dictionary names
+the active mutant, so a panic and a timeout are contained without a new OS
+process. On Node, Deno and Bun — one implementation between them — the probe
+body runs in a worker and the calling thread watches a counter the worker bumps
+before every call. A call that stops bumping it has stopped answering, and the
+only thing that can be done to it from outside is to terminate the worker: the
+verdicts already written are on disk, the mutant the worker was inside is on
+disk too, and a restarted worker is told to skip everything already begun. So a
+mutant that never returns costs a restart rather than the module, and is
+reported as unsupported saying exactly that.
 
 Inputs are derived into a target-independent `GenSpec` from the package-wide
 signatures Girard infers, not from the annotations a module happens to carry,

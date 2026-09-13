@@ -95,6 +95,7 @@ pub fn main() {
       exclusion_problems(),
       survivors_problems(),
       javascript_target_problems(),
+      hanging_call_problems(),
     ])
 
   list.each(found, io.println)
@@ -735,47 +736,120 @@ fn survivor_problems(
   }
 }
 
-/// A run that asks for suggestions it cannot have says so once, and succeeds.
+/// A call that never returns costs a restart, not the module it is in.
 ///
-/// `run --suggest` on a workspace whose tests run on JavaScript grades its
-/// mutants normally and is refused only the suggestions, so the refusal is a
-/// warning beside a successful run rather than the run's failure. The suggest
-/// error carries its own `GMU8001` in front of its message, and the warning
-/// line must not put a second one there: it used to print
+/// This is the whole reason the probe body runs in a worker on JavaScript: a
+/// runtime that cannot interrupt synchronous code can still be made to let go
+/// of one, and everything already written survives the letting go. The mutant
+/// it died on is reported saying so, and every other mutant of the same module
+/// still gets its verdict.
+fn hanging_call_problems() -> List(String) {
+  list.flat_map(["node", "deno", "bun"], fn(runtime) {
+    let root =
+      copy_fixture(
+        "\n[tools.gleam_mutants.test]\ntarget = \"javascript\"\nruntime = \""
+        <> runtime
+        <> "\"\n",
+      )
+    let assert Ok(Nil) =
+      simplifile.write(path.join(root, "src/looping.gleam"), looping_source)
+    let ran = run_cli(["suggest", "--root", root, "--budget", "90s", "--json"])
+    let text = output(ran)
+    let decoded = decode_output(extract_json(text))
+    let problems = case decoded {
+      Error(reason) -> [runtime <> ": " <> reason <> "\n" <> text]
+      Ok(report) ->
+        list.flatten([
+          expect(
+            ran.status == 0,
+            runtime
+              <> ": suggest exited "
+              <> int.to_string(ran.status)
+              <> " where a hung call should have cost only its own verdict\n"
+              <> text,
+          ),
+          expect(
+            list.any(report.unsupported, fn(entry) {
+              entry.function == "countdown"
+              && string.contains(entry.reason, "never returned")
+            }),
+            runtime
+              <> ": the mutant that never returned was not reported as such: "
+              <> string.inspect(
+              list.map(report.unsupported, fn(entry) { entry.reason }),
+            ),
+          ),
+          expect(
+            report.suggestions != [],
+            runtime
+              <> ": a hung call took every other verdict of its module with it",
+          ),
+        ])
+    }
+    discard_workspace(root)
+    problems
+  })
+}
+
+/// A function whose `- 1` mutants count away from the base case for ever.
+const looping_source = "pub fn countdown(value: Int) -> Int {
+  case value <= 0 {
+    True -> 0
+    False -> countdown(value - 1)
+  }
+}
+"
+
+/// A JavaScript workspace is probed, on each runtime it can be probed on.
 ///
-///     gleam-mutants: GMU8001: GMU8001: suggest supports the Erlang target only
-///
-/// which reads like two failures and matches no code a reader can grep for.
+/// The three of them are one implementation -- the call is made on the spot,
+/// the mutant named in a global for the length of it -- so what this really
+/// checks is that nothing about a particular runtime gets in the way: Deno
+/// refuses what it was not asked to allow, and Bun and Node reach the
+/// filesystem by different names.
 fn javascript_target_problems() -> List(String) {
-  let root =
-    copy_fixture("\n[tools.gleam_mutants.test]\ntarget = \"javascript\"\n")
-  let ran =
-    run_cli([
-      "run", "--root", root, "--report", "none", "--no-strict", "--suggest",
-    ])
-  let text = output(ran)
   let found =
-    list.flatten([
-      expect(
-        ran.status == 0,
-        "run --suggest on a JavaScript workspace exited "
-          <> int.to_string(ran.status)
-          <> ", expected 0\n"
-          <> text,
-      ),
-      expect(
-        string.contains(
-          text,
-          "GMU8001: suggest supports the Erlang target only",
-        ),
-        "the run never said why it had no suggestions:\n" <> text,
-      ),
-      expect(
-        list.length(string.split(text, "GMU8001")) == 2,
-        "the warning named GMU8001 more than once:\n" <> text,
-      ),
-    ])
-  discard_workspace(root)
+    list.flat_map(["node", "deno", "bun"], fn(runtime) {
+      let root =
+        copy_fixture(
+          "\n[tools.gleam_mutants.test]\ntarget = \"javascript\"\nruntime = \""
+          <> runtime
+          <> "\"\n",
+        )
+      let ran =
+        run_cli([
+          "run", "--root", root, "--report", "none", "--no-strict", "--suggest",
+        ])
+      let text = output(ran)
+      let problems =
+        list.flatten([
+          expect(
+            ran.status == 0,
+            "run --suggest on a "
+              <> runtime
+              <> " workspace exited "
+              <> int.to_string(ran.status)
+              <> ", expected 0\n"
+              <> text,
+          ),
+          expect(
+            !string.contains(text, "GMU8"),
+            "a "
+              <> runtime
+              <> " workspace was refused its suggestions:\n"
+              <> text,
+          ),
+          expect(
+            string.contains(text, "Generated by gleam_mutants"),
+            "a "
+              <> runtime
+              <> " workspace was probed but no test was written:\n"
+              <> text,
+          ),
+        ])
+      discard_workspace(root)
+      problems
+    })
   found
 }
 

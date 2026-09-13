@@ -99,7 +99,7 @@ accept `--root`; without it, the nearest parent `gleam.toml` is selected. Run
 
 `suggest` proposes the tests that kill surviving mutants and `explain` shows one
 mutant with the input that separates it; both probe the workspace differentially
-and run on the Erlang target only.
+and run on Erlang and Node.
 
 **The probe calls every public function of the selected modules for real**, with
 generated arguments, in the environment you ran it in — the snapshot isolates

@@ -18,6 +18,7 @@ import gleam/string
 import gleam_mutants/config
 import gleam_mutants/core/catalog
 import gleam_mutants/core/operator
+import gleam_mutants/core/outcome
 import gleam_mutants/core/path
 import gleam_mutants/engine
 import gleam_mutants/platform
@@ -84,9 +85,9 @@ version = 1
 target = \"erlang\"
 "
 
-fn target_verdict(gleam_toml: String) -> Result(Nil, String) {
+fn probed_on(gleam_toml: String) -> String {
   let assert Ok(configured) = config.decode(gleam_toml, 1)
-  diff_runner.check_target(configured, gleam_toml)
+  outcome.runtime_name(diff_runner.probe_runtime_for(configured, gleam_toml))
 }
 
 // --- defaults ---------------------------------------------------------------
@@ -110,33 +111,21 @@ pub fn defaults_carry_the_standard_budgets_test() {
     )
 }
 
-// --- check_target -----------------------------------------------------------
+// --- which runtime probes ---------------------------------------------------
 
-pub fn check_target_accepts_a_workspace_without_a_target_test() {
-  assert target_verdict(plain_toml) == Ok(Nil)
-}
-
-pub fn check_target_accepts_an_erlang_workspace_test() {
-  assert target_verdict(erlang_project_toml) == Ok(Nil)
-}
-
-pub fn check_target_rejects_an_explicit_javascript_test_target_test() {
-  assert target_verdict(javascript_test_toml)
-    == Error("GMU8001: suggest supports the Erlang target only")
-}
-
-pub fn check_target_rejects_a_javascript_project_target_test() {
-  assert target_verdict(javascript_project_toml)
-    == Error("GMU8001: suggest supports the Erlang target only")
-}
-
-pub fn check_target_rejects_a_javascript_test_runtime_test() {
-  assert target_verdict(node_runtime_toml)
-    == Error("GMU8001: suggest supports the Erlang target only")
-}
-
-pub fn check_target_accepts_erlang_tests_of_a_javascript_project_test() {
-  assert target_verdict(erlang_test_of_javascript_project_toml) == Ok(Nil)
+/// A probe is built the way the code under test is built.
+///
+/// All four runtimes are probed, so nothing is refused here any more; what
+/// still matters is that the answer is the runtime the tests would really go
+/// to, which a configured runtime settles whatever target is written beside
+/// it.
+pub fn probe_runtime_follows_the_tests_test() {
+  assert probed_on(plain_toml) == "erlang"
+  assert probed_on(erlang_project_toml) == "erlang"
+  assert probed_on(erlang_test_of_javascript_project_toml) == "erlang"
+  assert probed_on(javascript_test_toml) == "node"
+  assert probed_on(javascript_project_toml) == "node"
+  assert probed_on(node_runtime_toml) == "node"
 }
 
 // --- distinct_sources -------------------------------------------------------
@@ -499,19 +488,15 @@ runtime = \"erlang\"
 /// `engine.detect_runtime` settles it: the target is only consulted when the
 /// runtime is left on `auto`. Tests that say `runtime = "erlang"` run on the
 /// BEAM whatever target is written beside them, so the probe can run too.
-pub fn check_target_lets_an_erlang_runtime_outrank_a_javascript_target_test() {
-  assert target_verdict(erlang_runtime_of_javascript_test_toml) == Ok(Nil)
-  assert target_verdict(erlang_runtime_of_javascript_project_toml) == Ok(Nil)
-}
-
 /// ... and the other way round: a JavaScript runtime is where the tests run
 /// even when `target = "erlang"` is written beside it, and there the probe's
 /// Erlang FFI does not exist.
-pub fn check_target_lets_a_javascript_runtime_outrank_an_erlang_target_test() {
-  assert target_verdict(node_runtime_of_erlang_test_toml)
-    == Error("GMU8001: suggest supports the Erlang target only")
-  assert target_verdict(deno_runtime_of_erlang_test_toml)
-    == Error("GMU8001: suggest supports the Erlang target only")
+/// A configured runtime outranks the target written beside it, either way.
+pub fn probe_runtime_lets_a_configured_runtime_outrank_a_target_test() {
+  assert probed_on(node_runtime_of_erlang_test_toml) == "node"
+  assert probed_on(deno_runtime_of_erlang_test_toml) == "deno"
+  assert probed_on(erlang_runtime_of_javascript_test_toml) == "erlang"
+  assert probed_on(erlang_runtime_of_javascript_project_toml) == "erlang"
 }
 
 // --- describe ---------------------------------------------------------------
@@ -519,11 +504,11 @@ pub fn check_target_lets_a_javascript_runtime_outrank_an_erlang_target_test() {
 /// A failure is printed the way it always was: the code, a colon, the message.
 pub fn describe_prints_the_code_before_the_message_test() {
   assert diff_runner.describe(diff_runner.RunError(
-      code: "GMU8001",
-      message: "suggest supports the Erlang target only",
+      code: "GMU8003",
+      message: "the snapshot did not compile",
       snapshot_root: None,
     ))
-    == "GMU8001: suggest supports the Erlang target only"
+    == "GMU8003: the snapshot did not compile"
 }
 
 /// A snapshot the run left behind is named on its own line, so whoever reads
@@ -604,20 +589,6 @@ fn discard_snapshot(root: Option(String)) -> Bool {
 
 /// The target gate runs before anything is copied: a JavaScript workspace
 /// costs one file read and leaves nothing behind.
-pub fn run_rejects_a_javascript_workspace_test() {
-  let root =
-    workspace(javascript_project_toml, [#("src/demo.gleam", two_functions)])
-  let outcome = diff_runner.run(diff_runner.defaults(root, ["src/demo.gleam"]))
-  discard(root)
-
-  let assert Error(error) = outcome
-  let leftover = discard_snapshot(error.snapshot_root)
-  assert error.code == "GMU8001"
-  assert leftover == False
-  assert diff_runner.describe(error)
-    == "GMU8001: suggest supports the Erlang target only"
-}
-
 /// A path the mutation includes do not cover is rejected by name, and the
 /// copy the runner had already made goes with it: a mistyped path must not
 /// leave a workspace behind.
