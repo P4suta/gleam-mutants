@@ -4,6 +4,8 @@
 *.beam
 *.ez
 /build
+# A fixture built in place, which only a hand-run `gleam` in one leaves behind.
+/fixtures/*/build
 /dist
 /.gleam_mutants
 /.smartest

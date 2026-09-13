@@ -773,8 +773,8 @@ fn javascript_target_problems() -> List(String) {
 
 /// The files a copy of the fixture is made of.
 const fixture_files = [
-  "gleam.toml", "src/boundary.gleam", "test/boundary_test.gleam",
-  "test/boundary_fixture_test.gleam",
+  "gleam.toml", "manifest.toml", "src/boundary.gleam",
+  "test/boundary_test.gleam", "test/boundary_fixture_test.gleam",
 ]
 
 /// A module no stored report covers, written after the run that would have.

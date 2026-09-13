@@ -6,7 +6,9 @@
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - /
+      - /.github/actions/gleam-deps
     schedule:
       interval: weekly
       day: monday
@@ -24,6 +26,21 @@ updates:
       interval: weekly
       day: monday
       time: "03:37"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+    versioning-strategy: increase-if-necessary
+    groups:
+      development-dependencies:
+        dependency-type: development
+        patterns:
+          - "*"
+
+  - package-ecosystem: npm
+    directory: /editors/vscode
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:47"
       timezone: Asia/Tokyo
     open-pull-requests-limit: 5
     versioning-strategy: increase-if-necessary

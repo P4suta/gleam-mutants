@@ -23,7 +23,7 @@ rumdl = "0.2.43"
 description = "Install pinned tools, fetch dependencies, and install hooks"
 run = [
   "mise install",
-  "gleam deps download",
+  "node scripts/deps-download.mjs . fixtures/unitest_project",
   "lefthook install",
 ]
 
@@ -91,7 +91,7 @@ run = [
 description = "Run repository, licence, metadata, and security linters"
 run = [
   "typos",
-  "taplo check gleam.toml mise.toml manifest.toml REUSE.toml .typos.toml",
+  "taplo check gleam.toml mise.toml manifest.toml fixtures/*/manifest.toml REUSE.toml .typos.toml",
   "actionlint",
   "yamllint .github lefthook.yml",
   "gitleaks dir . --no-banner --redact --verbose",
