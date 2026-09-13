@@ -6,6 +6,13 @@
 // The suggestion probe lives in a module of its own, so only types it can
 // name and construct are derivable: public, non-opaque custom types of the
 // module under test, its type aliases, and the built-in shapes.
+//
+// This is the single-module classifier, kept for the seams that test
+// planning without a package. What a run really uses is `package_derive`,
+// which works from the package-wide signatures Girard infers and can
+// therefore name a great deal more -- another module\'s types, a
+// dependency\'s, and the ones nothing in Gleam declares. A reason worded
+// here is one a reader will not see.
 
 import glance
 import gleam/int

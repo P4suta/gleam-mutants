@@ -146,12 +146,13 @@ if (!validateDoctor(doctor)) {
   throw new Error(`Doctor JSON schema validation failed:\n${nativeAjv.errorsText(validateDoctor.errors, { separator: "\n" })}`);
 }
 
-// `suggest` probes each function inside a snapshot by spawning an Erlang
-// process per call, which has no JavaScript counterpart: the command refuses a
-// JavaScript workspace outright (GMU8001), so there is deliberately no Node
-// output to compare byte-for-byte against. The fixture is still deterministic
-// — the default seed drives the same property search every time — so the one
-// suggestion that only `0` can produce is asserted alongside the schema.
+// `suggest` runs on every runtime, but its output is not compared byte-for-byte
+// across them the way a report is: `string.inspect` is the runtime's own, so a
+// float or a bit array need not read the same on each. What is compared is the
+// shape against the schema, and the determinism — the default seed drives the
+// same property search every time — so the one suggestion that only `0` can
+// produce is asserted alongside it. `suggest_cli_smoke` is what covers the
+// other runtimes end to end.
 const suggestReport = JSON.parse(cliFixture(["suggest", "--json"], "erlang", "fixtures/boundary_project"));
 const validateSuggest = nativeAjv.compile(suggestSchema);
 if (!validateSuggest(suggestReport)) {

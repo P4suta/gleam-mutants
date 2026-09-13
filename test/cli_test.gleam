@@ -846,7 +846,6 @@ pub fn an_error_line_names_the_code_its_message_carries_test() {
     <> "\n\nusage: gleam-mutants explain <id>"
 }
 
-/// The refusal a workspace whose tests run on JavaScript really raises.
 // --- The baseline `--verify` grades against ----------------------------------
 
 /// Every verdict a stored run recorded, read the way `--verify` reads them.
