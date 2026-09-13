@@ -430,7 +430,7 @@ fn run_snapshot(
             Ok(results) -> results
             Error(Nil) -> []
           }
-          list.append(probed, plan.unsupported)
+          list.append(probed, explained(plan.unsupported, compile_evidence))
         }),
         mutants: list.flat_map(prepared.catalogs, fn(source_catalog) {
           source_catalog.mutants
@@ -1093,6 +1093,52 @@ fn needs_idle_validation(plans: List(ModulePlan)) -> Bool {
 type Buildable {
   Buildable(plan: ModulePlan, rejected: List(ProbeResult))
 }
+
+/// Replaces the compile lane's placeholder reason with what it found out.
+///
+/// A mutant in a module constant is planned as unsupported before the compile
+/// lane has run, because no input can separate a constant: it is read once,
+/// where the runtime switch the instrumenter writes cannot be placed. But the
+/// lane does build it, and what it learned is the difference between "this is
+/// a real mutant your tests do not cover" and "nobody could have built this
+/// anyway". Throwing that away and printing an internal name at the reader --
+/// `RequiresPerMutantCompileLane` -- was the worst of both.
+pub fn explained(
+  unsupported: List(ProbeResult),
+  evidence: List(CompileEvidence),
+) -> List(ProbeResult) {
+  list.map(unsupported, fn(verdict) {
+    case verdict.reason == compile_lane_reason {
+      False -> verdict
+      True ->
+        case list.find(evidence, fn(found) { found.mutant == verdict.mutant }) {
+          Error(Nil) -> verdict
+          Ok(found) ->
+            ProbeResult(
+              ..verdict,
+              reason: compile_outcome_reason(found.outcome),
+            )
+        }
+    }
+  })
+}
+
+/// What the compile lane learned about one mutant in a module constant.
+fn compile_outcome_reason(outcome: compile_lane.CompileOutcome) -> String {
+  case outcome {
+    compile_lane.Compiled(_) -> constant_reason
+    compile_lane.Rejected(diagnostic, _) ->
+      uncompilable_reason <> first_line(diagnostic)
+    compile_lane.CompileTimedOut ->
+      "mutant is in a module constant, and building it to find out whether it "
+      <> "compiles timed out"
+  }
+}
+
+/// A constant is read where no switch can be placed, so nothing separates it.
+const constant_reason = "mutant is in a module constant, which compiles but "
+  <> "cannot be switched on at run time, so no input tells it from the "
+  <> "original"
 
 /// Why a mutant nothing can build has no test written for it.
 ///

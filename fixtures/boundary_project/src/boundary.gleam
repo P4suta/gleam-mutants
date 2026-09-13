@@ -51,8 +51,10 @@ pub fn uses_helper(x: Int) -> Int {
   helper(x)
 }
 
-/// Takes a function, so its mutants can only be reported as unsupported. The
-/// `+ 0` is what gives the function-typed parameter a mutant to report at all.
+/// Takes a function, which is generated as one that ignores what it is given
+/// and answers a generated value. The `+ 0` is what gives the function-typed
+/// parameter a mutant to report at all — and it is an equivalent one, so this
+/// function also stands for a survivor that survives on its own merits.
 pub fn applies(f: fn(Int) -> Int, x: Int) -> Int {
   f(x) + 0
 }

@@ -227,6 +227,26 @@ function extractHexSource(artifact, destination) {
   }
 }
 
+/// Locks `names` to the versions this repository's own manifest resolved.
+///
+/// Reading them rather than writing them down is what keeps a dependency bump
+/// from leaving a stale checksum here for a packaging run to fail on: a
+/// manifest whose requirements no longer match its project is re-resolved, and
+/// one whose checksums are wrong is an error.
+function writeLockfile(directory, required) {
+  const manifest = fs.readFileSync(path.join(root, "manifest.toml"), "utf8").split("\n");
+  const packages = required.map(([name]) => {
+    const line = manifest.find(entry => entry.includes(`{ name = "${name}",`));
+    if (!line) throw new Error(`This repository's manifest does not lock ${name}`);
+    return line.trimEnd();
+  });
+  const requirements = required.map(([name, range]) => `${name} = { version = "${range}" }`);
+  write(
+    path.join(directory, "manifest.toml"),
+    `packages = [\n${packages.join("\n")}\n]\n\n[requirements]\n${requirements.join("\n")}\n`,
+  );
+}
+
 function makeMutationProject(directory, dependency = "") {
   fs.mkdirSync(path.join(directory, "src"), { recursive: true });
   fs.mkdirSync(path.join(directory, "test"), { recursive: true });
@@ -253,6 +273,18 @@ directory = "reports/mutation"
 high = 80
 low = 60
 `);
+  // A project with no path dependency needs exactly what the fixtures need,
+  // so it can be locked the same way and reach Hex for nothing. One with a
+  // path dependency pulls in the artifact's own closure, which is not ours to
+  // write down; that one still resolves, and `download` retries it.
+  // These have to be the ranges written above, to the character: a manifest
+  // whose requirements disagree with its project is resolved again.
+  if (!dependency) {
+    writeLockfile(directory, [
+      ["gleam_stdlib", ">= 0.44.0 and < 2.0.0"],
+      ["gleeunit", ">= 1.9.0 and < 2.0.0"],
+    ]);
+  }
   write(path.join(directory, "src", "calculator.gleam"), "pub fn add_one(value: Int) -> Int { value + 1 }\n");
   write(path.join(directory, "test", "calculator_test.gleam"), `import calculator
 import gleeunit/should

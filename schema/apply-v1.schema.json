@@ -25,7 +25,7 @@
       "required": ["file", "create", "imports_added", "tests_added", "tests_skipped"],
       "properties": {
         "file": {
-          "description": "The workspace-relative test module, always under `test/`.",
+          "description": "The workspace-relative test module, always under `test/`. Flat by default \u2014 `test/app_util_test.gleam` for `src/app/util.gleam` \u2014 and the nested `test/app/util_test.gleam` where the project already has that file.",
           "type": "string", "minLength": 1
         },
         "create": { "type": "boolean" },

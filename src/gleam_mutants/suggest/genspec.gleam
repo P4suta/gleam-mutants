@@ -48,6 +48,18 @@ pub type GenSpec {
     observer: OpaqueObserver,
     access: OpaqueAccess,
   )
+  /// A function-typed parameter, generated as a function of `arity` that
+  /// ignores what it is given and answers `result`.
+  ///
+  /// The value carried through the probe is the *result*, not the function:
+  /// a closure cannot be printed, and a generated test has to write down the
+  /// input it was run on. The function is built where the call is made and
+  /// printed as `fn(_, _) { <result> }` around whatever the result printed as.
+  ///
+  /// A constant function is a real limit and not only an implementation one:
+  /// it cannot tell apart a mutant that changes what is *passed* to it. That
+  /// mutant comes back indistinguishable, which is what it is.
+  FunctionSpec(arity: Int, result: GenSpec)
   RecursiveRef(name: String)
 }
 
@@ -123,6 +135,11 @@ pub fn describe(spec: GenSpec) -> String {
       <> provider.function
       <> "/"
       <> observer.function
+    FunctionSpec(arity, result) ->
+      "fn("
+      <> string.join(list.repeat("_", arity), ", ")
+      <> ") -> "
+      <> describe(result)
     RecursiveRef(name) -> name
   }
 }
