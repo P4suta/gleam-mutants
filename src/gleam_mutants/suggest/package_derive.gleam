@@ -152,7 +152,14 @@ fn derive_girard(
       derive_nominal(package, target_module, module, scope, name, arguments)
     }
     girard.Fn(_, _) -> Error("function-typed values are not supported")
-    girard.Var(_) -> Error("unconstrained generic type cannot be generated")
+    // A free type variable is instantiated at `Int`. Gleam has no type
+    // classes, so every instantiation of one type-checks, and instantiating
+    // consistently is what matters: a probe of `fn(a, a) -> Bool` has to hand
+    // the function two values it could really be called with. Refusing
+    // instead — which this did until the package-wide view replaced the
+    // single-module one — leaves every genuinely generic function unprobed,
+    // and a mutant inside one unaccounted for.
+    girard.Var(_) -> Ok(IntSpec)
     girard.Tuple(elements) ->
       elements
       |> list.try_map(derive_girard(
@@ -216,7 +223,20 @@ fn derive_nominal(
   name: String,
   arguments: List(GenSpec),
 ) -> Result(GenSpec, String) {
-  use module <- result.try(package_types.parsed_module(package, module_name))
+  // Only this package's own modules are indexed, so a type of a dependency
+  // arrives here as a module nobody has heard of. Saying that, rather than
+  // repeating the index's own words, is the difference between a reader
+  // looking for a typo and a reader reading a limit.
+  use module <- result.try(
+    package_types.parsed_module(package, module_name)
+    |> result.replace_error(
+      "type "
+      <> module_name
+      <> "."
+      <> name
+      <> " comes from another package, which suggest cannot generate values for",
+    ),
+  )
   case find_alias(module, name), find_custom(module, name) {
     Ok(alias), _ ->
       derive_alias(package, target_module, module_name, scope, alias, arguments)
