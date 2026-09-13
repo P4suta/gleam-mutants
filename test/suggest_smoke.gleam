@@ -212,7 +212,7 @@ fn survivor_problems(
 /// relocated verdict cannot pass for the right one.
 const expected_survivors = [
   "abs line 23: 0 -> 1", "abs line 23: value < 0 -> value <= 0",
-  "applies line 57: f(x) + 0 -> f(x) - 0",
+  "applies line 59: f(x) + 0 -> f(x) - 0",
 ]
 
 /// A function-typed parameter is generated, and written down as a function.
