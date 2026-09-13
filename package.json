@@ -17,7 +17,7 @@
     "test:report-html": "playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
+    "@playwright/test": "1.63.0",
     "ajv": "8.20.0",
     "mutation-testing-elements": "3.9.0",
     "mutation-testing-report-schema": "3.9.0"
