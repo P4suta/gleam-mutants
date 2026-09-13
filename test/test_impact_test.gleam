@@ -121,3 +121,25 @@ pub fn selection_is_atomically_written_below_the_snapshot_test() {
   assert list.length(entries) == 1
   assert list.all(entries, fn(entry) { !string.contains(entry, ".tmp-") })
 }
+
+/// The name handed to a test process is relative, whatever the path it names.
+///
+/// The process is already in the workspace, and both runners resolve what
+/// they are given against the directory they are in before checking it is
+/// below `.gleam_mutants`. That check builds its own side from `getcwd`, so a
+/// workspace reached through a symbolic link — macOS answers `getcwd` with
+/// the `/private/var` a `/var` path resolves to — has one spelling the tool
+/// used and another the runner knows it by, and an absolute name is refused
+/// by the very run that asked for it.
+pub fn protocol_name_is_relative_to_the_workspace_test() {
+  assert test_impact.protocol_name(
+      "/var/folders/t/snapshot/.gleam_mutants/test-impact-erlang-ab12.json",
+    )
+    == ".gleam_mutants/test-impact-erlang-ab12.json"
+  assert test_impact.protocol_name(
+      "/private/var/folders/t/snapshot/.gleam_mutants/test-impact-erlang-ab12.json",
+    )
+    == test_impact.protocol_name(
+      "/var/folders/t/snapshot/.gleam_mutants/test-impact-erlang-ab12.json",
+    )
+}
