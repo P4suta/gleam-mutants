@@ -109,12 +109,14 @@ with no mutant active and once per mutant of that function, and both answers
 are compared directly rather than inferred from a red suite. On Erlang each
 call runs in a monitored process of the same VM whose process dictionary names
 the active mutant, so a panic and a timeout are contained without a new OS
-process. On Node, Deno and Bun — one implementation between them — the call is
-made on the spot, the mutant is named in a well-known global for the length of
-it, and a panic is caught; but synchronous code cannot be interrupted, so a
-mutant that never returns takes the probe with it rather than costing one
-verdict. The probe writes down which mutant it is inside before searching it,
-so the failure names the one to exclude.
+process. On Node, Deno and Bun — one implementation between them — the probe
+body runs in a worker and the calling thread watches a counter the worker bumps
+before every call. A call that stops bumping it has stopped answering, and the
+only thing that can be done to it from outside is to terminate the worker: the
+verdicts already written are on disk, the mutant the worker was inside is on
+disk too, and a restarted worker is told to skip everything already begun. So a
+mutant that never returns costs a restart rather than the module, and is
+reported as unsupported saying exactly that.
 
 Inputs are derived into a target-independent `GenSpec` from the package-wide
 signatures Girard infers, not from the annotations a module happens to carry,

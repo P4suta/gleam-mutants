@@ -441,9 +441,9 @@ pub fn rendered_ffi_isolates_the_call_in_a_spawned_process_test() {
   let rendered = harness.render_ffi(full_spec())
   assert missing(rendered, [
       "-module(gleam_mutants_probe_ab12cd34ef56_ffi).",
-      "-export([isolated/6, append_result/2]).", "spawn_monitor",
-      "gleam_mutants_active", "{value,", "{panic,", "timeout", "'DOWN'",
-      "make_ref()", "kill", "~p",
+      "-export([isolated/6, append_result/2, supervise/1, skipped/1]).",
+      "spawn_monitor", "gleam_mutants_active", "{value,", "{panic,", "timeout",
+      "'DOWN'", "make_ref()", "kill", "~p",
     ])
     == []
 }
@@ -1460,7 +1460,7 @@ fn write_file(root: String, relative: String, contents: String) -> Nil {
 /// declares this one privately. What the module owes beyond that is the
 /// switch, a caught panic, and a deadline it can only check after the fact.
 pub fn rendered_js_ffi_reports_through_the_constructors_test() {
-  let rendered = harness.render_js_ffi()
+  let rendered = harness.render_js_ffi(full_spec())
 
   assert missing(rendered, [
       "export function isolated(run, mutant, timeout_ms, value, failed, timed_out)",
@@ -1471,6 +1471,29 @@ pub fn rendered_js_ffi_reports_through_the_constructors_test() {
       "return value(answer)",
       "return failed(describe(error))",
       "export function append_result(path, line)",
+    ])
+    == []
+}
+
+/// The worker is what makes a call on JavaScript something that can be taken
+/// back, and the restart is what keeps one that will not return from costing
+/// every verdict in its module.
+pub fn rendered_js_ffi_supervises_the_probe_in_a_worker_test() {
+  let rendered = harness.render_js_ffi(full_spec())
+
+  assert missing(rendered, [
+      "export function supervise(body)",
+      "export function skipped(mutant)",
+      "gleam_mutants_probe_ab12cd34ef56_boundary.mjs",
+      "Atomics.wait(control, 0, last, call_timeout_ms",
+      "Atomics.add(control, 0, 1)",
+      "worker.terminate()",
+      "module.probe_all()",
+      "new threads.Worker(source",
+      "new Worker(url, { type: \"module\" })",
+      "append_result(results_path, \"!\" + hung)",
+      "line.startsWith(\"#\")",
+      "restart_limit",
     ])
     == []
 }

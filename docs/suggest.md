@@ -11,8 +11,11 @@ them in detail, and `apply` writes the tests into your project.
 
 These three commands run on **every runtime**: Erlang, Node, Deno and Bun. The
 probe is built the way the code under test is built, so the mutants it switches
-are the ones you ship. What differs between the runtimes is how much of a
-misbehaving call they can contain, which "Side effects" below is about.
+are the ones you ship. A call that panics is caught and one that never returns
+is taken back, on every runtime — Erlang from a monitored process, the three
+JavaScript runtimes by terminating the worker the probe body runs in and
+restarting it past the mutant it died on. Such a mutant is reported as
+unsupported rather than costing the module its verdicts.
 
 ## What it does
 

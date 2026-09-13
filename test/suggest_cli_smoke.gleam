@@ -95,6 +95,7 @@ pub fn main() {
       exclusion_problems(),
       survivors_problems(),
       javascript_target_problems(),
+      hanging_call_problems(),
     ])
 
   list.each(found, io.println)
@@ -734,6 +735,70 @@ fn survivor_problems(
       }
   }
 }
+
+/// A call that never returns costs a restart, not the module it is in.
+///
+/// This is the whole reason the probe body runs in a worker on JavaScript: a
+/// runtime that cannot interrupt synchronous code can still be made to let go
+/// of one, and everything already written survives the letting go. The mutant
+/// it died on is reported saying so, and every other mutant of the same module
+/// still gets its verdict.
+fn hanging_call_problems() -> List(String) {
+  list.flat_map(["node", "deno", "bun"], fn(runtime) {
+    let root =
+      copy_fixture(
+        "\n[tools.gleam_mutants.test]\ntarget = \"javascript\"\nruntime = \""
+        <> runtime
+        <> "\"\n",
+      )
+    let assert Ok(Nil) =
+      simplifile.write(path.join(root, "src/looping.gleam"), looping_source)
+    let ran = run_cli(["suggest", "--root", root, "--budget", "90s", "--json"])
+    let text = output(ran)
+    let decoded = decode_output(extract_json(text))
+    let problems = case decoded {
+      Error(reason) -> [runtime <> ": " <> reason <> "\n" <> text]
+      Ok(report) ->
+        list.flatten([
+          expect(
+            ran.status == 0,
+            runtime
+              <> ": suggest exited "
+              <> int.to_string(ran.status)
+              <> " where a hung call should have cost only its own verdict\n"
+              <> text,
+          ),
+          expect(
+            list.any(report.unsupported, fn(entry) {
+              entry.function == "countdown"
+              && string.contains(entry.reason, "never returned")
+            }),
+            runtime
+              <> ": the mutant that never returned was not reported as such: "
+              <> string.inspect(
+              list.map(report.unsupported, fn(entry) { entry.reason }),
+            ),
+          ),
+          expect(
+            report.suggestions != [],
+            runtime
+              <> ": a hung call took every other verdict of its module with it",
+          ),
+        ])
+    }
+    discard_workspace(root)
+    problems
+  })
+}
+
+/// A function whose `- 1` mutants count away from the base case for ever.
+const looping_source = "pub fn countdown(value: Int) -> Int {
+  case value <= 0 {
+    True -> 0
+    False -> countdown(value - 1)
+  }
+}
+"
 
 /// A JavaScript workspace is probed, on each runtime it can be probed on.
 ///

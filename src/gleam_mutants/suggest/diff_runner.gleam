@@ -1074,7 +1074,7 @@ fn probe(
               ),
               #(
                 "src/" <> item.plan.ffi_module <> ".mjs",
-                harness.render_js_ffi(),
+                harness.render_js_ffi(item.plan.spec),
               ),
             ]
           })
@@ -1260,6 +1260,53 @@ fn buildable(plan: ModulePlan, refused: List(#(String, String))) -> Buildable {
   }
 }
 
+/// Every mutant the probe was asked about, with a verdict against each.
+///
+/// A probe answers for every mutant it was given, and the two ways it can fail
+/// to are both accounted for here rather than left as a silence. One it was
+/// inside when it stopped answering is marked with a `!` line by the
+/// supervisor that had to take the call back; one it never reached at all --
+/// which nothing is known to cause, and which a reader must not have to
+/// discover by counting -- is answered the same way, saying so.
+fn accounted(
+  plan: ModulePlan,
+  results: List(ProbeResult),
+  written: String,
+) -> List(ProbeResult) {
+  let answered = set.from_list(list.map(results, fn(item) { item.mutant }))
+  let hung = set.from_list(marked(written, "!"))
+  let extra =
+    list.flat_map(plan.spec.functions, fn(probe) {
+      list.filter_map(probe.mutant_ids, fn(mutant) {
+        case set.contains(answered, mutant), set.contains(hung, mutant) {
+          True, _ -> Error(Nil)
+          False, True ->
+            Ok(unsupported(probe.plan.name, mutant, hung_call_reason))
+          False, False ->
+            Ok(unsupported(probe.plan.name, mutant, unreported_reason))
+        }
+      })
+    })
+  list.append(results, extra)
+}
+
+/// Why a mutant the probe was inside when it stopped has no test written.
+const hung_call_reason = "the call never returned and had to be taken back, "
+  <> "so there is no answer to write a test against"
+
+/// Why a mutant the probe never reported on has no test written.
+const unreported_reason = "the probe ended without reporting on this mutant"
+
+/// The mutant ids the probe wrote down behind `marker`, in order.
+fn marked(written: String, marker: String) -> List(String) {
+  written
+  |> string.split("\n")
+  |> list.map(string.trim)
+  |> list.filter(string.starts_with(_, marker))
+  |> list.map(string.drop_start(_, 1))
+  |> list.filter(fn(line) { line != "" })
+}
+
 /// Which mutant the probe was inside when it stopped answering.
 ///
 /// The probe writes the mutant down before searching it, so a run that never
@@ -1271,15 +1318,9 @@ fn hung_on(plan: ModulePlan) -> String {
   case simplifile.read(plan.spec.results_path) {
     Error(_) -> ""
     Ok(source) ->
-      case
-        source
-        |> string.split("\n")
-        |> list.filter(string.starts_with(_, "#"))
-        |> list.last
-      {
+      case list.last(marked(source, "#")) {
         Error(Nil) -> ""
-        Ok(line) ->
-          ", inside mutant " <> string.slice(string.drop_start(line, 1), 0, 20)
+        Ok(mutant) -> ", inside mutant " <> string.slice(mutant, 0, 20)
       }
   }
 }
@@ -1325,7 +1366,8 @@ fn run_probe(
           )
         Ok(written) ->
           case probe_result.decode_output(written) {
-            #(results, []) -> Ok(#(plan.probe_module, results))
+            #(results, []) ->
+              Ok(#(plan.probe_module, accounted(plan, results, written)))
             #(_, failures) ->
               Error(
                 "GMU8005: the probe of `"
