@@ -16,6 +16,7 @@ pub type Operator {
   FloatNeutral
   StringNeutral
   ListNeutral
+  OptionNeutral
   PipelineStageDeletion
 }
 
@@ -32,6 +33,7 @@ pub fn all() -> List(Operator) {
     FloatNeutral,
     StringNeutral,
     ListNeutral,
+    OptionNeutral,
     PipelineStageDeletion,
   ]
 }
@@ -49,6 +51,7 @@ pub fn name(operator: Operator) -> String {
     FloatNeutral -> "float-neutral"
     StringNeutral -> "string-neutral"
     ListNeutral -> "list-neutral"
+    OptionNeutral -> "option-neutral"
     PipelineStageDeletion -> "pipeline-stage-deletion"
   }
 }

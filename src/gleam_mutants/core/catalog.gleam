@@ -32,6 +32,7 @@ pub type TypeEvidence {
   FloatLiteralEvidence
   StringLiteralEvidence
   ListLiteralEvidence
+  OptionConstructorEvidence
   BinaryOperatorEvidence(glance.BinaryOperator)
   PipelineEvidence
 }
@@ -122,6 +123,7 @@ fn needs_type_evidence(enabled: List(Operator)) -> Bool {
     || kind == operator.FloatNeutral
     || kind == operator.StringNeutral
     || kind == operator.ListNeutral
+    || kind == operator.OptionNeutral
   })
 }
 
@@ -294,6 +296,31 @@ fn expression_candidates(
         semantic_rule(operator.ListNeutral, ListLiteralEvidence),
         location,
         "[]",
+      ),
+    ]
+    // `Some(x)` is definitely an `Option`, so `None` is definitely the same
+    // type: the evidence is the constructor itself, not a guess about what
+    // the expression around it might be. Nothing similar holds for `Ok` and
+    // `Error`, whose two type arguments need not agree, so a `Result` that is
+    // built is left alone rather than mutated on a hunch.
+    glance.Call(location, glance.Variable(_, "Some"), [_]) -> [
+      make_candidate(
+        source,
+        path,
+        semantic_rule(operator.OptionNeutral, OptionConstructorEvidence),
+        location,
+        "None",
+      ),
+    ]
+    // The same constructor reached through the module it is declared in. The
+    // qualifier is copied from the source so that an alias is kept.
+    glance.Call(location, glance.FieldAccess(_, container, "Some"), [_]) -> [
+      make_candidate(
+        source,
+        path,
+        semantic_rule(operator.OptionNeutral, OptionConstructorEvidence),
+        location,
+        source_for(source, container.location) <> ".None",
       ),
     ]
     glance.BinaryOperator(location, binary_operator, left, right) ->
