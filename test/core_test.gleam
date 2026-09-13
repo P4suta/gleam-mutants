@@ -103,6 +103,71 @@ pub fn display_ids_are_unique_across_the_selected_catalogue_test() {
   assert duplicate.path == "src/duplicate.gleam"
 }
 
+/// An `Option` that is built is mutated to the absence of one.
+///
+/// `Some(x)` is definitely an `Option`, so `None` is definitely the same type:
+/// the evidence is the constructor rather than a guess about the expression
+/// around it. It is the one shape of this kind that has such evidence -- `Ok`
+/// and `Error` need not agree on their two type arguments -- and it is the one
+/// that catches a `None` path nobody wrote a test for.
+pub fn catalog_mutates_a_constructed_option_to_none_test() {
+  let source =
+    "import gleam/option.{type Option, None, Some}\n\n"
+    <> "pub fn first(items: List(Int)) -> Option(Int) {\n"
+    <> "  case items {\n    [] -> None\n    [head, ..] -> Some(head)\n  }\n}\n\n"
+    <> "pub fn qualified(value: Int) -> option.Option(Int) {\n"
+    <> "  option.Some(value)\n}\n"
+  let assert Ok(discovered) =
+    catalog.discover("src/opt.gleam", source, operator.all())
+  let options =
+    list.filter(discovered.mutants, fn(item) {
+      item.operator == operator.OptionNeutral
+    })
+
+  assert list.sort(
+      list.map(options, fn(item) { item.replacement }),
+      string.compare,
+    )
+    == ["None", "option.None"]
+  // The qualifier is copied from the source, so a module imported under
+  // another name keeps it.
+  assert list.sort(
+      list.map(options, fn(item) { item.original }),
+      string.compare,
+    )
+    == ["Some(head)", "option.Some(value)"]
+  // A pattern is not a construction: `Some(head) ->` on the left of an arrow
+  // is matched against, and replacing it would change what the case means
+  // rather than what it answers.
+  assert list.length(options) == 2
+  // Byte spans still describe the file they came from.
+  let assert Ok(forest) = interval_tree.build(source, discovered.mutants)
+  let instrumented = interval_tree.render(source, forest, "internal/runtime")
+  assert string.contains(
+    instrumented,
+    "import gleam/option.{type Option, None, Some}",
+  )
+}
+
+/// A `Result` that is built is left alone.
+///
+/// `Ok(a)` and `Error(b)` are the same type only where `a` and `b` are, which
+/// nothing here knows. Emitting the swap anyway would be the guesswork this
+/// catalogue refuses everywhere else, paid for with a compiler validation per
+/// candidate.
+pub fn catalog_leaves_a_constructed_result_alone_test() {
+  let source =
+    "pub fn parse(value: Int) -> Result(Int, String) {\n"
+    <> "  case value > 0 {\n    True -> Ok(value)\n"
+    <> "    False -> Error(\"negative\")\n  }\n}\n"
+  let assert Ok(discovered) =
+    catalog.discover("src/parse.gleam", source, operator.all())
+
+  assert list.all(discovered.mutants, fn(item) {
+    item.operator != operator.OptionNeutral
+  })
+}
+
 pub fn catalog_preserves_unicode_comments_and_crlf_test() {
   let source =
     "// 日本語 && comment\r\npub fn classify(n: Int) {\r\n  n < 10 && True\r\n}\r\n"
