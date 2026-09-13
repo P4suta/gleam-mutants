@@ -6,9 +6,9 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleam_mutants/suggest/diff_runner
 import gleam_mutants/suggest/genspec.{
-  FieldSpec, ImportedCustomSpec, IntSpec, OpaqueObserver, OpaqueProvider,
-  OpaqueSpec, OptionProvider, ResultProvider, StringSpec, TargetModuleAccess,
-  ValueProvider, VariantSpec,
+  BoolSpec, FieldSpec, FunctionSpec, ImportedCustomSpec, IntSpec, OpaqueObserver,
+  OpaqueProvider, OpaqueSpec, OptionProvider, ResultProvider, StringSpec,
+  TargetModuleAccess, ValueProvider, VariantSpec,
 }
 import gleam_mutants/suggest/harness.{ProbeFunction, ProbeSpec}
 import gleam_mutants/suggest/hints
@@ -131,6 +131,53 @@ pub fn smartest_package_derivation_names_a_dependency_type_as_such_test() {
     == Error(
       "parameter value: type gleam/order.Order comes from another package, "
       <> "which suggest cannot generate values for",
+    )
+}
+
+/// A function-typed parameter is generated as a constant function.
+///
+/// The value carried through the probe is the result: a closure cannot be
+/// printed, and a generated test has to write down the input it was run on.
+pub fn smartest_package_derivation_generates_a_function_argument_test() {
+  let source =
+    "pub fn apply(f: fn(Int, Int) -> Bool, x: Int) -> Bool {\n"
+    <> "  f(x, x)\n}"
+  let assert Ok(index) =
+    package_types.annotate(
+      [package_types.ModuleSource("demo/apply", source)],
+      girard.Erlang,
+    )
+
+  assert package_derive.function(index, "demo/apply", "apply")
+    == Ok(FunctionPlan(
+      "apply",
+      [
+        ParameterPlan("f", None, FunctionSpec(2, BoolSpec)),
+        ParameterPlan("x", None, IntSpec),
+      ],
+      Some(BoolSpec),
+    ))
+}
+
+/// Nested inside another type, a function is still refused, and says why.
+///
+/// The result can be lifted out of `fn(Int) -> Int` and carried through the
+/// probe as a value. It cannot be lifted out of `List(fn(Int) -> Int)`, where
+/// there is no one result to carry.
+pub fn smartest_package_derivation_refuses_a_nested_function_type_test() {
+  let source =
+    "pub fn apply_all(fs: List(fn(Int) -> Int), x: Int) -> Int {\n"
+    <> "  case fs {\n    [] -> x\n    [f, ..] -> f(x)\n  }\n}"
+  let assert Ok(index) =
+    package_types.annotate(
+      [package_types.ModuleSource("demo/all", source)],
+      girard.Erlang,
+    )
+
+  assert package_derive.function(index, "demo/all", "apply_all")
+    == Error(
+      "parameter fs: a function-typed value is supported as a whole "
+      <> "parameter, not nested inside another type",
     )
 }
 
