@@ -127,27 +127,29 @@ indistinguishable, nondeterministic, or unsupported — including mutants
 outside every function of their module, which no probe can call. The snapshot
 is deleted before a report is answered, on success and on failure alike.
 
-`apply` resolves each module under test to one flat test module —
-`test/<module path with "/" replaced by "_">_test.gleam` — reading the existing
-file's own parse tree for the tests it defines, the names it imports modules
-under, and the constructors it declares itself. Rendering is scoped to one test
-module: which names the generated file's own imports take is a property of the
-whole file, so the module under test, `gleam/option`, `gleam/string`, and
-`gleeunit/should` are named from one scope and a name the reader's file already
-bound wins. A module the file imported as `_` names nothing to reuse, so a
-plain import joins it rather than replacing it. `Some` and `None` are the only
-names written unqualified, and a file that already binds either gets
-`option.Some` and `option.None` through a qualified import instead. What is
-left — a module qualifier two modules would both answer to — is refused before
-anything is written, since `gleam format` accepts source the compiler does not.
-Plans and writes come from the same resolver, so a plan is never a guess at
-what a write would do. Files are staged beside their targets and atomically
-renamed, then `gleam format` is run over what changed. `apply --verify` re-runs
-the mutation engine over the source files the applied suggestions came from and
-reports each claimed mutant as killed or not; surviving mutants are a quality
-failure, not a tool failure. That run overrides both report formats and report
-history, so a narrowed verification never becomes the workspace's latest stored
-report.
+`apply` resolves each module under test to one test module — the nested
+`test/<module path>_test.gleam` where the project already has that file, and
+the flat `test/<module path with "/" replaced by "_">_test.gleam` otherwise, so
+that a project is written into the test tree it chose and never given a second
+one — reading the existing file's own parse tree for the tests it defines, the
+names it imports modules under, and the constructors it declares itself.
+Rendering is scoped to one test module: which names the generated file's own
+imports take is a property of the whole file, so the module under test,
+`gleam/option`, `gleam/string`, and `gleeunit/should` are named from one scope
+and a name the reader's file already bound wins. A module the file imported as
+`_` names nothing to reuse, so a plain import joins it rather than replacing
+it. `Some` and `None` are the only names written unqualified, and a file that
+already binds either gets `option.Some` and `option.None` through a qualified
+import instead. What is left — a module qualifier two modules would both answer
+to — is refused before anything is written, since `gleam format` accepts source
+the compiler does not. Plans and writes come from the same resolver, so a plan
+is never a guess at what a write would do. Files are staged beside their
+targets and atomically renamed, then `gleam format` is run over what changed.
+`apply --verify` re-runs the mutation engine over the source files the applied
+suggestions came from and reports each claimed mutant as killed or not;
+surviving mutants are a quality failure, not a tool failure. That run overrides
+both report formats and report history, so a narrowed verification never
+becomes the workspace's latest stored report.
 
 Project reports are staged beside their fixed targets and atomically renamed.
 The destination is validated before snapshotting and again before writing;

@@ -100,13 +100,17 @@ asked about even when another suggestion would cover it.
 module go into `test/<module path with "/" replaced by "_">_test.gleam`, so
 `src/boundary.gleam` is tested by `test/boundary_test.gleam` and
 `src/app/util.gleam` by `test/app_util_test.gleam` — one flat test directory
-rather than a tree nobody asked for. The file is created when it does not
-exist and appended to when it does. Without `--yes` it is a dry run: it prints
-the files it would touch, the tests it would add, and the tests already
-present, so you can see which file it means before it writes anything. With
-`--yes` it writes them, and a file that gains nothing is reported as unchanged
-and left alone, formatter included. `--json` emits one Apply JSON v1 value
-instead, whose shape is pinned by `schema/apply-v1.schema.json`.
+rather than a tree nobody asked for. If your tests already mirror `src/`, the
+file you already have wins instead: `src/app/util.gleam` goes into
+`test/app/util_test.gleam` where that module exists. The file is created when
+it does not exist and appended to when it does, and a file is only ever created
+flat, so a project with one test directory keeps it. Without `--yes` it is a
+dry run: it prints the files it would touch, the tests it would add, and the
+tests already present, so you can see which file it means before it writes
+anything. With `--yes` it writes them, and a file that gains nothing is
+reported as unchanged and left alone, formatter included. `--json` emits one
+Apply JSON v1 value instead, whose shape is pinned by
+`schema/apply-v1.schema.json`.
 
 `--verify` implies `--yes` and then runs the mutation engine again over the
 source files those suggestions came from, reporting whether every mutant they
@@ -413,17 +417,19 @@ module it tests, so a project that lints its own copyright still passes on the
 file it was handed. A module you already have is left with the header you gave
 it.
 
-**Known limitation: two test modules for one source module.** The destination
-is computed from the source path alone, so a project whose tests live in a tree
-— `test/gleam/erlang/atom_test.gleam` for `src/gleam/erlang/atom.gleam` — gains
-`test/gleam_erlang_atom_test.gleam` beside it, and that module is then covered
-by two test files. Both compile and both run, nothing is overwritten and no
-test of yours is lost, but it is the first thing a reviewer asks about. Moving
-the generated tests by hand into the file you already have is the fix, with one
-catch: `apply` reads only its own flat target to decide what is already
-present, so a later run adds them back to the flat file. Delete the generated
-module rather than empty it if you do not want it regenerated, and re-run
-`suggest` rather than `apply` once the tests live somewhere else.
+**Where a nested test tree goes.** The destination is the file you already
+have: a project whose tests mirror `src/` — `test/gleam/erlang/atom_test.gleam`
+for `src/gleam/erlang/atom.gleam` — gains its generated tests in that module
+rather than in a flat `test/gleam_erlang_atom_test.gleam` beside it. Because
+the nested name wins only where the file is already there, `apply` never
+creates a directory nobody asked for, and a module path with no separator names
+one file either way.
+
+What is read to decide which tests are already present is the file being
+written to, so tests you moved into a nested module by hand are seen there and
+not added back. An earlier version of this tool left flat modules beside
+nested ones; delete such a module rather than emptying it, since a module that
+is still there simply keeps whatever it holds.
 
 ## Editors
 

@@ -190,6 +190,21 @@ pub fn selectors(index: SelectorIndex, mutant_id: String) -> List(String) {
   |> result.unwrap([])
 }
 
+/// The name a test process is handed for one of these protocol files.
+///
+/// A test process runs with the workspace as its working directory, and both
+/// runners resolve the name they are given against that directory before
+/// checking that it is below `.gleam_mutants`. Handing them the absolute path
+/// sounds equivalent and is not: a temporary directory is often reached
+/// through a symbolic link — macOS answers `getcwd` with the `/private/var` a
+/// `/var` path resolves to — so one directory has two spellings, and a runner
+/// that built its own from `getcwd` refuses a file named with the other. A
+/// name relative to the directory the process is already in cannot disagree
+/// with itself, whichever way that directory was reached.
+pub fn protocol_name(file: String) -> String {
+  path.join(".gleam_mutants", path.base_name(file))
+}
+
 /// Writes a selector document below the snapshot's private tool directory.
 pub fn write_selection(
   snapshot_root: String,
