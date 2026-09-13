@@ -168,33 +168,83 @@ pub fn attribution_name(value: Attribution) -> String {
 // --- Resolving one test module -----------------------------------------------
 
 /// Every test module the writable suggestions touch, sorted by file.
+///
+/// Where each module under test is written is settled once, before anything
+/// is grouped: `plan` and `write` both come through here, and a destination
+/// that answered differently between them would make a plan a guess at what a
+/// write would do.
 fn resolve(
   workspace: String,
   suggestions: List(render.Suggestion),
   style: render.AssertStyle,
 ) -> Result(List(Resolution), String) {
   let writable = list.filter(suggestions, render.renderable)
-  writable
-  |> list.map(fn(suggestion) { test_module(suggestion.module_path) })
+  let placed =
+    list.map(writable, fn(suggestion) {
+      #(located(workspace, suggestion.module_path), suggestion)
+    })
+  placed
+  |> list.map(fn(entry) { entry.0 })
   |> list.unique
   |> list.sort(string.compare)
   |> list.try_map(fn(file) {
     resolve_module(
       workspace,
       file,
-      list.filter(writable, fn(suggestion) {
-        test_module(suggestion.module_path) == file
+      list.filter_map(placed, fn(entry) {
+        case entry.0 == file {
+          True -> Ok(entry.1)
+          False -> Error(Nil)
+        }
       }),
       style,
     )
   })
 }
 
-/// The flat test module the generated tests of one module belong in.
+/// Where one module's generated tests go in this workspace.
+///
+/// A module path with no separator names one file either way, so nothing is
+/// asked of the filesystem for it.
+fn located(workspace: String, module_path: String) -> String {
+  case string.contains(module_path, "/") {
+    False -> flat_test_module(module_path)
+    True ->
+      destination(
+        module_path,
+        simplifile.is_file(path.join(workspace, nested_test_module(module_path)))
+          == Ok(True),
+      )
+  }
+}
+
+/// The test module the generated tests of one module belong in.
 ///
 /// Test modules live in one directory, so `app/util` is tested by
-/// `test/app_util_test.gleam` rather than by a directory nobody asked for.
-fn test_module(module_path: String) -> String {
+/// `test/app_util_test.gleam` rather than by a directory nobody asked for —
+/// unless the project's tests already mirror `src/`, in which case the file it
+/// already has wins and `test/app/util_test.gleam` is written into instead.
+/// Preferring what is there is the whole point: a project given both would
+/// have one module covered by two test files, which is the first thing a
+/// reviewer asks about.
+///
+/// The nested name only ever wins where the file exists, so a file is never
+/// *created* in a tree: a project with one flat test directory keeps exactly
+/// that. A module path with no separator names one file either way.
+pub fn destination(module_path: String, nested_exists: Bool) -> String {
+  case nested_exists {
+    True -> nested_test_module(module_path)
+    False -> flat_test_module(module_path)
+  }
+}
+
+/// The test module of a project whose tests mirror `src/`.
+fn nested_test_module(module_path: String) -> String {
+  "test/" <> module_path <> "_test.gleam"
+}
+
+/// The test module of a project whose tests live in one directory.
+fn flat_test_module(module_path: String) -> String {
   "test/" <> string.replace(module_path, "/", "_") <> "_test.gleam"
 }
 

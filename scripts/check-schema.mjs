@@ -171,8 +171,19 @@ if (
 if (!suggestReport.indistinguishable.some(entry => entry.function === "abs")) {
   throw new Error("The equivalent `abs` mutants were not reported as indistinguishable");
 }
-if (!suggestReport.unsupported.some(entry => entry.function === "applies" && entry.reason.includes("function"))) {
-  throw new Error("The function-typed parameter of `applies` was not reported as unsupported");
+// A function-typed parameter is generated as a constant function, and the
+// input a reader would paste has to say so: a closure the probe kept to itself
+// is not something anyone can type into a test.
+if (suggestReport.unsupported.some(entry => entry.function === "applies")) {
+  throw new Error("The function-typed parameter of `applies` was reported as unsupported");
+}
+if (!suggestReport.suggestions.concat(suggestReport.indistinguishable).some(entry => entry.function === "applies")) {
+  throw new Error("`applies` was neither suggested for nor reported as indistinguishable");
+}
+if (!suggestReport.suggestions.some(
+  entry => entry.function === "applies" && entry.inputs.some(input => input.includes("fn(_) {")),
+)) {
+  throw new Error("No `applies` suggestion wrote its function argument down as a function");
 }
 // One mutant the compiler rejects must not take its file down: `join`'s
 // pipeline-stage-deletion leaves a `List(String)` where a `String` belongs, and

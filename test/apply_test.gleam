@@ -443,6 +443,131 @@ pub fn plan_names_one_flat_test_module_per_module_under_test_test() {
     ])
 }
 
+/// The test module of a project whose tests mirror `src/` wins where it is
+/// there, and is never conjured where it is not.
+pub fn destination_prefers_a_nested_test_module_that_exists_test() {
+  assert apply.destination("app/util", True) == "test/app/util_test.gleam"
+  assert apply.destination("app/util", False) == "test/app_util_test.gleam"
+  assert apply.destination("boundary", True)
+    == apply.destination("boundary", False)
+}
+
+/// A project whose tests mirror `src/` is written into the file it already has.
+///
+/// Computing the destination from the source path alone gave such a project
+/// `test/app_util_test.gleam` beside the `test/app/util_test.gleam` it wrote
+/// itself, and one module covered by two test files is the first thing a
+/// reviewer asks about.
+pub fn plan_writes_into_the_nested_test_module_the_project_has_test() {
+  let root = workspace([#("test/app/util_test.gleam", nested_module())])
+  let planned = apply.plan(root, [nested_suggestion()], render.AssertKeyword)
+  discard(root)
+
+  assert planned
+    == Ok([
+      apply.Plan(
+        file: "test/app/util_test.gleam",
+        create: False,
+        imports_added: [],
+        tests_added: ["join_kills_11223344_test"],
+        tests_skipped: [],
+      ),
+    ])
+}
+
+/// A directory in the test tree is not a test module, and does not win.
+///
+/// The nested name is preferred where the reader already chose it, which is
+/// what the file being there says. Nothing else does: a project with one flat
+/// test directory keeps it, and `apply` never creates a directory nobody
+/// asked for.
+pub fn plan_never_creates_a_nested_test_module_test() {
+  let root = workspace([#("test/app/other_test.gleam", nested_module())])
+  let planned = apply.plan(root, [nested_suggestion()], render.AssertKeyword)
+  discard(root)
+
+  assert planned
+    == Ok([
+      apply.Plan(
+        file: "test/app_util_test.gleam",
+        create: True,
+        imports_added: ["import app/util"],
+        tests_added: ["join_kills_11223344_test"],
+        tests_skipped: [],
+      ),
+    ])
+}
+
+/// Given both, the nested one wins and the flat one is left alone.
+pub fn plan_prefers_the_nested_test_module_over_a_flat_one_test() {
+  let root =
+    workspace([
+      #("test/app/util_test.gleam", nested_module()),
+      #("test/app_util_test.gleam", nested_module()),
+    ])
+  let planned = apply.plan(root, [nested_suggestion()], render.AssertKeyword)
+  discard(root)
+
+  assert planned
+    == Ok([
+      apply.Plan(
+        file: "test/app/util_test.gleam",
+        create: False,
+        imports_added: [],
+        tests_added: ["join_kills_11223344_test"],
+        tests_skipped: [],
+      ),
+    ])
+}
+
+/// What the nested module already defines is read out of it, not written twice.
+///
+/// The destination used to be decided without looking, so a test moved by hand
+/// into a nested module was added back to the flat one on the next run. It is
+/// the file being written to that is read, so now it is not.
+pub fn plan_skips_a_test_the_nested_test_module_defines_test() {
+  let root =
+    workspace([
+      #("test/app/util_test.gleam", nested_module() <> "\n" <> nested_test),
+    ])
+  let planned = apply.plan(root, [nested_suggestion()], render.AssertKeyword)
+  discard(root)
+
+  assert planned
+    == Ok([
+      apply.Plan(
+        file: "test/app/util_test.gleam",
+        create: False,
+        imports_added: [],
+        tests_added: [],
+        tests_skipped: ["join_kills_11223344_test"],
+      ),
+    ])
+}
+
+/// A write lands in the nested module, and leaves no flat one beside it.
+pub fn write_appends_to_the_nested_test_module_test() {
+  let root = workspace([#("test/app/util_test.gleam", nested_module())])
+  let assert Ok(plans) =
+    apply.plan(root, [nested_suggestion()], render.AssertKeyword)
+  let written =
+    apply.write(root, plans, [nested_suggestion()], render.AssertKeyword)
+  let nested = simplifile.read(path.join(root, "test/app/util_test.gleam"))
+  let flat = simplifile.is_file(path.join(root, "test/app_util_test.gleam"))
+  let again = apply.plan(root, [nested_suggestion()], render.AssertKeyword)
+  discard(root)
+
+  let assert Ok([plan]) = written
+  assert plan.file == "test/app/util_test.gleam"
+  let assert Ok(source) = nested
+  assert string.contains(source, "pub fn join_kills_11223344_test()")
+  assert flat == Ok(False)
+  // Twice over is the same answer: what the first run wrote, the second reads.
+  let assert Ok([repeated]) = again
+  assert repeated.tests_added == []
+  assert repeated.tests_skipped == ["join_kills_11223344_test"]
+}
+
 /// A test the file already defines is skipped, and only the missing imports
 /// are named.
 ///
@@ -1166,6 +1291,19 @@ fn existing_module() -> String {
   <> "\n"
   <> boundary_test
 }
+
+/// A test module of a project whose tests mirror `src/`.
+fn nested_module() -> String {
+  header
+  <> "\nimport app/util\nimport gleeunit\n"
+  <> "\npub fn main() {\n  gleeunit.main()\n}\n"
+}
+
+/// The test the nested mutant is killed by, as `render` writes it.
+const nested_test = "pub fn join_kills_11223344_test() {
+  assert util.join(1, 2) == 3
+}
+"
 
 /// A test module that imports the module under test under another name.
 fn aliased_module() -> String {

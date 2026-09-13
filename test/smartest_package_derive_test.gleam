@@ -6,9 +6,9 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleam_mutants/suggest/diff_runner
 import gleam_mutants/suggest/genspec.{
-  FieldSpec, ImportedCustomSpec, IntSpec, OpaqueObserver, OpaqueProvider,
-  OpaqueSpec, OptionProvider, ResultProvider, StringSpec, TargetModuleAccess,
-  ValueProvider, VariantSpec,
+  BoolSpec, FieldSpec, FunctionSpec, ImportedCustomSpec, IntSpec, OpaqueObserver,
+  OpaqueProvider, OpaqueSpec, OptionProvider, ResultProvider, StringSpec,
+  TargetModuleAccess, ValueProvider, VariantSpec,
 }
 import gleam_mutants/suggest/harness.{ProbeFunction, ProbeSpec}
 import gleam_mutants/suggest/hints
@@ -85,7 +85,14 @@ pub fn smartest_package_derivation_uses_inferred_unannotated_parameters_test() {
     ))
 }
 
-pub fn smartest_package_derivation_does_not_construct_private_external_types_test() {
+/// A parameter nothing constrains is probed at `Int` rather than given up on.
+///
+/// Gleam has no type classes, so every instantiation of a free type variable
+/// type-checks and the choice only has to be consistent. Refusing instead left
+/// every genuinely generic function unprobed and every mutant inside one
+/// unaccounted for — which is what the single-module classifier this replaced
+/// never did.
+pub fn smartest_package_derivation_probes_a_free_type_variable_at_int_test() {
   let hidden = "type Hidden { Hidden(Int) }\n\npub fn hidden() { Hidden(1) }"
   let use_source =
     "import demo/hidden\n\npub fn passthrough(value) { hidden.hidden() }"
@@ -97,10 +104,97 @@ pub fn smartest_package_derivation_does_not_construct_private_external_types_tes
       ],
       girard.Erlang,
     )
-  let assert Error(reason) =
+  let assert Ok(plan) =
     package_derive.function(index, "demo/use", "passthrough")
-  assert reason
-    == "parameter value: unconstrained generic type cannot be generated"
+  assert plan.parameters == [ParameterPlan("value", None, IntSpec)]
+  // The return is a type this module cannot name, which is not an error: a
+  // probe compares what came back, it does not construct it.
+  assert plan.return_spec == None
+}
+
+/// A type of a dependency says so, rather than reading like a typo.
+///
+/// Only this package's own modules are indexed, so a dependency's type arrives
+/// at the derivation as a module nobody has heard of. What the reader is told
+/// has to be the limit, not the index's own words for it.
+pub fn smartest_package_derivation_names_a_dependency_type_as_such_test() {
+  let source =
+    "import gleam/order\n\npub fn keep(value: order.Order) -> order.Order {\n"
+    <> "  value\n}"
+  let assert Ok(index) =
+    package_types.annotate(
+      [package_types.ModuleSource("demo/keep", source)],
+      girard.Erlang,
+    )
+
+  assert package_derive.function(index, "demo/keep", "keep")
+    == Error(
+      "parameter value: type gleam/order.Order comes from another package, "
+      <> "which suggest cannot generate values for",
+    )
+}
+
+/// A function-typed parameter is generated as a constant function.
+///
+/// The value carried through the probe is the result: a closure cannot be
+/// printed, and a generated test has to write down the input it was run on.
+pub fn smartest_package_derivation_generates_a_function_argument_test() {
+  let source =
+    "pub fn apply(f: fn(Int, Int) -> Bool, x: Int) -> Bool {\n"
+    <> "  f(x, x)\n}"
+  let assert Ok(index) =
+    package_types.annotate(
+      [package_types.ModuleSource("demo/apply", source)],
+      girard.Erlang,
+    )
+
+  assert package_derive.function(index, "demo/apply", "apply")
+    == Ok(FunctionPlan(
+      "apply",
+      [
+        ParameterPlan("f", None, FunctionSpec(2, BoolSpec)),
+        ParameterPlan("x", None, IntSpec),
+      ],
+      Some(BoolSpec),
+    ))
+}
+
+/// Nested inside another type, a function is still refused, and says why.
+///
+/// The result can be lifted out of `fn(Int) -> Int` and carried through the
+/// probe as a value. It cannot be lifted out of `List(fn(Int) -> Int)`, where
+/// there is no one result to carry.
+pub fn smartest_package_derivation_refuses_a_nested_function_type_test() {
+  let source =
+    "pub fn apply_all(fs: List(fn(Int) -> Int), x: Int) -> Int {\n"
+    <> "  case fs {\n    [] -> x\n    [f, ..] -> f(x)\n  }\n}"
+  let assert Ok(index) =
+    package_types.annotate(
+      [package_types.ModuleSource("demo/all", source)],
+      girard.Erlang,
+    )
+
+  assert package_derive.function(index, "demo/all", "apply_all")
+    == Error(
+      "parameter fs: a function-typed value is supported as a whole "
+      <> "parameter, not nested inside another type",
+    )
+}
+
+/// A private type is still never constructed, however it is reached.
+pub fn smartest_package_derivation_does_not_construct_a_private_type_test() {
+  let source =
+    "type Secret {\n  Secret(Int)\n}\n\n"
+    <> "pub fn reveal(secret: Secret) -> Int {\n"
+    <> "  let Secret(value) = secret\n  value\n}"
+  let assert Ok(index) =
+    package_types.annotate(
+      [package_types.ModuleSource("demo/secret", source)],
+      girard.Erlang,
+    )
+
+  assert package_derive.function(index, "demo/secret", "reveal")
+    == Error("parameter secret: private type demo/secret.Secret")
 }
 
 pub fn smartest_cross_module_probe_uses_collision_free_imports_and_helpers_test() {
