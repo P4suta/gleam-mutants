@@ -1011,6 +1011,49 @@ pub fn discover_catalogs(
   |> Ok
 }
 
+/// Grants a snapshot the permissions a probe run on Deno needs.
+///
+/// Deno refuses what it was not asked to allow, and the snapshot carries the
+/// reader's own `gleam.toml`, which has no reason to mention a probe. A probe
+/// reads the sources it was generated beside and appends its verdicts to a
+/// file inside the same copy; the switch it turns is a global rather than an
+/// environment variable, so nothing is asked of the environment.
+pub fn grant_deno_probe_permissions(root: String) -> Result(Nil, String) {
+  let target = path.join(root, "gleam.toml")
+  use source <- result.try(
+    simplifile.read(target) |> result.map_error(simplifile.describe_error),
+  )
+  use document <- result.try(
+    tomlet.parse(source)
+    |> result.map_error(fn(error) {
+      "could not parse snapshot gleam.toml for Deno permissions: "
+      <> string.inspect(error)
+    }),
+  )
+  use document <- result.try(
+    tomlet.set_bool(document, ["javascript", "deno", "allow_read"], True)
+    |> result.map_error(fn(_) { "could not set Deno read permission" }),
+  )
+  use document <- result.try(
+    tomlet.set_bool(document, ["javascript", "deno", "allow_write"], True)
+    |> result.map_error(fn(_) { "could not set Deno write permission" }),
+  )
+  // The switch a probe turns is a global, but the module that reads it falls
+  // back to the environment for the sake of a `run`, and Deno raises rather
+  // than answering where it was not asked.
+  use document <- result.try(
+    tomlet.set_array(document, ["javascript", "deno", "allow_env"], [
+      tomlet.StringValue("GLEAM_MUTANTS_ACTIVE"),
+      tomlet.StringValue("GLEAM_MUTANTS_RUNTIME"),
+      tomlet.StringValue("GLEAM_MUTANTS_TEST_IMPACT_FILE"),
+      tomlet.StringValue("GLEAM_MUTANTS_TEST_SELECTION_FILE"),
+    ])
+    |> result.map_error(fn(_) { "could not set Deno env permission" }),
+  )
+  simplifile.write(target, tomlet.to_string(document))
+  |> result.map_error(simplifile.describe_error)
+}
+
 fn configure_deno_permissions(
   root: String,
   runtimes: List(Runtime),
@@ -2507,7 +2550,8 @@ fn detect_runtimes(
   }
 }
 
-fn detect_runtime(gleam_toml: String, config: Config) -> Runtime {
+/// The runtime this workspace's tests would really be run on.
+pub fn detect_runtime(gleam_toml: String, config: Config) -> Runtime {
   case config.test_runtime {
     config.ErlangRuntime -> Erlang
     config.NodeRuntime -> Node

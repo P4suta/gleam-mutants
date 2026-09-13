@@ -893,6 +893,14 @@ fn constants(spec: ProbeSpec) -> String {
   )
 }
 
+/// The observation type, and the one call that produces one.
+///
+/// The constructors are handed to the FFI rather than built inside it. A
+/// custom type is represented differently on each target -- a tagged tuple on
+/// Erlang, a class on JavaScript -- and a foreign function that built one
+/// itself would have to know which, for a type the probe module declares
+/// privately. Passing them keeps both implementations to what they are
+/// actually for: running the call, and saying how it went.
 fn observation(spec: ProbeSpec) -> String {
   "type Observation(a) {
   Value(a)
@@ -900,8 +908,24 @@ fn observation(spec: ProbeSpec) -> String {
   Timeout
 }
 
+@external(erlang, \"" <> spec.ffi_module <> "\", \"supervise\")
+@external(javascript, \"./" <> spec.ffi_module <> ".mjs\", \"supervise\")
+fn supervise(body: fn() -> Nil) -> Nil
+
+@external(erlang, \"" <> spec.ffi_module <> "\", \"skipped\")
+@external(javascript, \"./" <> spec.ffi_module <> ".mjs\", \"skipped\")
+fn skipped(mutant: String) -> Bool
+
 @external(erlang, \"" <> spec.ffi_module <> "\", \"isolated\")
-fn isolated(run: fn() -> a, mutant: String, timeout_ms: Int) -> Observation(a)"
+@external(javascript, \"./" <> spec.ffi_module <> ".mjs\", \"isolated\")
+fn isolated(
+  run: fn() -> a,
+  mutant: String,
+  timeout_ms: Int,
+  value: fn(a) -> Observation(a),
+  failed: fn(String) -> Observation(a),
+  timed_out: Observation(a),
+) -> Observation(a)"
 }
 
 /// The declaration of the FFI function the probe reports through.
@@ -912,6 +936,7 @@ fn isolated(run: fn() -> a, mutant: String, timeout_ms: Int) -> Observation(a)"
 /// end. The host reads the file once the probe has exited.
 fn results_writer(spec: ProbeSpec) -> String {
   "@external(erlang, \"" <> spec.ffi_module <> "\", \"append_result\")
+@external(javascript, \"./" <> spec.ffi_module <> ".mjs\", \"append_result\")
 fn append_result(path: String, line: String) -> Nil"
 }
 
@@ -934,9 +959,13 @@ fn main_function(functions: List(ProbeFunction)) -> String {
     "  io.println("
     <> quoted(int.to_string(written) <> " results written")
     <> ")"
-  "pub fn main() -> Nil {\n"
+  // The probe body is exported so that a supervisor can run it somewhere it
+  // can be stopped. On Erlang `supervise` simply calls it: a call there is
+  // already contained in a process of its own. On JavaScript it runs in a
+  // worker, because nothing else can take a call back that will not return.
+  "pub fn probe_all() -> Nil {\n"
   <> string.join(list.append(calls, [counted]), "\n")
-  <> "\n}"
+  <> "\n}\n\npub fn main() -> Nil {\n  supervise(probe_all)\n}"
 }
 
 /// The parts of the probe that do not depend on the module under test.
@@ -2178,7 +2207,7 @@ fn runner_function(plan: typederive.FunctionPlan) -> String {
   <> plan.name
   <> "("
   <> string.join(call_arguments(plan), ", ")
-  <> ") }, mutant, call_timeout_ms)\n}"
+  <> ") }, mutant, call_timeout_ms, Value, Panic, Timeout)\n}"
 }
 
 /// The expressions the probe passes to the function under test.
@@ -2299,6 +2328,22 @@ fn search_function(
   <> name
   <> "_"
   <> suffix
+  // The mutant being searched is written down before the search starts, so a
+  // probe that never comes back can still say which one it was inside. A host
+  // reads results by the `{` they open with, so this line is invisible to
+  // everything but the failure that needs it.
+  <> "() -> Nil {\n  case skipped("
+  <> quoted(mutant)
+  <> ") {\n    True -> Nil\n    False -> {\n      append_result(results_path, \"#"
+  <> mutant
+  <> "\")\n      search_body_"
+  <> name
+  <> "_"
+  <> suffix
+  <> "()\n    }\n  }\n}\n\nfn search_body_"
+  <> name
+  <> "_"
+  <> suffix
   <> "() -> Nil {\n  let outcome =\n    pbt.find_counterexample(\n      gen_"
   <> name
   <> "(),\n      pbt.seed(probe_seed + "
@@ -2403,6 +2448,221 @@ fn emit_call(indent: String, arguments: List(String)) -> String {
 
 // --- Rendering the Erlang FFI ------------------------------------------------
 
+/// Renders the JavaScript module the probe runs its calls through.
+///
+/// JavaScript cannot interrupt synchronous code, so the containment Erlang
+/// gets from a monitored process is bought here with a worker: the probe body
+/// runs in one, and this thread watches a counter the worker bumps before
+/// every call. A call that stops bumping it has stopped answering, and the
+/// only thing that can be done to it from outside is `terminate`.
+///
+/// What that costs is a restart. The verdicts already written are on disk, and
+/// the mutant the worker was inside is on disk too -- the probe writes it down
+/// before searching it -- so the restarted worker is told to skip everything
+/// already begun, and the one it died on is recorded as unsupported by the
+/// line this writes for it. The run therefore ends with a verdict for every
+/// mutant, which is the promise a probe makes, rather than one missing module.
+pub fn render_js_ffi(spec: ProbeSpec) -> String {
+  "// Generated by gleam_mutants. Do not edit.
+const active = Symbol.for(\"gleam-mutants.active\");
+const skipped_slot = Symbol.for(\"gleam-mutants.skipped\");
+const heartbeat = Symbol.for(\"gleam-mutants.heartbeat\");
+const reason_limit = 200;
+const restart_limit = 64;
+const done = -1;
+const probe_module = new URL(\"./" <> spec.probe_module <> ".mjs\", import.meta.url).href;
+const results_path = " <> quoted(spec.results_path) <> ";
+const call_timeout_ms = " <> int.to_string(spec.call_timeout_ms) <> ";
+
+export function skipped(mutant) {
+  const set = globalThis[skipped_slot];
+  return set instanceof Set ? set.has(mutant) : false;
+}
+
+export function isolated(run, mutant, timeout_ms, value, failed, timed_out) {
+  const control = globalThis[heartbeat];
+  if (control) {
+    Atomics.add(control, 0, 1);
+    Atomics.notify(control, 0);
+  }
+  const previous = globalThis[active];
+  globalThis[active] = mutant;
+  const started = Date.now();
+  try {
+    const answer = run();
+    if (timeout_ms > 0 && Date.now() - started > timeout_ms) return timed_out;
+    return value(answer);
+  } catch (error) {
+    return failed(describe(error));
+  } finally {
+    globalThis[active] = previous;
+  }
+}
+
+// The same bound as the Erlang side: enough of the reason to act on, and
+// never enough to bury the report it sits in.
+function describe(error) {
+  const message = String(
+    error?.message ?? error?.gleam_error ?? error ?? \"no reason\",
+  );
+  return message.length > reason_limit
+    ? message.slice(0, reason_limit)
+    : message;
+}
+
+export function supervise(body) {
+  const start = starter();
+  // Nothing to supervise with is better answered by running the probe than by
+  // refusing to: every verdict but the containment is the same.
+  if (!start) {
+    body();
+    return undefined;
+  }
+  let skip = [];
+  for (let attempt = 0; attempt <= restart_limit; attempt += 1) {
+    if (once(start, skip) !== \"stalled\") return finished();
+    const begun = begun_mutants();
+    const hung = begun[begun.length - 1];
+    if (hung === undefined || skip.includes(hung)) return finished();
+    append_result(results_path, \"!\" + hung);
+    skip = begun;
+  }
+  return finished();
+}
+
+/// Ends the probe once its verdicts are on disk.
+///
+/// Deno does not return to an idle event loop after a worker has been
+/// terminated, so a probe that had to take a call back would otherwise sit
+/// there until the host's budget ran out and be reported as the timeout it
+/// just finished working around. Everything the run is read from has been
+/// written by now, and the count the probe prints has been printed.
+function finished() {
+  if (globalThis.Deno) globalThis.Deno.exit(0);
+  return undefined;
+}
+
+function once(start, skip) {
+  const shared = new SharedArrayBuffer(4);
+  const control = new Int32Array(shared);
+  const worker = start(shared, skip);
+  try {
+    let last = 0;
+    while (true) {
+      const status = Atomics.wait(control, 0, last, call_timeout_ms + 5000);
+      const now = Atomics.load(control, 0);
+      if (now === done) return \"done\";
+      if (status === \"timed-out\" && now === last) return \"stalled\";
+      last = now;
+    }
+  } finally {
+    worker.stop();
+  }
+}
+
+/// Every mutant the probe has written down as begun, in the order it began
+/// them. The last of them is the one it was inside when it stopped answering.
+function begun_mutants() {
+  return read_results()
+    .split(\"\\n\")
+    .filter(line => line.startsWith(\"#\"))
+    .map(line => line.slice(1).trim())
+    .filter(line => line.length > 0);
+}
+
+function starter() {
+  if (globalThis.Deno) return blob_starter;
+  const threads = builtin(\"node:worker_threads\");
+  return threads ? (shared, skip) => thread_starter(threads, shared, skip) : undefined;
+}
+
+const worker_body = `
+const heartbeat = Symbol.for(\"gleam-mutants.heartbeat\");
+const skipped_slot = Symbol.for(\"gleam-mutants.skipped\");
+function run(shared, skip, probe) {
+  const control = new Int32Array(shared);
+  globalThis[heartbeat] = control;
+  globalThis[skipped_slot] = new Set(skip);
+  const finish = () => {
+    Atomics.store(control, 0, -1);
+    Atomics.notify(control, 0);
+  };
+  import(probe)
+    .then(module => { module.probe_all(); })
+    .catch(error => { console.error(error); })
+    .finally(finish);
+}
+`;
+
+function blob_starter(shared, skip) {
+  const source = worker_body
+    + \"self.onmessage = event => run(event.data.shared, event.data.skip, event.data.probe);\";
+  const url = URL.createObjectURL(new Blob([source], { type: \"text/javascript\" }));
+  const worker = new Worker(url, { type: \"module\" });
+  worker.postMessage({ shared, skip, probe: probe_module });
+  return {
+    stop() {
+      worker.terminate();
+      URL.revokeObjectURL(url);
+    },
+  };
+}
+
+function thread_starter(threads, shared, skip) {
+  const source = worker_body
+    + \"const { workerData } = require('node:worker_threads');\"
+    + \"run(workerData.shared, workerData.skip, workerData.probe);\";
+  const worker = new threads.Worker(source, {
+    eval: true,
+    workerData: { shared, skip, probe: probe_module },
+  });
+  // A worker still holding the event loop would keep the probe process alive
+  // long after its verdicts were written.
+  worker.unref();
+  return {
+    stop() {
+      worker.terminate();
+    },
+  };
+}
+
+export function append_result(path, line) {
+  const text = line + \"\\n\";
+  if (globalThis.Deno) {
+    globalThis.Deno.writeTextFileSync(path, text, { append: true });
+    return undefined;
+  }
+  const fs = builtin(\"node:fs\");
+  if (!fs) throw new Error(\"no filesystem to append the probe result to\");
+  fs.appendFileSync(path, text, \"utf8\");
+  return undefined;
+}
+
+function read_results() {
+  try {
+    if (globalThis.Deno) return globalThis.Deno.readTextFileSync(results_path);
+    const fs = builtin(\"node:fs\");
+    return fs ? fs.readFileSync(results_path, \"utf8\") : \"\";
+  } catch (_) {
+    return \"\";
+  }
+}
+
+// `require` is what Bun and Node both answer to from a module Gleam emits for
+// either, and this file is written beside generated code rather than bundled,
+// so a static import would have to resolve on Deno too.
+function builtin(name) {
+  try {
+    return globalThis.process?.getBuiltinModule?.(name)
+      ?? globalThis.require?.(name)
+      ?? undefined;
+  } catch (_) {
+    return undefined;
+  }
+}
+"
+}
+
 /// Renders the Erlang module that runs one call in an isolated process.
 ///
 /// `isolated/3` spawns a monitored process, seeds its process dictionary with
@@ -2413,9 +2673,15 @@ fn emit_call(indent: String, arguments: List(String)) -> String {
 pub fn render_ffi(spec: ProbeSpec) -> String {
   "%% Generated by gleam_mutants. Do not edit.
 -module(" <> spec.ffi_module <> ").
--export([isolated/3, append_result/2]).
+-export([isolated/6, append_result/2, supervise/1, skipped/1]).
 
-isolated(Fun, Mutant, TimeoutMs) ->
+%% A call here is already contained in a process of its own, so there is
+%% nothing to supervise and nothing a restart would have to skip.
+supervise(Body) -> Body().
+
+skipped(_Mutant) -> false.
+
+isolated(Fun, Mutant, TimeoutMs, Value, Failed, TimedOut) ->
     Parent = self(),
     Tag = make_ref(),
     {Pid, MonitorRef} = spawn_monitor(fun() ->
@@ -2430,10 +2696,10 @@ isolated(Fun, Mutant, TimeoutMs) ->
         end,
         Parent ! {Tag, Answer}
     end),
-    receive
+    Answer = receive
         {'DOWN', MonitorRef, process, Pid, normal} ->
             receive
-                {Tag, Answer} -> Answer
+                {Tag, Reply} -> Reply
             after 0 ->
                 {panic, <<\"no result\">>}
             end;
@@ -2447,6 +2713,11 @@ isolated(Fun, Mutant, TimeoutMs) ->
         end,
         flush(Tag),
         timeout
+    end,
+    case Answer of
+        {value, V} -> Value(V);
+        {panic, Text} -> Failed(Text);
+        timeout -> TimedOut
     end.
 
 flush(Tag) ->

@@ -146,12 +146,13 @@ if (!validateDoctor(doctor)) {
   throw new Error(`Doctor JSON schema validation failed:\n${nativeAjv.errorsText(validateDoctor.errors, { separator: "\n" })}`);
 }
 
-// `suggest` probes each function inside a snapshot by spawning an Erlang
-// process per call, which has no JavaScript counterpart: the command refuses a
-// JavaScript workspace outright (GMU8001), so there is deliberately no Node
-// output to compare byte-for-byte against. The fixture is still deterministic
-// — the default seed drives the same property search every time — so the one
-// suggestion that only `0` can produce is asserted alongside the schema.
+// `suggest` runs on every runtime, but its output is not compared byte-for-byte
+// across them the way a report is: `string.inspect` is the runtime's own, so a
+// float or a bit array need not read the same on each. What is compared is the
+// shape against the schema, and the determinism — the default seed drives the
+// same property search every time — so the one suggestion that only `0` can
+// produce is asserted alongside it. `suggest_cli_smoke` is what covers the
+// other runtimes end to end.
 const suggestReport = JSON.parse(cliFixture(["suggest", "--json"], "erlang", "fixtures/boundary_project"));
 const validateSuggest = nativeAjv.compile(suggestSchema);
 if (!validateSuggest(suggestReport)) {
@@ -217,8 +218,8 @@ if (
   throw new Error("`suggest --operator string-neutral` did not narrow the run to string-neutral mutants");
 }
 
-// `explain` is the same probe narrowed to one mutant, so it is Erlang-only for
-// the same reason `suggest` is. The run is narrowed to `is_positive` as well,
+// `explain` is the same probe narrowed to one mutant, so it runs where
+// `suggest` runs and for the same reason. The run is narrowed to `is_positive` as well,
 // which is the function the boundary mutant lives in: the answer is identical
 // and the probe has one function to search instead of six.
 const explanation = JSON.parse(cliFixture(
@@ -338,4 +339,4 @@ for (const mutant of file.mutants) {
     if (forbidden in mutant) throw new Error(`Unexpected ${forbidden} field`);
   }
 }
-console.log("Native, unvalidated-list, validated-list, and doctor v1 fixtures validated against JSON Schema 2020-12 with Erlang/Node byte parity; Erlang-only suggest v1, explain v1, planned apply v1 and verified apply v1 fixtures validated against JSON Schema 2020-12; deterministic Stryker fixture validated against official Draft-07 schema with Ajv 8.20.0");
+console.log("Native, unvalidated-list, validated-list, and doctor v1 fixtures validated against JSON Schema 2020-12 with Erlang/Node byte parity; suggest v1, explain v1, planned apply v1 and verified apply v1 fixtures validated against JSON Schema 2020-12; deterministic Stryker fixture validated against official Draft-07 schema with Ajv 8.20.0");
