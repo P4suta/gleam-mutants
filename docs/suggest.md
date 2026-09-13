@@ -303,11 +303,21 @@ what is *passed* to it, `f(x)` for `f(x + 1)`, and such a mutant comes back
 indistinguishable. A function nested inside another type, as in `List(fn(Int)
 -> Int)`, is still unsupported: there is no one result to carry.
 
-Still unsupported, and reported as such: types from a **dependency package**
-rather than your own, and types that are external to Gleam altogether. A mutant
-that is not inside any function of its module, such as one in a module
-constant, cannot be switched on at run time and is unsupported for that reason
-rather than for want of an input.
+A type of a **dependency package** is generated like one of your own: the
+modules your package imports, and the modules those import, are read and typed
+alongside it. A type the dependency declares with no constructors at all —
+`gleam/dict.Dict`, `gleam/erlang/atom.Atom` — has its representation in the
+runtime rather than in Gleam, which is the position an opaque type is in from
+outside its module, so it is built the same way: through its own public API,
+preferring a constructor that takes something over one that takes nothing, and
+never through another such type, because
+`atom.cast_from_dynamic(dynamic.string("a"))` type checks and means nothing.
+
+Still unsupported, and reported as such: a type whose own public API offers no
+way to build it and read it back, and a type of a dependency this tool cannot
+parse. A mutant that is not inside any function of its module, such as one in a
+module constant, cannot be switched on at run time and is unsupported for that
+reason rather than for want of an input.
 
 Functions named in `exclude_functions` are skipped without being compiled into
 a probe at all, and their mutants are reported as unsupported.
