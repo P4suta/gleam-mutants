@@ -125,6 +125,54 @@ pub fn smartest_runner_exposes_constant_compile_jobs_without_unassigning_them_te
   assert verdict.mutant == job.mutant.id
 }
 
+/// What the compile lane learned reaches the reader, not its internal name.
+///
+/// The verdict is planned before the lane has run, so it starts life with a
+/// placeholder. Leaving it there printed `RequiresPerMutantCompileLane` at
+/// someone trying to find out whether they had missed a test -- while the
+/// answer, that the mutant compiles and no input can reach it, had already
+/// been paid for.
+pub fn smartest_compile_lane_evidence_reaches_the_verdict_test() {
+  let planned = fn(mutant) {
+    probe_result.ProbeResult(
+      function: "answer",
+      mutant: mutant,
+      status: probe_result.Unsupported,
+      inputs: [],
+      expected: None,
+      expected_inspect: "",
+      expected_outcome: probe_result.Returned,
+      actual_inspect: "",
+      actual_outcome: probe_result.Returned,
+      cases: 0,
+      shrinks: 0,
+      reason: diff_runner.compile_lane_reason,
+      kills: [],
+      support_modules: [],
+    )
+  }
+  let explained =
+    diff_runner.explained(
+      [planned("built"), planned("refused"), planned("slow"), planned("silent")],
+      [
+        diff_runner.CompileEvidence("built", compile_lane.Compiled(False)),
+        diff_runner.CompileEvidence(
+          "refused",
+          compile_lane.Rejected("error: Type mismatch\n  on line 3", False),
+        ),
+        diff_runner.CompileEvidence("slow", compile_lane.CompileTimedOut),
+      ],
+    )
+  let reasons = list.map(explained, fn(verdict) { verdict.reason })
+  let assert [built, refused, slow, silent] = reasons
+
+  assert string.contains(built, "compiles but cannot be switched on")
+  assert refused == "mutant does not compile: error: Type mismatch"
+  assert string.contains(slow, "timed out")
+  // A job with no evidence keeps the placeholder rather than inventing one.
+  assert silent == diff_runner.compile_lane_reason
+}
+
 pub fn smartest_compile_identity_is_stable_and_trimmed_test() {
   assert diff_runner.compiler_identity(platform.ProcessResult(
       0,
