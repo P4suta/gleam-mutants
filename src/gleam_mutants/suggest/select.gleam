@@ -74,6 +74,7 @@ pub fn assign(
 pub fn route_private(
   module: glance.Module,
   targets: List(FunctionTarget),
+  probeable: fn(glance.Function) -> Bool,
 ) -> PrivateRouting {
   let functions = source_order(module)
   let local_names = list.map(functions, fn(function) { function.name })
@@ -95,7 +96,14 @@ pub fn route_private(
       case target.function.publicity {
         glance.Public -> Error(Nil)
         glance.Private ->
-          case nearest_public(public_functions, edges, target.function.name) {
+          case
+            nearest_public(
+              public_functions,
+              edges,
+              target.function.name,
+              probeable,
+            )
+          {
             Ok(#(function, distance)) ->
               Ok(PublicRoute(target.function.name, function.name, distance))
             Error(Nil) -> Error(Nil)
@@ -174,10 +182,19 @@ fn holds_function(annotation: glance.Type) -> Bool {
   }
 }
 
+/// The public function a private one's mutants are explored through.
+///
+/// Nearest wins, but only among the public functions a probe can actually be
+/// written for: a private function reached first by one whose own parameters
+/// cannot be generated would otherwise be given up on beside it, when a
+/// caller one hop further out would have answered for it. Where none can be
+/// probed the nearest is still chosen, so the mutants are reported against the
+/// function that really reaches them rather than as unreachable.
 fn nearest_public(
   public_functions: List(glance.Function),
   edges: List(#(String, List(String))),
   target: String,
+  probeable: fn(glance.Function) -> Bool,
 ) -> Result(#(glance.Function, Int), Nil) {
   let candidates =
     public_functions
@@ -187,6 +204,15 @@ fn nearest_public(
         Error(Nil) -> Error(Nil)
       }
     })
+  case list.filter(candidates, fn(entry) { probeable(entry.0) }) {
+    [] -> nearest_of(candidates)
+    preferred -> nearest_of(preferred)
+  }
+}
+
+fn nearest_of(
+  candidates: List(#(glance.Function, Int)),
+) -> Result(#(glance.Function, Int), Nil) {
   case candidates {
     [] -> Error(Nil)
     [first, ..rest] -> Ok(list.fold(rest, first, nearer_route))
