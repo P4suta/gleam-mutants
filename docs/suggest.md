@@ -278,12 +278,27 @@ reported beside it so a verdict reached in the full budget can be told from one
 reached in ten. Raising `--max-cases` sometimes turns one into a suggestion.
 
 Inputs can be generated for primitives (`Int`, `Float`, `String`, `Bool`,
-`BitArray`, `Nil`), `List`, `Option`, `Result`, tuples, and public non-opaque
-custom types, generic parameters included. Not yet supported, and reported as
-unsupported: external and opaque types, function-typed arguments, unannotated
-parameters, and private functions — a probe can only call what a test module
-could call. A mutant that is not inside any function of its module, such as one
-in a module constant, is reported as unsupported for the same reason.
+`BitArray`, `Nil`), `List`, `Option`, `Result`, tuples, and public custom types
+of your package — another module's as readily as the one under test. A type
+variable nothing constrains is instantiated at `Int`, consistently, which is
+enough because Gleam has no type classes. Parameters need no annotation: the
+types come from the package-wide inference, not from what you wrote down.
+
+An **opaque** type is generated through your own public API: a constructor
+returning `T`, `Option(T)` or `Result(T, e)` that does not already take one,
+paired with an accessor the value can be read back through. A type with no such
+pair is reported as unsupported, naming which half was missing, because a probe
+can only call what a test module could call — which is also why a **private
+type** is never constructed.
+
+A **private function** is not probed directly; its mutants are explored through
+the nearest public function that reaches it, and only one no public function
+reaches at all is reported as unsupported. Still unsupported, and reported as
+such: **function-typed arguments**, types from a **dependency package** rather
+than your own, and types that are external to Gleam altogether. A mutant that
+is not inside any function of its module, such as one in a module constant,
+cannot be switched on at run time and is unsupported for that reason rather
+than for want of an input.
 
 Functions named in `exclude_functions` are skipped without being compiled into
 a probe at all, and their mutants are reported as unsupported.

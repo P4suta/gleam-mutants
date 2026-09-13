@@ -112,9 +112,10 @@ both answers are compared directly rather than inferred from a red suite.
 This is why the three commands are Erlang-only: only that runtime's
 in-process switch and isolation are supported today.
 
-Inputs are derived from the function's own type annotations into a
-target-independent `GenSpec`, then generated from the deterministic property
-generator against a configured seed. A separating input is shrunk towards the
+Inputs are derived into a target-independent `GenSpec` from the package-wide
+signatures Girard infers, not from the annotations a module happens to carry,
+then generated from the deterministic property generator against a configured
+seed. A separating input is shrunk towards the
 smallest one that still separates, and the probe knows every mutant id of the
 function it probes, so one input reports a kill set rather than a single
 mutant. Kill sets are minimised per function by greedy set cover: a test for

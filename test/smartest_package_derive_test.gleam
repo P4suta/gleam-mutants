@@ -85,7 +85,14 @@ pub fn smartest_package_derivation_uses_inferred_unannotated_parameters_test() {
     ))
 }
 
-pub fn smartest_package_derivation_does_not_construct_private_external_types_test() {
+/// A parameter nothing constrains is probed at `Int` rather than given up on.
+///
+/// Gleam has no type classes, so every instantiation of a free type variable
+/// type-checks and the choice only has to be consistent. Refusing instead left
+/// every genuinely generic function unprobed and every mutant inside one
+/// unaccounted for — which is what the single-module classifier this replaced
+/// never did.
+pub fn smartest_package_derivation_probes_a_free_type_variable_at_int_test() {
   let hidden = "type Hidden { Hidden(Int) }\n\npub fn hidden() { Hidden(1) }"
   let use_source =
     "import demo/hidden\n\npub fn passthrough(value) { hidden.hidden() }"
@@ -97,10 +104,50 @@ pub fn smartest_package_derivation_does_not_construct_private_external_types_tes
       ],
       girard.Erlang,
     )
-  let assert Error(reason) =
+  let assert Ok(plan) =
     package_derive.function(index, "demo/use", "passthrough")
-  assert reason
-    == "parameter value: unconstrained generic type cannot be generated"
+  assert plan.parameters == [ParameterPlan("value", None, IntSpec)]
+  // The return is a type this module cannot name, which is not an error: a
+  // probe compares what came back, it does not construct it.
+  assert plan.return_spec == None
+}
+
+/// A type of a dependency says so, rather than reading like a typo.
+///
+/// Only this package's own modules are indexed, so a dependency's type arrives
+/// at the derivation as a module nobody has heard of. What the reader is told
+/// has to be the limit, not the index's own words for it.
+pub fn smartest_package_derivation_names_a_dependency_type_as_such_test() {
+  let source =
+    "import gleam/order\n\npub fn keep(value: order.Order) -> order.Order {\n"
+    <> "  value\n}"
+  let assert Ok(index) =
+    package_types.annotate(
+      [package_types.ModuleSource("demo/keep", source)],
+      girard.Erlang,
+    )
+
+  assert package_derive.function(index, "demo/keep", "keep")
+    == Error(
+      "parameter value: type gleam/order.Order comes from another package, "
+      <> "which suggest cannot generate values for",
+    )
+}
+
+/// A private type is still never constructed, however it is reached.
+pub fn smartest_package_derivation_does_not_construct_a_private_type_test() {
+  let source =
+    "type Secret {\n  Secret(Int)\n}\n\n"
+    <> "pub fn reveal(secret: Secret) -> Int {\n"
+    <> "  let Secret(value) = secret\n  value\n}"
+  let assert Ok(index) =
+    package_types.annotate(
+      [package_types.ModuleSource("demo/secret", source)],
+      girard.Erlang,
+    )
+
+  assert package_derive.function(index, "demo/secret", "reveal")
+    == Error("parameter secret: private type demo/secret.Secret")
 }
 
 pub fn smartest_cross_module_probe_uses_collision_free_imports_and_helpers_test() {
