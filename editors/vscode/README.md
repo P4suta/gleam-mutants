@@ -101,12 +101,11 @@ your test suite. Read [side effects](../../docs/suggest.md) in `docs/suggest.md`
 before pointing either at code that reaches outside itself, and read the
 generated tests before you keep them.
 
-## Erlang only
+## Every runtime
 
-`suggest`, `apply` and `explain` — and so both quick fixes — support the
-Erlang target alone. A workspace whose tests run on JavaScript gets `GMU8001`
-back, shown as an error with the failing line. Mutation `run` itself supports
-both targets; only the test-writing half is Erlang-only.
+`suggest`, `apply` and `explain` — and so both quick fixes — run wherever your
+tests do: Erlang, Node, Deno or Bun. A probe is built the way the code under
+test is built, so the mutants it switches are the ones you ship.
 
 ## Layout
 

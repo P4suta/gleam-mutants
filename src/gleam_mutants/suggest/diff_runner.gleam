@@ -43,7 +43,6 @@ import gleam_mutants/suggest/probe_result.{
 import gleam_mutants/suggest/select
 import gleam_mutants/suggest/typederive
 import simplifile
-import tomlet
 
 // --- The request -------------------------------------------------------------
 
@@ -231,7 +230,7 @@ pub fn defaults(workspace: String, files: List(String)) -> Request {
 pub fn run(request: Request) -> Result(RunOutput, RunError) {
   use gleam_toml <- result.try(unstarted(read_manifest(request.workspace)))
   use configured <- result.try(unstarted(load_config(gleam_toml)))
-  use _ <- result.try(unstarted(check_target(configured, gleam_toml)))
+  let probe_runtime = probe_runtime_for(configured, gleam_toml)
   use files <- result.try(unstarted(distinct_sources(request.files)))
   use snapshot <- result.try(
     unstarted(
@@ -243,6 +242,7 @@ pub fn run(request: Request) -> Result(RunOutput, RunError) {
   run_snapshot(
     Request(..request, files: files),
     configured,
+    probe_runtime,
     snapshot,
     None,
     True,
@@ -260,7 +260,7 @@ pub fn run_session(
   snapshot: Snapshot,
   catalogs: List(SourceCatalog),
 ) -> Result(RunOutput, RunError) {
-  use _ <- result.try(unstarted(check_target(configured, gleam_toml)))
+  let probe_runtime = probe_runtime_for(configured, gleam_toml)
   use files <- result.try(unstarted(distinct_sources(request.files)))
   let wanted = set.from_list(files)
   let catalogs =
@@ -270,6 +270,7 @@ pub fn run_session(
   run_snapshot(
     Request(..request, files: files),
     configured,
+    probe_runtime,
     snapshot,
     Some(catalogs),
     False,
@@ -294,53 +295,50 @@ fn load_config(gleam_toml: String) -> Result(Config, String) {
   |> result.map_error(config.describe_error)
 }
 
-/// Rejects a workspace whose tests do not run on the Erlang target.
+/// The runtime this workspace's probes are compiled for and run on.
 ///
-/// The probe isolates every call in an Erlang process through an FFI module,
-/// which has no JavaScript counterpart. `configured` on its own does not
-/// settle the question: a project that sets a top-level `target = "javascript"`
-/// and leaves `[tools.gleam_mutants.test]` alone keeps `AutoTarget`, and the
-/// engine resolves exactly that to a JavaScript runtime — so the manifest is
-/// consulted the same way `engine` resolves one.
-pub fn check_target(
+/// It is the runtime the tests would really go to, asked of the engine rather
+/// than decided here: a probe has to be built the way the code under test is
+/// built, or the mutants it switches would not be the ones anyone ships. All
+/// four are probed. Erlang contains a call in a process of its own; the three
+/// JavaScript runtimes make it on the spot, which costs the containment and
+/// nothing else.
+pub fn probe_runtime_for(
   configured: Config,
   gleam_toml: String,
-) -> Result(Nil, String) {
-  case javascript_bound(configured, gleam_toml) {
-    True -> Error("GMU8001: suggest supports the Erlang target only")
-    False -> Ok(Nil)
+) -> outcome.Runtime {
+  engine.detect_runtime(gleam_toml, configured)
+}
+
+/// What `gleam build --target` and the compile lane call this runtime.
+fn build_target(runtime: outcome.Runtime) -> String {
+  case runtime {
+    outcome.Erlang -> "erlang"
+    _ -> "javascript"
   }
 }
 
-/// Whether the workspace's tests would be run on a JavaScript runtime.
-///
-/// The question is settled in `engine.detect_runtime`'s order, because that is
-/// the order the tests are really run in: a configured runtime decides on its
-/// own, whatever target is written beside it, and only `runtime = "auto"`
-/// leaves the decision to the target — first the configured one, then the
-/// manifest's.
-fn javascript_bound(configured: Config, gleam_toml: String) -> Bool {
-  case configured.test_runtime {
-    config.NodeRuntime | config.DenoRuntime | config.BunRuntime -> True
-    config.ErlangRuntime -> False
-    config.AutoRuntime ->
-      case configured.test_target {
-        config.JavaScriptTarget -> True
-        config.ErlangTarget -> False
-        config.AutoTarget -> javascript_manifest(gleam_toml)
-      }
+/// The target Girard should infer this package against.
+fn inference_target(runtime: outcome.Runtime) -> girard.Target {
+  case runtime {
+    outcome.Erlang -> girard.Erlang
+    _ -> girard.JavaScript
   }
 }
 
-/// Whether `gleam.toml` names JavaScript as the project's default target.
-fn javascript_manifest(gleam_toml: String) -> Bool {
-  case tomlet.parse(gleam_toml) {
-    Ok(document) ->
-      case tomlet.get_string(document, ["target"]) {
-        Ok("javascript") -> True
-        _ -> False
-      }
-    Error(_) -> False
+/// The arguments that run a probe module on this runtime.
+fn probe_arguments(runtime: outcome.Runtime, module: String) -> List(String) {
+  case runtime {
+    outcome.Erlang -> ["run", "--target", "erlang", "-m", module]
+    _ -> [
+      "run",
+      "--target",
+      "javascript",
+      "--runtime",
+      outcome.runtime_name(runtime),
+      "-m",
+      module,
+    ]
   }
 }
 
@@ -380,12 +378,15 @@ pub fn distinct_sources(files: List(String)) -> Result(List(String), String) {
 fn run_snapshot(
   request: Request,
   configured: Config,
+  probe_runtime: outcome.Runtime,
   snapshot: Snapshot,
   existing_catalogs: Option(List(SourceCatalog)),
   dispose_on_prepare_error: Bool,
 ) -> Result(RunOutput, RunError) {
   let root = snapshot.root(snapshot)
-  case prepare(request, configured, snapshot, existing_catalogs) {
+  case
+    prepare(request, probe_runtime, configured, snapshot, existing_catalogs)
+  {
     // Nothing has been generated yet, so the copy holds nothing worth reading:
     // throw it away rather than leak a workspace over a mistyped path, and
     // hand the caller a failure with no snapshot in it.
@@ -407,7 +408,7 @@ fn run_snapshot(
             snapshot,
             source,
             job,
-            "erlang",
+            build_target(probe_runtime),
             request.probe_timeout_ms,
           )
         })
@@ -416,6 +417,7 @@ fn run_snapshot(
       use reported <- result.try(
         probe(
           request,
+          probe_runtime,
           snapshot,
           prepared.catalogs,
           prepared.plans,
@@ -463,6 +465,7 @@ type Prepared {
 /// nothing in it worth reading, and `run_snapshot` throws that copy away.
 fn prepare(
   request: Request,
+  probe_runtime: outcome.Runtime,
   configured: Config,
   snapshot: Snapshot,
   existing_catalogs: Option(List(SourceCatalog)),
@@ -485,13 +488,14 @@ fn prepare(
   use package <- result.try(package_types.annotate_workspace_with_dependencies(
     root,
     request.workspace,
-    girard.Erlang,
+    inference_target(probe_runtime),
   ))
   use compiler <- result.try(compiler_fingerprint(root))
   use plans <- result.try(
     list.try_map(catalogs, fn(source_catalog) {
       plan_module(
         request,
+        probe_runtime,
         source_catalog,
         root,
         tag,
@@ -646,6 +650,7 @@ pub fn check_plan(
 ) -> Result(Nil, String) {
   plan_module(
     request,
+    outcome.Erlang,
     source_catalog,
     root,
     tag,
@@ -668,6 +673,7 @@ pub fn preview_plan(
 ) -> Result(PlanPreview, String) {
   plan_module(
     request,
+    outcome.Erlang,
     source_catalog,
     root,
     tag,
@@ -699,6 +705,7 @@ pub fn check_plan_package(
 ) -> Result(Nil, String) {
   plan_module(
     request,
+    outcome.Erlang,
     source_catalog,
     root,
     tag,
@@ -712,6 +719,7 @@ pub fn check_plan_package(
 
 fn plan_module(
   request: Request,
+  probe_runtime: outcome.Runtime,
   source_catalog: SourceCatalog,
   root: String,
   tag: String,
@@ -736,7 +744,7 @@ fn plan_module(
     compile_lane.plan(
       parsed,
       outside,
-      "erlang",
+      build_target(probe_runtime),
       compiler_fingerprint,
       workspace_digest,
     )
@@ -1002,6 +1010,7 @@ fn results_file(root: String, probe_module: String) -> String {
 /// as a verdict of its own instead of taking its whole file down.
 fn probe(
   request: Request,
+  probe_runtime: outcome.Runtime,
   snapshot: Snapshot,
   catalogs: List(SourceCatalog),
   plans: List(ModulePlan),
@@ -1017,7 +1026,7 @@ fn probe(
       case needs_idle_validation(plans) {
         False -> Ok([])
         True ->
-          engine.build_targets(root, [outcome.Erlang])
+          engine.build_targets(root, [probe_runtime])
           |> result.map(fn(_) { [] })
           |> result.map_error(fn(error) {
             "GMU8003: the instrumented snapshot did not compile:\n" <> error
@@ -1026,6 +1035,7 @@ fn probe(
     active -> {
       use module <- result.try(runtime.generate(root, snapshot.digest(snapshot)))
       use refused <- result.try(refused_mutants(
+        probe_runtime,
         snapshot,
         catalogs,
         active,
@@ -1040,6 +1050,12 @@ fn probe(
         list.flat_map(running, fn(item) { item.plan.probed }),
         runtime.name(module),
       ))
+      // Deno refuses what it was not asked to allow, and the reader's own
+      // `gleam.toml` has no reason to mention a probe.
+      use _ <- result.try(case probe_runtime {
+        outcome.Deno -> engine.grant_deno_probe_permissions(root)
+        _ -> Ok(Nil)
+      })
       use _ <- result.try(
         engine.write_generated_files(root, [
           #("src/" <> pbt_module <> ".gleam", pbt_source.source()),
@@ -1049,9 +1065,16 @@ fn probe(
                 "src/" <> item.plan.probe_module <> ".gleam",
                 harness.render_probe(item.plan.spec),
               ),
+              // Both are written whichever runtime is probing: the probe
+              // module declares an external for each target, and Gleam only
+              // reads the one it is compiling for.
               #(
                 "src/" <> item.plan.ffi_module <> ".erl",
                 harness.render_ffi(item.plan.spec),
+              ),
+              #(
+                "src/" <> item.plan.ffi_module <> ".mjs",
+                harness.render_js_ffi(),
               ),
             ]
           })
@@ -1061,13 +1084,15 @@ fn probe(
       // that does not compile on its own would otherwise be reported as a file
       // full of invalid mutants rather than as the broken workspace it is.
       use _ <- result.try(
-        engine.build_targets(root, [outcome.Erlang])
+        engine.build_targets(root, [probe_runtime])
         |> result.map_error(fn(error) {
           "GMU8003: the instrumented snapshot did not compile:\n" <> error
         }),
       )
       use reported <- result.map(
-        list.try_map(running, fn(item) { run_probe(request, root, item.plan) }),
+        list.try_map(running, fn(item) {
+          run_probe(request, probe_runtime, root, item.plan)
+        }),
       )
       list.map(narrowed, fn(item) {
         let probed = case list.key_find(reported, item.plan.probe_module) {
@@ -1161,6 +1186,7 @@ const uncompilable_reason = "mutant does not compile: "
 /// build, only now without a copy and a cold build per mutant on the way to
 /// it.
 fn refused_mutants(
+  probe_runtime: outcome.Runtime,
   snapshot: Snapshot,
   catalogs: List(SourceCatalog),
   active: List(ModulePlan),
@@ -1171,7 +1197,7 @@ fn refused_mutants(
       snapshot,
       catalogs,
       list.flat_map(active, fn(plan) { plan.probed }),
-      [outcome.Erlang],
+      [probe_runtime],
       module,
     )
     |> result.map_error(fn(error) { "GMU8003: " <> error }),
@@ -1234,15 +1260,40 @@ fn buildable(plan: ModulePlan, refused: List(#(String, String))) -> Buildable {
   }
 }
 
+/// Which mutant the probe was inside when it stopped answering.
+///
+/// The probe writes the mutant down before searching it, so a run that never
+/// came back still leaves the answer behind. It matters most where a call
+/// cannot be interrupted: on Erlang a mutant that loops for ever costs one
+/// verdict, and on JavaScript it costs the module, so a reader deserves to be
+/// told which one to exclude.
+fn hung_on(plan: ModulePlan) -> String {
+  case simplifile.read(plan.spec.results_path) {
+    Error(_) -> ""
+    Ok(source) ->
+      case
+        source
+        |> string.split("\n")
+        |> list.filter(string.starts_with(_, "#"))
+        |> list.last
+      {
+        Error(Nil) -> ""
+        Ok(line) ->
+          ", inside mutant " <> string.slice(string.drop_start(line, 1), 0, 20)
+      }
+  }
+}
+
 fn run_probe(
   request: Request,
+  probe_runtime: outcome.Runtime,
   root: String,
   plan: ModulePlan,
 ) -> Result(#(String, List(ProbeResult)), String) {
   let finished =
     platform.run_process(
       "gleam",
-      ["run", "--target", "erlang", "-m", plan.probe_module],
+      probe_arguments(probe_runtime, plan.probe_module),
       root,
       [],
       request.probe_timeout_ms,
@@ -1254,7 +1305,9 @@ fn run_probe(
         <> plan.module
         <> "` timed out after "
         <> int.to_string(request.probe_timeout_ms)
-        <> "ms:\n"
+        <> "ms"
+        <> hung_on(plan)
+        <> ":\n"
         <> finished.stdout
         <> finished.stderr,
       )

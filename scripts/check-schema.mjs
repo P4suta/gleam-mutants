@@ -217,8 +217,8 @@ if (
   throw new Error("`suggest --operator string-neutral` did not narrow the run to string-neutral mutants");
 }
 
-// `explain` is the same probe narrowed to one mutant, so it is Erlang-only for
-// the same reason `suggest` is. The run is narrowed to `is_positive` as well,
+// `explain` is the same probe narrowed to one mutant, so it runs where
+// `suggest` runs and for the same reason. The run is narrowed to `is_positive` as well,
 // which is the function the boundary mutant lives in: the answer is identical
 // and the probe has one function to search instead of six.
 const explanation = JSON.parse(cliFixture(
@@ -338,4 +338,4 @@ for (const mutant of file.mutants) {
     if (forbidden in mutant) throw new Error(`Unexpected ${forbidden} field`);
   }
 }
-console.log("Native, unvalidated-list, validated-list, and doctor v1 fixtures validated against JSON Schema 2020-12 with Erlang/Node byte parity; Erlang-only suggest v1, explain v1, planned apply v1 and verified apply v1 fixtures validated against JSON Schema 2020-12; deterministic Stryker fixture validated against official Draft-07 schema with Ajv 8.20.0");
+console.log("Native, unvalidated-list, validated-list, and doctor v1 fixtures validated against JSON Schema 2020-12 with Erlang/Node byte parity; suggest v1, explain v1, planned apply v1 and verified apply v1 fixtures validated against JSON Schema 2020-12; deterministic Stryker fixture validated against official Draft-07 schema with Ajv 8.20.0");

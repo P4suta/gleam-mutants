@@ -441,7 +441,7 @@ pub fn rendered_ffi_isolates_the_call_in_a_spawned_process_test() {
   let rendered = harness.render_ffi(full_spec())
   assert missing(rendered, [
       "-module(gleam_mutants_probe_ab12cd34ef56_ffi).",
-      "-export([isolated/3, append_result/2]).", "spawn_monitor",
+      "-export([isolated/6, append_result/2]).", "spawn_monitor",
       "gleam_mutants_active", "{value,", "{panic,", "timeout", "'DOWN'",
       "make_ref()", "kill", "~p",
     ])
@@ -1451,6 +1451,28 @@ fn write_file(root: String, relative: String, contents: String) -> Nil {
   let assert Ok(Nil) = simplifile.create_directory_all(path.parent(target))
   let assert Ok(Nil) = simplifile.write(target, contents)
   Nil
+}
+
+/// The JavaScript FFI says how a call went without knowing what it returned.
+///
+/// The observation constructors are handed in rather than built, because a
+/// custom type has a different representation on each target and the probe
+/// declares this one privately. What the module owes beyond that is the
+/// switch, a caught panic, and a deadline it can only check after the fact.
+pub fn rendered_js_ffi_reports_through_the_constructors_test() {
+  let rendered = harness.render_js_ffi()
+
+  assert missing(rendered, [
+      "export function isolated(run, mutant, timeout_ms, value, failed, timed_out)",
+      "Symbol.for(\"gleam-mutants.active\")",
+      "globalThis[active] = mutant",
+      "globalThis[active] = previous",
+      "return timed_out",
+      "return value(answer)",
+      "return failed(describe(error))",
+      "export function append_result(path, line)",
+    ])
+    == []
 }
 
 @target(erlang)

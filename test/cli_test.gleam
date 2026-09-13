@@ -23,7 +23,6 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleam_mutants/cli
-import gleam_mutants/config
 import gleam_mutants/core/mutant
 import gleam_mutants/core/operator
 @target(erlang)
@@ -803,17 +802,15 @@ fn stub_run_report() -> report.RunReport {
 /// carries its own `GMU8xxx` in front of its message — so the line must not be
 /// given the code a second time. It used to read
 ///
-///     gleam-mutants: GMU8001: GMU8001: suggest supports the Erlang target only
+///     gleam-mutants: GMU8003: GMU8003: the snapshot did not compile
 ///
-/// The message is taken from the check that really raises it rather than
-/// copied out here, so re-wording one of them moves both.
+/// which reads like two failures and matches no code a reader can grep for.
 pub fn a_warning_that_carries_its_code_names_it_once_test() {
-  let assert Error(message) = javascript_target_verdict()
-  let line = cli.diagnostic_line("warning", "GMU8001", message, None)
+  let message = "GMU8003: the snapshot did not compile"
+  let line = cli.diagnostic_line("warning", "GMU8003", message, None)
 
-  assert line
-    == "gleam-mutants: GMU8001: suggest supports the Erlang target only"
-  assert list.length(string.split(line, "GMU8001")) == 2
+  assert line == "gleam-mutants: GMU8003: the snapshot did not compile"
+  assert list.length(string.split(line, "GMU8003")) == 2
 }
 
 /// A warning whose message names no code is still given one.
@@ -850,13 +847,6 @@ pub fn an_error_line_names_the_code_its_message_carries_test() {
 }
 
 /// The refusal a workspace whose tests run on JavaScript really raises.
-fn javascript_target_verdict() -> Result(Nil, String) {
-  let gleam_toml =
-    "name = \"demo\"\nversion = \"1.0.0\"\ntarget = \"javascript\"\n"
-  let assert Ok(configured) = config.decode(gleam_toml, 1)
-  diff_runner.check_target(configured, gleam_toml)
-}
-
 // --- The baseline `--verify` grades against ----------------------------------
 
 /// Every verdict a stored run recorded, read the way `--verify` reads them.
