@@ -17,7 +17,7 @@ import gleam/result
 import gleam/string
 import gleam_mutants/suggest/genspec.{
   type GenSpec, type OpaqueAccess, type OpaqueObserver, type OpaqueProvider,
-  type VariantSpec, BitArraySpec, BoolSpec, CustomSpec, FloatSpec,
+  type VariantSpec, BitArraySpec, BoolSpec, CustomSpec, FloatSpec, FunctionSpec,
   ImportedCustomSpec, ImportedModuleAccess, IntSpec, ListSpec, NilSpec,
   OpaqueSpec, OptionProvider, OptionSpec, RecursiveRef, ResultProvider,
   ResultSpec, StringSpec, TargetModuleAccess, TupleSpec, ValueProvider,
@@ -252,6 +252,7 @@ fn spec_support_modules(spec: GenSpec) -> List(String) {
     ResultSpec(ok, error) ->
       list.append(spec_support_modules(ok), spec_support_modules(error))
     TupleSpec(elements) -> list.flat_map(elements, spec_support_modules)
+    FunctionSpec(_, result) -> spec_support_modules(result)
     CustomSpec(_, arguments, variants)
     | ImportedCustomSpec(_, _, arguments, variants) ->
       list.append(
@@ -300,6 +301,9 @@ fn collect(spec: GenSpec, scope: Scope, acc: Helpers) -> Helpers {
       list.fold(elements, acc, fn(seen, element) {
         collect(element, scope, seen)
       })
+    // What is generated for a function parameter is its result: the function
+    // itself is written around that value where the call is made.
+    FunctionSpec(_, result) -> collect(result, scope, acc)
     // A type argument is only reached through the variants it was substituted
     // into, so a parameter no variant uses needs no helpers of its own — but
     // every annotation still writes it out, which is what `annotated` walks.
@@ -395,6 +399,7 @@ fn annotated(acc: Helpers, spec: GenSpec) -> Helpers {
       let acc = list.fold(provider.parameters, acc, annotated)
       annotated(acc, observer.result)
     }
+    FunctionSpec(_, result) -> annotated(acc, result)
     _ -> acc
   }
 }
@@ -410,6 +415,7 @@ fn custom_keys(spec: GenSpec, scope: Scope, acc: List(String)) -> List(String) {
       list.fold(elements, acc, fn(seen, element) {
         custom_keys(element, scope, seen)
       })
+    FunctionSpec(_, result) -> custom_keys(result, scope, acc)
     CustomSpec(name, arguments, variants) -> {
       let key = custom_key(name, arguments, scope)
       case list.contains(acc, key) {
@@ -548,6 +554,8 @@ fn fingerprint(spec: GenSpec, scope: Scope) -> String {
       "t_" <> imported_custom_key(module, name, arguments, scope)
     OpaqueSpec(module, name, arguments, _, _, _) ->
       "t_" <> opaque_key(module, name, arguments, scope)
+    FunctionSpec(arity, result) ->
+      "fn" <> int.to_string(arity) <> "_" <> fingerprint(result, scope)
     RecursiveRef(name) -> "t_" <> recursive_key(name, scope)
   }
 }
@@ -589,6 +597,7 @@ fn references(spec: GenSpec, name: String) -> Bool {
       list.any(arguments, references(_, name))
       || list.any(provider.parameters, references(_, name))
       || references(observer.result, name)
+    FunctionSpec(_, result) -> references(result, name)
     _ -> False
   }
 }
@@ -712,6 +721,7 @@ fn instantiations(
       list.fold(elements, acc, fn(seen, element) {
         instantiations(element, scope, seen)
       })
+    FunctionSpec(_, result) -> instantiations(result, scope, acc)
     CustomSpec(name, arguments, variants) -> {
       let entry = #(
         custom_key(name, arguments, scope),
@@ -1656,6 +1666,9 @@ fn generator_expression(
       <> "("
       <> depth
       <> ")"
+    // What travels through the probe is the result: the function is built at
+    // the call site, which is the only place its argument types are known.
+    FunctionSpec(_, result) -> generator_expression(result, depth, scope, told)
     RecursiveRef(name) ->
       "gen_type_" <> recursive_key(name, scope) <> "(" <> spent_depth <> ")"
   }
@@ -1750,6 +1763,10 @@ fn type_source(spec: GenSpec, scope: Scope) -> String {
       <> string.join(list.map(elements, type_source(_, scope)), ", ")
       <> ")"
     CustomSpec(name, arguments, _) -> custom_type_source(name, arguments, scope)
+    // The tuple holds the result, not the function, so this is its type. The
+    // function's own argument types are never written down: `fn(_, _) { … }`
+    // at the call site takes them from the function being called.
+    FunctionSpec(_, result) -> type_source(result, scope)
     ImportedCustomSpec(module, name, arguments, _) ->
       custom_type_source_with(module_alias(module), name, arguments, scope)
     OpaqueSpec(module, name, arguments, _, _, access) ->
@@ -1926,11 +1943,24 @@ fn show_expression(
         <> ")",
       fresh,
     )
+    // The value is the result the generated function answers with, so what a
+    // reader has to see written down is the function around it. The discards
+    // are what the call site writes too, and their types come from the
+    // function being called rather than from anything here.
+    FunctionSpec(arity, result) -> {
+      let #(inner, next) = show_expression(result, variable, fresh, scope)
+      #(quoted(function_prefix(arity)) <> " <> " <> inner <> " <> \" }\"", next)
+    }
     RecursiveRef(name) -> #(
       "show_type_" <> recursive_key(name, scope) <> "(" <> variable <> ")",
       fresh,
     )
   }
+}
+
+/// `fn(_, _) { ` — the head of a constant function of `arity` discards.
+fn function_prefix(arity: Int) -> String {
+  "fn(" <> string.join(list.repeat("_", arity), ", ") <> ") { "
 }
 
 fn show_expressions(
@@ -2147,8 +2177,31 @@ fn runner_function(plan: typederive.FunctionPlan) -> String {
   <> ", mutant: String) {\n  isolated(fn() { target."
   <> plan.name
   <> "("
-  <> string.join(argument_variables(plan), ", ")
+  <> string.join(call_arguments(plan), ", ")
   <> ") }, mutant, call_timeout_ms)\n}"
+}
+
+/// The expressions the probe passes to the function under test.
+///
+/// These are the argument *variables* except where a parameter is
+/// function-typed: the tuple carries the result such a function answers with,
+/// and the function itself is written here, around it. Writing it here is what
+/// lets its argument types go unwritten — the call site takes them from the
+/// function being called — and what keeps one value per case, so a replayed
+/// original answers the same way three times running.
+fn call_arguments(plan: typederive.FunctionPlan) -> List(String) {
+  list.map(
+    list.zip(
+      list.map(plan.parameters, fn(parameter) { parameter.spec }),
+      argument_variables(plan),
+    ),
+    fn(pair) {
+      case pair.0 {
+        FunctionSpec(arity, _) -> function_prefix(arity) <> pair.1 <> " }"
+        _ -> pair.1
+      }
+    },
+  )
 }
 
 /// Renders the comparison the search and the kill set are both settled by:
