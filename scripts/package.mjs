@@ -10,6 +10,8 @@ import process from "node:process";
 import zlib from "node:zlib";
 import Ajv from "ajv";
 
+import { download } from "./deps-download.mjs";
+
 const root = process.cwd();
 const dist = path.join(root, "dist");
 const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
@@ -88,7 +90,11 @@ function copyProject(destination) {
     filter(source) {
       const relative = path.relative(root, source);
       if (!relative) return true;
-      return !ignored.has(relative.split(path.sep)[0]);
+      const segments = relative.split(path.sep);
+      // `build` is excluded wherever it sits, not only at the root: a fixture
+      // whose dependencies were fetched in place has one of its own, and no
+      // build output belongs in an artifact under any name.
+      return !ignored.has(segments[0]) && !segments.includes("build");
     },
   });
 }
@@ -317,7 +323,7 @@ function smokeHexArtifact(artifact, temporaryRoot) {
   }
   makeMutationProject(consumer, "gleam_mutants = { path = \"vendor/gleam_mutants\" }\n");
   addSmartestConsumerContract(consumer);
-  run("gleam", ["deps", "download"], consumer);
+  download(consumer, fixedEnvironment);
   const smartest = run("gleam", ["test", "--target", "erlang"], consumer, { capture: true });
   if (!smartest.includes("3 passed, 0 failed")) {
     throw new Error(`Packaged Smartest discovery did not run every consumer test: ${smartest}`);
@@ -331,7 +337,7 @@ function smokeHexArtifact(artifact, temporaryRoot) {
 function buildHex(temporaryRoot) {
   const project = path.join(temporaryRoot, "hex");
   copyProject(project);
-  run("gleam", ["deps", "download"], project);
+  download(project, fixedEnvironment);
   const exportDirectory = process.platform === "win32" ? `\\\\?\\${project}` : project;
   run("gleam", ["export", "hex-tarball"], exportDirectory);
   const artifact = findFile(project, file => file.endsWith(`gleam_mutants-${version}.tar`));
@@ -355,7 +361,7 @@ function buildEscript(temporaryRoot) {
   if (!output.includes(version)) throw new Error(`Unexpected escript version: ${output}`);
   const smoke = path.join(temporaryRoot, "escript-smoke");
   makeMutationProject(smoke);
-  run("gleam", ["deps", "download"], smoke);
+  download(smoke, fixedEnvironment);
   run("escript", [target, "run", "--no-strict", "--jobs", "2"], smoke);
   return { artifact: target, report: verifyReports(smoke, "Escript") };
 }

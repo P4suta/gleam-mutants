@@ -897,8 +897,8 @@ fn boundary_mutant_id(root: String) -> String {
 
 /// The files a copy of the fixture is made of.
 const fixture_files = [
-  "gleam.toml", "src/boundary.gleam", "test/boundary_test.gleam",
-  "test/boundary_fixture_test.gleam",
+  "gleam.toml", "manifest.toml", "src/boundary.gleam",
+  "test/boundary_test.gleam", "test/boundary_fixture_test.gleam",
 ]
 
 /// A throwaway copy of the fixture, which this smoke writes into.

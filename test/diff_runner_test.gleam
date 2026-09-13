@@ -22,6 +22,7 @@ import gleam_mutants/core/path
 import gleam_mutants/engine
 import gleam_mutants/platform
 import gleam_mutants/suggest/diff_runner
+import lockfile_support
 
 @target(erlang)
 import gleam/int
@@ -562,6 +563,9 @@ fn workspace(gleam_toml: String, sources: List(#(String, String))) -> String {
   case string.contains(gleam_toml, "[dependencies]") {
     False -> Nil
     True -> {
+      // Lock the version first: an unlocked project asks the Hex API to
+      // resolve it on every build, and the answer is rate limited per address.
+      lockfile_support.lock(root, [#("gleam_stdlib", ">= 0.44.0 and < 2.0.0")])
       let downloaded =
         platform.run_process("gleam", ["deps", "download"], root, [], 120_000)
       case downloaded.timed_out, downloaded.status {

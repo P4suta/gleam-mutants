@@ -29,6 +29,8 @@ import gleam_mutants/suggest/pbt_source
 import gleam_mutants/suggest/probe_result
 import gleam_mutants/suggest/typederive
 @target(erlang)
+import lockfile_support
+@target(erlang)
 import simplifile
 
 // --- the module under test ---------------------------------------------------
@@ -1452,6 +1454,17 @@ fn write_file(root: String, relative: String, contents: String) -> Nil {
 }
 
 @target(erlang)
+/// Writes the throwaway project's manifest, versions locked.
+///
+/// Locking matters even though the project is deleted straight after: an
+/// unlocked project resolves its versions against the Hex API on every build,
+/// and Hex rate limits by address, which a hosted runner shares.
+fn write_project(root: String) -> Nil {
+  write_file(root, "gleam.toml", project_toml())
+  lockfile_support.lock(root, [#("gleam_stdlib", ">= 0.44.0 and < 2.0.0")])
+}
+
+@target(erlang)
 fn project_toml() -> String {
   string.join(
     [
@@ -2065,7 +2078,7 @@ fn live_run(root: String) -> LiveRun {
   let assert Ok(generated) = runtime.generate(root, "e2eprobe0001")
   let rt = runtime.name(generated)
   let pbt_module = "gleam_mutants_pbt_e2e"
-  write_file(root, "gleam.toml", project_toml())
+  write_project(root)
   write_file(root, "src/" <> pbt_module <> ".gleam", pbt_source.source())
 
   let shapes_source = shapes_target(rt)
@@ -2386,7 +2399,7 @@ pub fn opaque_input_probe_compiles_and_replays_public_construction_test() {
       call_timeout_ms: 250,
       nondeterminism_checks: 1,
     )
-  write_file(root, "gleam.toml", project_toml())
+  write_project(root)
   write_file(root, "src/" <> pbt_module <> ".gleam", pbt_source.source())
   write_file(root, "src/" <> target_module <> ".gleam", source)
   write_file(
@@ -2566,7 +2579,7 @@ fn generic_live_run(root: String) -> GenericRun {
   let assert Ok(generated) = runtime.generate(root, "e2egeneric01")
   let rt = runtime.name(generated)
   let pbt_module = "gleam_mutants_pbt_generic"
-  write_file(root, "gleam.toml", project_toml())
+  write_project(root)
   write_file(root, "src/" <> pbt_module <> ".gleam", pbt_source.source())
 
   let generic_source = generic_target(rt)
