@@ -17,8 +17,9 @@ import childProcess from "node:child_process";
 import process from "node:process";
 import url from "node:url";
 
-const attempts = 6;
+const attempts = 8;
 const firstDelayMs = 2000;
+const longestDelayMs = 60_000;
 
 /** Whether a failed attempt is worth repeating. */
 function transient(output) {
@@ -54,7 +55,7 @@ export function download(directory, environment = process.env) {
     if (attempt === attempts || !transient(output)) {
       throw new Error(`gleam deps download failed in ${directory} with exit ${result.status}`);
     }
-    const delay = firstDelayMs * 2 ** (attempt - 1);
+    const delay = Math.min(firstDelayMs * 2 ** (attempt - 1), longestDelayMs);
     process.stdout.write(`gleam deps download: Hex would not answer; retrying in ${delay}ms\n`);
     sleep(delay);
   }
