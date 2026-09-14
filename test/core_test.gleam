@@ -314,12 +314,21 @@ pub fn catalog_drops_an_integer_sign_test() {
 /// call is where it stops.
 pub fn catalog_marks_what_may_be_answered_twice_test() {
   let source =
-    "pub fn scale(a: Int, b: Int, c: Int) -> Int {\n"
+    "import gleam/option.{type Option, Some}\n\n"
+    <> "pub type Point {\n  Point(x: Int, y: Int)\n}\n\n"
+    <> "pub fn scale(a: Int, b: Int, point: Point) -> Int {\n"
     <> "  let doubled = a + b\n"
     <> "  let called = double(a) + b\n"
     <> "  let listed = [a, b] == [b, a]\n"
-    <> "  doubled + called + c\n}\n\n"
-    <> "pub fn double(n: Int) -> Int {\n  n * 2\n}\n"
+    <> "  let reached = point.x + b\n"
+    <> "  let built = wrap(a) == Some(b)\n"
+    <> "  doubled + called + reached + built_to_int(built) + listed_to_int(listed)\n}\n\n"
+    <> "pub fn double(n: Int) -> Int {\n  n * 2\n}\n\n"
+    <> "pub fn wrap(n: Int) -> Option(Int) {\n  Some(n)\n}\n\n"
+    <> "pub fn built_to_int(value: Bool) -> Int {\n  case value {\n"
+    <> "    True -> 1\n    False -> 0\n  }\n}\n\n"
+    <> "pub fn listed_to_int(value: Bool) -> Int {\n  case value {\n"
+    <> "    True -> 1\n    False -> 0\n  }\n}\n"
   let assert Ok(discovered) =
     catalog.discover("src/scale.gleam", source, operator.all())
   let comparable = set.from_list(discovered.comparable)
@@ -338,11 +347,16 @@ pub fn catalog_marks_what_may_be_answered_twice_test() {
   assert list.contains(marked, "a + b")
   assert list.contains(marked, "n * 2")
   assert list.contains(marked, "2")
-  // A call may reach an external function, and an external function may do
-  // anything -- including not returning.
+  // Building a value is not running the program, so a list of safe elements
+  // is safe, and so is a constructor applied to them.
+  assert list.contains(marked, "[a, b] == [b, a]")
+  // Reading a field runs nothing either, and which fields a value has is
+  // settled by the compiler rather than at run time.
+  assert list.contains(marked, "point.x + b")
+  // A function applied is the program run, and the program may reach an
+  // external function, which may do anything -- including not returning.
   assert !list.contains(marked, "double(a) + b")
-  // A list is not made of operators, so nothing vouches for what is inside it.
-  assert !list.contains(marked, "[a, b] == [b, a]")
+  assert !list.contains(marked, "wrap(a) == Some(b)")
   // Nothing is marked that is not a mutant of this file.
   assert list.all(discovered.comparable, fn(id) { original(id) != "" })
 }
