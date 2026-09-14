@@ -15,7 +15,13 @@ import gleam_mutants/core/operator.{type Operator}
 import gleam_mutants/core/span
 
 pub type Catalog {
-  Catalog(mutants: List(Mutant), rejected: List(RejectedCandidate))
+  Catalog(
+    mutants: List(Mutant),
+    rejected: List(RejectedCandidate),
+    /// Mutants whose replacement may be evaluated beside the original without
+    /// changing what the program does. See `inert`.
+    comparable: List(String),
+  )
 }
 
 /// Describes whether a rule is based only on syntax or on definite type evidence.
@@ -78,12 +84,30 @@ pub fn discover(
     expressions
     |> list.flat_map(rejected_candidates(path, enabled, _))
 
+  let inert_spans =
+    expressions
+    |> list.flat_map(inert_spans(source, _))
+    |> set.from_list
+
   let source_index = mutant.index_source(source)
   candidates
   |> deduplicate_candidates
   |> list.map(mutant.from_candidate_indexed(source, _, source_index))
   |> assign_display_ids
-  |> fn(mutants) { Catalog(mutants, rejected) }
+  |> fn(mutants) {
+    Catalog(
+      mutants,
+      rejected,
+      mutants
+        |> list.filter(fn(item) {
+          set.contains(inert_spans, #(
+            span.start(item.span),
+            span.end(item.span),
+          ))
+        })
+        |> list.map(fn(item) { item.id }),
+    )
+  }
 }
 
 /// The names a module has for the two `Option` constructors.
@@ -178,6 +202,60 @@ fn last_segment(module_name: String) -> String {
   |> string.split("/")
   |> list.last
   |> result.unwrap(module_name)
+}
+
+/// Byte spans whose expression may be evaluated a second time for free.
+///
+/// A run already walks the whole suite once with nothing mutated, to learn
+/// which tests reach which site. Where the replacement may be evaluated beside
+/// the original on that same walk, the run also learns whether the two ever
+/// answered differently -- and a mutant whose two branches never parted cannot
+/// be told apart by those tests, so it needs none of them run against it.
+///
+/// The whole of the mutated expression has to be safe, not just the token that
+/// changes, because the replacement re-evaluates all of it.
+fn inert_spans(
+  source: String,
+  expression: glance.Expression,
+) -> List(#(Int, Int)) {
+  let own = case inert(expression) {
+    True -> [
+      #(
+        location_start(source, expression.location),
+        location_end(source, expression.location),
+      ),
+    ]
+    False -> []
+  }
+  list.append(
+    own,
+    child_expressions(expression)
+      |> list.flat_map(inert_spans(source, _)),
+  )
+}
+
+/// Whether evaluating this expression a second time is free of consequence.
+///
+/// Gleam has no effects outside external functions, and its arithmetic is
+/// total on both targets -- `7 / 0` is `0`, `7 % 0` is `0`, `7.0 /. 0.0` is
+/// `0.0`, none of them a crash -- so an expression built from literals,
+/// variables and its own operators answers the same however often it is asked,
+/// and does nothing else on the way. A call is where that stops: it may reach
+/// an external function, and an external function may do anything, including
+/// not returning.
+///
+/// `|>` is a call written another way, so it is out for the same reason. A
+/// list or a constructor is out because the expression under it need not be
+/// inert, and a whole expression is only as safe as its least safe part.
+fn inert(expression: glance.Expression) -> Bool {
+  case expression {
+    glance.Int(_, _) | glance.Float(_, _) | glance.String(_, _) -> True
+    glance.Variable(_, _) -> True
+    glance.NegateInt(_, value) | glance.NegateBool(_, value) -> inert(value)
+    glance.BinaryOperator(_, name, left, right) ->
+      name != glance.Pipe && inert(left) && inert(right)
+    _ -> False
+  }
 }
 
 fn semantic_rule(operator: Operator, evidence: TypeEvidence) -> MutationRule {
