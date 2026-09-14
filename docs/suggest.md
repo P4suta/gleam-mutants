@@ -465,7 +465,8 @@ source; see [`editors/vscode/README.md`](../editors/vscode/README.md).
 
 ## Error codes
 
-All three commands share the `GMU8xxx` range. Every one of these exits 2.
+All three commands share the `GMU8xxx` range. Every one of these exits 2. The
+whole catalogue, every family, is in [error codes](errors.md).
 
 | Code | Meaning |
 | --- | --- |
