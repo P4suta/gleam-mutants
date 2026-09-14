@@ -823,7 +823,10 @@ fn execute(command: Command) -> Nil {
     CacheCleanCommand(options) ->
       with_workspace(options, fn(workspace) {
         case cache.clean(workspace) {
-          Ok(Nil) -> io.println("Removed outcome cache for this workspace.")
+          Ok(Nil) ->
+            io.println(
+              "Removed the outcome cache and the kept snapshot for this workspace.",
+            )
           Error(error) -> fail("GMU6001: could not clean cache: " <> error)
         }
       })

@@ -141,3 +141,64 @@ pub fn a_duplicated_snapshot_leaves_a_link_for_the_compiler_test() {
   let assert Ok(Nil) = snapshot.dispose(captured)
   let assert Ok(Nil) = platform.delete_tree(root)
 }
+
+/// The compiler's work survives into the next capture; a stale source does not.
+///
+/// Capturing into a directory that is kept is what lets the next run compile
+/// only what changed, and the whole risk of it is the other half: a file the
+/// workspace no longer has, or one an earlier run generated, would still be
+/// there to compile. Both are pinned here, because neither is visible in a
+/// verdict until it is wrong.
+pub fn a_kept_snapshot_holds_the_build_and_drops_what_the_workspace_lost_test() {
+  let root = workspace("kept")
+  let destination =
+    path.join(
+      platform.temporary_directory(),
+      "gleam-mutants-kept-" <> platform.random_nonce(),
+    )
+
+  let assert Ok(first) = snapshot.keep(root, destination, [])
+  assert snapshot.root(first) == destination
+  // Disposing a kept copy leaves it where it is; that is the point of it.
+  let assert Ok(Nil) = snapshot.dispose(first)
+  assert simplifile.is_directory(destination) == Ok(True)
+
+  // What the baseline leaves behind, and an earlier run's generated module.
+  let built = path.join(destination, "build/dev/erlang")
+  let assert Ok(Nil) = simplifile.create_directory_all(built)
+  let assert Ok(Nil) =
+    simplifile.write(path.join(built, "artefact.beam"), "beam")
+  let assert Ok(Nil) =
+    simplifile.write(
+      path.join(destination, "src/gleam_mutants_runtime_abc.gleam"),
+      "pub fn active() { \"\" }\n",
+    )
+  // And a source the workspace has since lost.
+  let assert Ok(Nil) =
+    simplifile.write(path.join(root, "src/gone.gleam"), "pub fn gone() { 1 }\n")
+  let assert Ok(second) = snapshot.keep(root, destination, [])
+  let assert Ok(Nil) = snapshot.dispose(second)
+  assert simplifile.is_file(path.join(destination, "src/gone.gleam"))
+    == Ok(True)
+
+  let assert Ok(Nil) = simplifile.delete(path.join(root, "src/gone.gleam"))
+  let assert Ok(third) = snapshot.keep(root, destination, [])
+
+  // The artefacts are still there, so the compiler has nothing to redo.
+  let assert Ok(carried) = simplifile.read(path.join(built, "artefact.beam"))
+  assert carried == "beam"
+  // The lost source is gone, and so is the module the earlier run generated.
+  assert simplifile.is_file(path.join(destination, "src/gone.gleam"))
+    == Ok(False)
+  assert simplifile.is_file(path.join(
+      destination,
+      "src/gleam_mutants_runtime_abc.gleam",
+    ))
+    == Ok(False)
+  // Which is to say: the kept copy is the workspace, and says so.
+  assert snapshot.digest(third) == snapshot.digest(first)
+
+  let assert Ok(Nil) = snapshot.dispose(third)
+  let assert Ok(Nil) = platform.delete_tree(destination)
+  let assert Ok(Nil) = platform.delete_tree(root)
+}

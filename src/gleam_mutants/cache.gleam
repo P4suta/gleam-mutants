@@ -73,6 +73,15 @@ fn normalize_workspace_identity(workspace: String) -> String {
   }
 }
 
+/// Where the copy a run keeps for the next one lives.
+///
+/// It is under the same per-workspace directory as the outcomes, so one
+/// `cache clean` answers for both and a reader who wants a cold tree has one
+/// thing to remove rather than two.
+pub fn workspace_snapshot(workspace: String) -> String {
+  workspace_directory(workspace_id(workspace)) |> path.join("snapshot")
+}
+
 fn workspace_directory(id: String) -> String {
   platform.cache_directory()
   |> path.join("gleam-mutants/v1/workspaces")
@@ -192,16 +201,35 @@ pub fn write(
 pub fn status(workspace: String) -> String {
   let id = workspace_id(workspace)
   let directory = workspace_directory(id) |> path.join("outcomes")
+  let kept = workspace_snapshot(workspace)
+  "cache: "
+  <> presence(directory)
+  <> "\nworkspace: "
+  <> id
+  <> "\npath: "
+  <> directory
+  <> "\nsnapshot: "
+  <> presence(kept)
+  <> "\nsnapshot path: "
+  <> kept
+  <> "\n"
+}
+
+fn presence(directory: String) -> String {
   case simplifile.is_directory(directory) {
-    Ok(True) ->
-      "cache: present\nworkspace: " <> id <> "\npath: " <> directory <> "\n"
-    _ -> "cache: empty\nworkspace: " <> id <> "\npath: " <> directory <> "\n"
+    Ok(True) -> "present"
+    _ -> "empty"
   }
 }
 
 pub fn clean(workspace: String) -> Result(Nil, String) {
-  let target =
+  let outcomes =
     workspace_directory(workspace_id(workspace)) |> path.join("outcomes")
+  use _ <- result.try(remove(outcomes))
+  remove(workspace_snapshot(workspace))
+}
+
+fn remove(target: String) -> Result(Nil, String) {
   case simplifile.delete(target) {
     Ok(Nil) | Error(simplifile.Enoent) -> Ok(Nil)
     Error(error) -> Error(simplifile.describe_error(error))

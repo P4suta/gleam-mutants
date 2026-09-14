@@ -5,6 +5,7 @@ import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/result
+import gleam/set
 import gleam/string
 import gleam_mutants/core/bytes
 import gleam_mutants/core/glob
@@ -18,7 +19,12 @@ pub type ManifestEntry {
 }
 
 pub opaque type Snapshot {
-  Snapshot(root: String, entries: List(ManifestEntry), digest: String)
+  Snapshot(
+    root: String,
+    entries: List(ManifestEntry),
+    digest: String,
+    kept: Bool,
+  )
 }
 
 const tool_directory = ".gleam_mutants"
@@ -62,7 +68,7 @@ pub fn duplicate(base: Snapshot) -> Result(Snapshot, String) {
     |> result.map_error(simplifile.describe_error),
   )
   case copy_tree(base.root, destination, "") {
-    Ok(Nil) -> Ok(Snapshot(destination, base.entries, base.digest))
+    Ok(Nil) -> Ok(Snapshot(destination, base.entries, base.digest, False))
     Error(error) -> cleanup_failed_snapshot(destination, error)
   }
 }
@@ -116,6 +122,122 @@ fn copy_tree(
   }
 }
 
+/// Captures `source_root` into a directory the caller keeps between runs.
+///
+/// A run's copy is thrown away when it ends, so the next run compiles the
+/// package and every dependency again from cold however little changed. Gleam
+/// decides what to recompile by content and not by timestamp -- writing a file
+/// the bytes it already had recompiles nothing -- so a directory written over
+/// each run, rather than made each run, leaves the compiler exactly the work
+/// the edit actually caused and none of the work it did not.
+///
+/// What that gives up is the guarantee an empty destination hands `create` for
+/// nothing: that the copy is the workspace and is nothing else. It is bought
+/// back here. Whatever the copy did not write is removed, and the result is
+/// then scanned and held against what was copied, so a kept directory that is
+/// not the workspace byte for byte is an error rather than a verdict.
+pub fn keep(
+  source_root: String,
+  destination: String,
+  excluded_directories: List(String),
+) -> Result(Snapshot, String) {
+  use _ <- result.try(
+    simplifile.create_directory_all(destination)
+    |> result.map_error(simplifile.describe_error),
+  )
+  let exclusions = list.map(excluded_directories, mutant.normalize_path)
+  use entries <- result.try(copy_directory(
+    source_root,
+    destination,
+    "",
+    [],
+    exclusions,
+  ))
+  let sorted = list.sort(entries, fn(a, b) { string.compare(a.path, b.path) })
+  let copied_digest = manifest_digest(sorted)
+  use current <- result.try(scan_directory(source_root, "", [], exclusions))
+  use _ <- result.try(
+    case
+      manifest_digest(
+        list.sort(current, fn(a, b) { string.compare(a.path, b.path) }),
+      )
+      == copied_digest
+    {
+      True -> Ok(Nil)
+      False -> Error("workspace changed while snapshot was being captured")
+    },
+  )
+  let written = set.from_list(list.map(sorted, fn(entry) { entry.path }))
+  use _ <- result.try(prune(destination, "", written, exclusions))
+  use present <- result.try(scan_directory(destination, "", [], exclusions))
+  case
+    manifest_digest(
+      list.sort(present, fn(a, b) { string.compare(a.path, b.path) }),
+    )
+    == copied_digest
+  {
+    True -> Ok(Snapshot(destination, sorted, copied_digest, True))
+    False -> Error("kept snapshot does not match the workspace it came from")
+  }
+}
+
+/// Removes everything under `relative` the capture did not write, and answers
+/// whether anything is left there.
+///
+/// The excluded directories are what the kept copy exists for -- `build` above
+/// all -- so they are left alone and count as something being left.
+fn prune(
+  root: String,
+  relative: String,
+  written: set.Set(String),
+  exclusions: List(String),
+) -> Result(Bool, String) {
+  use names <- result.try(
+    simplifile.read_directory(path.join(root, relative))
+    |> result.map_error(simplifile.describe_error),
+  )
+  use inhabited, name <- list.try_fold(list.sort(names, string.compare), False)
+  let child = case relative {
+    "" -> name
+    _ -> path.join(relative, name)
+  }
+  let target = path.join(root, child)
+  case excluded(child, exclusions) {
+    True -> Ok(True)
+    False -> {
+      use info <- result.try(
+        simplifile.link_info(target)
+        |> result.map_error(simplifile.describe_error),
+      )
+      case simplifile.file_info_type(info) {
+        simplifile.Directory ->
+          case prune(root, child, written, exclusions) {
+            Error(error) -> Error(error)
+            Ok(True) -> Ok(True)
+            Ok(False) -> {
+              use _ <- result.try(
+                simplifile.delete(target)
+                |> result.map_error(simplifile.describe_error),
+              )
+              Ok(inhabited)
+            }
+          }
+        _ ->
+          case set.contains(written, child) {
+            True -> Ok(True)
+            False -> {
+              use _ <- result.try(
+                simplifile.delete(target)
+                |> result.map_error(simplifile.describe_error),
+              )
+              Ok(inhabited)
+            }
+          }
+      }
+    }
+  }
+}
+
 pub fn create_excluding(
   source_root: String,
   excluded_directories: List(String),
@@ -151,7 +273,7 @@ fn create_attempt(
             |> list.sort(fn(a, b) { string.compare(a.path, b.path) })
             |> manifest_digest
           case current_digest == copied_digest {
-            True -> Ok(Snapshot(destination, sorted, copied_digest))
+            True -> Ok(Snapshot(destination, sorted, copied_digest, False))
             False ->
               case platform.delete_tree(destination), retries {
                 Ok(Nil), retries if retries > 0 ->
@@ -417,5 +539,8 @@ pub fn source_files(
 }
 
 pub fn dispose(snapshot: Snapshot) -> Result(Nil, String) {
-  platform.delete_tree(snapshot.root)
+  case snapshot.kept {
+    True -> Ok(Nil)
+    False -> platform.delete_tree(snapshot.root)
+  }
 }

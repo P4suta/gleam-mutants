@@ -121,6 +121,17 @@ opposite way, to one name, for one run. Neither is enforcement — an excluded
 function's effects still happen when a probed function calls it — so see [side
 effects](suggest.md#side-effects) before probing code you do not know.
 
+`run` also keeps its copy of the workspace between runs, beside the outcome
+cache and under the same workspace key. Gleam decides what to recompile by
+content rather than by timestamp, so a copy written over rather than made anew
+leaves the compiler exactly the work the edit caused: a run that changes one
+module compiles that module, where every run used to compile the package and
+every dependency from cold. The copy is held to the workspace byte for byte
+every time it is written -- anything the workspace no longer has is removed, and
+a copy that does not come back matching is thrown away and made fresh -- so it
+cannot change a verdict, only what a verdict costs. `cache = off` declines it,
+`cache status` names it, and `cache clean` removes it along with the outcomes.
+
 Enabled project formats atomically replace fixed `mutation.json` and
 `mutation.html` targets in that directory. `formats = []` or `--report none`
 disables project reports without deleting existing files; `history = false`
