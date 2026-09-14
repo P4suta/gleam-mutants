@@ -3,6 +3,7 @@
 
 import gleam/list
 import gleam/string
+import gleam_mutants/cache
 import gleam_mutants/core/path
 import gleam_mutants/engine
 import gleam_mutants/platform
@@ -200,5 +201,67 @@ pub fn a_kept_snapshot_holds_the_build_and_drops_what_the_workspace_lost_test() 
 
   let assert Ok(Nil) = snapshot.dispose(third)
   let assert Ok(Nil) = platform.delete_tree(destination)
+  let assert Ok(Nil) = platform.delete_tree(root)
+}
+
+/// A kept copy is the largest thing this tool leaves behind, so it is bounded.
+///
+/// One copy is a whole workspace and its build directory. Nothing else here
+/// removes anything, so without this the copies of every workspace ever
+/// mutated would sit in the cache until somebody noticed. The bound is on how
+/// many are kept rather than on how many bytes: reading a marker is one small
+/// file per workspace, where measuring a copy means walking every artefact in
+/// it, and a run should not walk every workspace to find out it is within its
+/// budget.
+pub fn kept_copies_are_bounded_by_how_recently_they_were_used_test() {
+  let root =
+    path.join(
+      platform.temporary_directory(),
+      "gleam-mutants-collect-" <> platform.random_nonce(),
+    )
+  let place = fn(id: String, used: String) {
+    let assert Ok(Nil) =
+      simplifile.create_directory_all(path.join(root, id <> "/snapshot/src"))
+    let assert Ok(Nil) =
+      simplifile.write(
+        path.join(root, id <> "/snapshot/src/a.gleam"),
+        "pub fn a() { 1 }\n",
+      )
+    let assert Ok(Nil) =
+      simplifile.write(path.join(root, id <> "/snapshot.used"), used)
+    // Outcomes live beside the copy and are not this collection's business.
+    let assert Ok(Nil) =
+      simplifile.create_directory_all(path.join(root, id <> "/outcomes"))
+    Nil
+  }
+  let held = fn(id: String) {
+    simplifile.is_directory(path.join(root, id <> "/snapshot")) == Ok(True)
+  }
+
+  place("oldest", "1000")
+  place("middle", "2000")
+  place("newest", "3000")
+
+  cache.collect_snapshots(root, 2)
+  assert held("newest")
+  assert held("middle")
+  assert !held("oldest")
+  // The marker goes with the copy, and nothing else beside it is touched.
+  assert simplifile.is_file(path.join(root, "oldest/snapshot.used"))
+    == Ok(False)
+  assert simplifile.is_directory(path.join(root, "oldest/outcomes")) == Ok(True)
+
+  // A copy with no marker at all reads as never used, and goes first.
+  place("unmarked", "")
+  cache.collect_snapshots(root, 2)
+  assert held("newest")
+  assert held("middle")
+  assert !held("unmarked")
+
+  // Nothing kept means nothing kept.
+  cache.collect_snapshots(root, 0)
+  assert !held("newest")
+  assert !held("middle")
+
   let assert Ok(Nil) = platform.delete_tree(root)
 }

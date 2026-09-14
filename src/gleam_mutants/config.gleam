@@ -111,6 +111,7 @@ pub type Config {
     cache_key: Option(String),
     cache_files: List(String),
     cache_env: List(String),
+    keep_snapshots: Int,
     strict: Option(Bool),
     minimum_score: Float,
     require_mutants: Bool,
@@ -143,6 +144,7 @@ pub fn defaults(cpu_count: Int) -> Config {
     test_selection: TestSelectionAuto,
     cache_mode: CacheAuto,
     cache_key: None,
+    keep_snapshots: 4,
     cache_files: [],
     cache_env: [],
     strict: Some(False),
@@ -278,6 +280,12 @@ fn decode_document(
     cache_name(base.cache_mode),
   ))
   use cache_mode <- result.try(decode_cache(source, cache_name))
+  use keep_snapshots <- result.try(optional_int(
+    source,
+    document,
+    ["tools", "gleam_mutants", "cache", "keep_snapshots"],
+    base.keep_snapshots,
+  ))
   use cache_key <- result.try(optional_optional_string(
     source,
     document,
@@ -414,6 +422,14 @@ fn decode_document(
     return: Error(error_at(source, "command", "test.command cannot be empty")),
   )
   use <- bool.guard(
+    when: keep_snapshots < 0,
+    return: Error(error_at(
+      source,
+      "keep_snapshots",
+      "cache.keep_snapshots cannot be negative",
+    )),
+  )
+  use <- bool.guard(
     when: baseline_runs < 1,
     return: Error(error_at(
       source,
@@ -524,6 +540,7 @@ fn decode_document(
     jobs: jobs,
     test_selection: test_selection,
     cache_mode: cache_mode,
+    keep_snapshots: keep_snapshots,
     cache_key: cache_key,
     cache_files: cache_files,
     cache_env: cache_env,
@@ -578,7 +595,9 @@ fn validate_unknown_keys(
       "baseline_runs",
     ]),
     #(["tools", "gleam_mutants", "execution"], ["jobs", "test_selection"]),
-    #(["tools", "gleam_mutants", "cache"], ["mode", "key", "files", "env"]),
+    #(["tools", "gleam_mutants", "cache"], [
+      "mode", "key", "files", "env", "keep_snapshots",
+    ]),
     #(["tools", "gleam_mutants", "policy"], [
       "strict",
       "minimum_score",
