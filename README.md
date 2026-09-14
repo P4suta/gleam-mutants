@@ -242,7 +242,7 @@ normalized `test-results/ecosystem-summary.json` summary:
 | --- | --- | --- | ---: | ---: |
 | `stdlib@55f9454` | `src/gleam/bool.gleam` | Erlang / 60s | 11 / 11 / 0 | 11 / 0 |
 | `json@9792d8a` | `src/gleam/json.gleam` | Erlang / 30s | 6 / 3 / 3 | 1 / 2 |
-| `http@da44e89` | `src/gleam/http/cookie.gleam` | Erlang / 30s | 39 / 34 / 5 | 31 / 3 |
+| `http@da44e89` | `src/gleam/http/cookie.gleam` | Erlang / 30s | 51 / 46 / 5 | 43 / 3 |
 | `erlang@dfa7cd7` | `src/gleam/erlang/atom.gleam` | Erlang / 30s | 2 / 2 / 0 | 1 / 1 |
 | `javascript@b51b436` | `src/**/*.gleam` | Node / 30s | 6 / 2 / 4 | 1 / 1 |
 

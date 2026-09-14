@@ -51,7 +51,7 @@ const corpora = [
     runtime: "erlang",
     timeout: "30s",
     timeoutMs: 30_000,
-    expected: { candidates: 39, executed: 34, rejected: 5, killed: 31, survived: 3 },
+    expected: { candidates: 51, executed: 46, rejected: 5, killed: 43, survived: 3 },
   },
   {
     name: "erlang",

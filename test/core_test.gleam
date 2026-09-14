@@ -219,6 +219,48 @@ fn option_replacements(source: String) -> List(String) {
   |> list.sort(string.compare)
 }
 
+/// Either half of a concatenation is dropped.
+///
+/// `<>` joins two strings, so each half is definitely a string and definitely
+/// the same type as the whole -- the operator is its own evidence, the way a
+/// typed comparison is. Keeping one half asks whether anything checks that the
+/// other one reaches the answer, which is the question nothing used to ask:
+/// `<>` was the one binary operator with no mutation at all.
+pub fn catalog_drops_either_half_of_a_concatenation_test() {
+  let source =
+    "pub fn greet(name: String) -> String {\n" <> "  \"hello, \" <> name\n}\n"
+  let assert Ok(discovered) =
+    catalog.discover("src/greet.gleam", source, operator.all())
+  let halves =
+    list.filter(discovered.mutants, fn(item) {
+      item.operator == operator.ConcatenationOperand
+    })
+
+  assert list.sort(
+      list.map(halves, fn(item) { item.replacement }),
+      string.compare,
+    )
+    == ["\"hello, \"", "name"]
+  // The span covers the whole join, so each mutant stands where it stood.
+  assert list.all(halves, fn(item) { item.original == "\"hello, \" <> name" })
+
+  // A chain is left-associative, so the outer join keeps `a <> b` on one side
+  // and the inner one is offered its own two halves.
+  let chained =
+    "pub fn join(a: String, b: String, c: String) {\n  a <> b <> c\n}\n"
+  let assert Ok(discovered) =
+    catalog.discover("src/join.gleam", chained, operator.all())
+  assert list.sort(
+      discovered.mutants
+        |> list.filter(fn(item) {
+          item.operator == operator.ConcatenationOperand
+        })
+        |> list.map(fn(item) { item.replacement }),
+      string.compare,
+    )
+    == ["a", "a <> b", "b", "c"]
+}
+
 pub fn catalog_preserves_unicode_comments_and_crlf_test() {
   let source =
     "// 日本語 && comment\r\npub fn classify(n: Int) {\r\n  n < 10 && True\r\n}\r\n"

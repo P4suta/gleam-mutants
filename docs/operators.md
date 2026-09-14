@@ -22,6 +22,7 @@ Version 0.1 provides these versioned operators, each at version 1:
 | `list-neutral` | non-empty list literal to `[]` |
 | `option-neutral` | `Some(x)` to `None`, spelled as the module can |
 | `pipeline-stage-deletion` | remove a Gleam pipeline stage |
+| `concatenation-operand` | `a <> b` to `a`, and to `b` |
 
 Syntactic duplicates and trivial equivalents are deduplicated. `run` and
 `list --validate` validate every remaining candidate with the Gleam compiler;
@@ -49,6 +50,11 @@ under its own test suite, or a module that writes its own option out longhand
 -- gets its own `None`. A constructor that merely shares the name `Some` with
 no absence beside it yields no candidate at all, since there is nothing
 writable to swap in.
+
+`<>` is evidence of the same kind: it joins two strings, so each half is
+definitely a string and definitely the same type as the whole, and either half
+can stand where the join stood. Dropping one asks whether anything checks that
+the other reaches the answer.
 
 An arbitrary expression is not treated as an integer, float, string, list, or
 option by guesswork. Candidates that are emitted but fail compiler validation
