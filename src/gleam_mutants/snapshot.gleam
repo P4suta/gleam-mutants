@@ -27,6 +27,95 @@ pub fn create(source_root: String) -> Result(Snapshot, String) {
   create_excluding(source_root, [])
 }
 
+/// Copies a snapshot this run already made, build directory and all.
+///
+/// Gleam addresses its build artefacts by nothing but the tree they sit in, so
+/// a copy that carries `build` compiles nothing at all, while a copy without it
+/// compiles the package and every dependency from cold. That copy is made once
+/// per execution worker, once per validation batch and once per compile lane,
+/// so leaving the directory behind made the compiler redo the whole closure as
+/// many times as there are workers -- and asking for more workers asked for
+/// more of it. It costs no disk either: a worker that compiles the closure ends
+/// up holding the same artefacts, having built them rather than been handed
+/// them.
+///
+/// `create` refuses a symlink, because a workspace belongs to the user and a
+/// link out of one would take the copy somewhere the user did not offer. A
+/// snapshot is not a workspace: the only links in one are the `priv`
+/// directories Gleam makes under `build`, each pointing back into the
+/// snapshot's own root. They are left behind rather than followed or rewritten,
+/// because the next build makes them again pointing into the copy -- which is
+/// the isolation a worker wants, and one fewer path to get right.
+///
+/// Nothing is digested. Identity belongs to the snapshot this one was made
+/// from, and the re-scan `create` does to catch a workspace changing underfoot
+/// answers a question that cannot arise here: the tree being copied is one only
+/// this run can name, held by this run's workspace lock.
+pub fn duplicate(base: Snapshot) -> Result(Snapshot, String) {
+  let destination =
+    path.join(
+      platform.temporary_directory(),
+      "gleam-mutants-" <> platform.random_nonce(),
+    )
+  use _ <- result.try(
+    simplifile.create_directory(destination)
+    |> result.map_error(simplifile.describe_error),
+  )
+  case copy_tree(base.root, destination, "") {
+    Ok(Nil) -> Ok(Snapshot(destination, base.entries, base.digest))
+    Error(error) -> cleanup_failed_snapshot(destination, error)
+  }
+}
+
+fn copy_tree(
+  source_root: String,
+  destination_root: String,
+  relative: String,
+) -> Result(Nil, String) {
+  use names <- result.try(
+    simplifile.read_directory(path.join(source_root, relative))
+    |> result.map_error(simplifile.describe_error),
+  )
+  use name <- list.try_each(list.sort(names, string.compare))
+  let child = case relative {
+    "" -> name
+    _ -> path.join(relative, name)
+  }
+  let source = path.join(source_root, child)
+  let destination = path.join(destination_root, child)
+  use info <- result.try(
+    simplifile.link_info(source)
+    |> result.map_error(simplifile.describe_error),
+  )
+  case simplifile.file_info_type(info), platform.is_reparse_point(source) {
+    simplifile.Symlink, _ | _, True -> Ok(Nil)
+    simplifile.Other, _ -> Error(special_file_refusal(child))
+    simplifile.Directory, _ -> {
+      use _ <- result.try(
+        simplifile.create_directory_all(destination)
+        |> result.map_error(simplifile.describe_error),
+      )
+      use _ <- result.try(copy_tree(source_root, destination_root, child))
+      simplifile.set_permissions_octal(
+        destination,
+        simplifile.file_info_permissions_octal(info),
+      )
+      |> result.map_error(simplifile.describe_error)
+    }
+    simplifile.File, _ -> {
+      use _ <- result.try(
+        simplifile.copy_file(at: source, to: destination)
+        |> result.map_error(simplifile.describe_error),
+      )
+      simplifile.set_permissions_octal(
+        destination,
+        simplifile.file_info_permissions_octal(info),
+      )
+      |> result.map_error(simplifile.describe_error)
+    }
+  }
+}
+
 pub fn create_excluding(
   source_root: String,
   excluded_directories: List(String),
