@@ -11,7 +11,7 @@ import gleam_mutants/platform
 
 pub fn every_v1_operator_has_a_golden_candidate_test() {
   let source =
-    "import gleam/option.{Some}\n\npub fn identity(value) { value }\n\npub fn exercise(flag: Bool, a: Int, b: Int, x: Float, y: Float) {\n  let _ = True\n  let _ = !flag\n  let _ = flag && False\n  let _ = a == b\n  let _ = a < b\n  let _ = a + b\n  let _ = x +. y\n  let _ = 1\n  let _ = 1.0\n  let _ = \"text\"\n  let _ = [1]\n  let _ = Some(a)\n  a |> identity\n}\n"
+    "import gleam/option.{Some}\n\npub fn identity(value) { value }\n\npub fn exercise(flag: Bool, a: Int, b: Int, x: Float, y: Float) {\n  let _ = True\n  let _ = !flag\n  let _ = flag && False\n  let _ = a == b\n  let _ = a < b\n  let _ = a + b\n  let _ = x +. y\n  let _ = 1\n  let _ = 1.0\n  let _ = \"text\"\n  let _ = [1]\n  let _ = Some(a)\n  let _ = \"a\" <> \"b\"\n  a |> identity\n}\n"
   let assert Ok(discovered_catalog) =
     catalog.discover("src/golden.gleam", source, operator.all())
   let mutants = discovered_catalog.mutants

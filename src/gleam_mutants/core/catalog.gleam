@@ -489,6 +489,24 @@ fn binary_candidates(
             source_for(source, left.location),
           ),
         ]
+        // `<>` joins two strings, so each half is definitely a string and
+        // definitely the same type as the whole: the operator is its own
+        // evidence, the way a typed comparison is. Keeping one half asks
+        // whether anything checks that the other one reaches the answer.
+        glance.Concatenate ->
+          [left.location, right.location]
+          |> list.map(fn(half) {
+            make_candidate(
+              source,
+              path,
+              semantic_rule(
+                operator.ConcatenationOperand,
+                BinaryOperatorEvidence(binary_operator),
+              ),
+              location,
+              source_for(source, half),
+            )
+          })
         _ -> []
       }
   }
