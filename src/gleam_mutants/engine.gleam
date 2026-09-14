@@ -1381,7 +1381,7 @@ fn validate_batch(
   runtime_module: String,
 ) -> Result(Nil, ValidationError) {
   use worker <- result.try(
-    snapshot.create(snapshot.root(base))
+    snapshot.duplicate(base)
     |> result.map_error(ValidationInfrastructure),
   )
   let validation = {
@@ -2471,7 +2471,7 @@ fn create_workers_loop(
   case remaining <= 0 {
     True -> Ok(list.reverse(workers))
     False -> {
-      case snapshot.create(snapshot.root(base)) {
+      case snapshot.duplicate(base) {
         Ok(worker) ->
           create_workers_loop(base, remaining - 1, [worker, ..workers])
         Error(error) ->

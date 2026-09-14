@@ -152,7 +152,7 @@ pub fn execute(
         })
       },
       create_worker: fn() {
-        snapshot.create(snapshot.root(base))
+        snapshot.duplicate(base)
         |> result.map_error(fn(error) {
           "could not create compile worker: " <> error
         })
