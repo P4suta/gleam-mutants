@@ -14,6 +14,9 @@ import { download } from "./deps-download.mjs";
 
 const root = process.cwd();
 const dist = path.join(root, "dist");
+const smokeAttempts = 6;
+const firstSmokeDelayMs = 2000;
+const longestSmokeDelayMs = 60_000;
 const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
   throw new Error(`VERSION is not a valid semantic version: ${version}`);
@@ -65,6 +68,49 @@ function run(name, args, cwd = root, options = {}) {
     throw new Error(`${name} ${args.join(" ")} failed with exit ${result.status}`);
   }
   return (result.stdout || "").trim();
+}
+
+/// Whether a smoke failed because Hex would not answer, and nothing else.
+///
+/// `deps-download.mjs` has a broader predicate, and it must not be reused
+/// here: it treats the word "timeout" as transient, and every mutation run
+/// prints `timed out 0` in its own summary, so any failing smoke would look
+/// retryable. These two phrases are Gleam's, and a mutant cannot produce them.
+function hexRefused(output) {
+  const text = output.toLowerCase();
+  return text.includes("hex api failure") || text.includes("rate limit for the hex api");
+}
+
+/// A smoke's own mutation run, repeated past a Hex API that is refusing.
+///
+/// A project that depends on an artifact by path is resolved again inside the
+/// snapshot every run: a path dependency carries no checksum, so Gleam has to
+/// ask Hex about the rest of the closure to confirm it. That is one API call
+/// per smoke that no lockfile can remove, and Hex rate-limits by address, so a
+/// hosted runner shares the refusal with everyone else on that host. Waiting
+/// answers it. A smoke that fails for any other reason fails here and now.
+function smokeRun(name, args, cwd) {
+  for (let attempt = 1; attempt <= smokeAttempts; attempt += 1) {
+    const [program, programArguments] = command(name, args);
+    const result = childProcess.spawnSync(program, programArguments, {
+      cwd,
+      env: fixedEnvironment,
+      encoding: "utf8",
+      stdio: "pipe",
+      shell: false,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    if (result.error) throw result.error;
+    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    process.stdout.write(output);
+    if (result.status === 0) return;
+    if (attempt === smokeAttempts || !hexRefused(output)) {
+      throw new Error(`${name} ${args.join(" ")} failed with exit ${result.status}`);
+    }
+    const delay = Math.min(firstSmokeDelayMs * 2 ** (attempt - 1), longestSmokeDelayMs);
+    process.stdout.write(`${name}: Hex would not answer the snapshot; retrying in ${delay}ms\n`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+  }
 }
 
 function write(file, text, mode) {
@@ -362,7 +408,7 @@ function smokeHexArtifact(artifact, temporaryRoot) {
   }
   const output = run("gleam", ["run", "-m", "gleam_mutants", "--", "--version"], consumer, { capture: true });
   if (!output.includes(`gleam-mutants ${version}`)) throw new Error(`Unexpected direct dependency CLI version: ${output}`);
-  run("gleam", ["run", "-m", "gleam_mutants", "--", "run", "--no-strict", "--jobs", "2"], consumer);
+  smokeRun("gleam", ["run", "-m", "gleam_mutants", "--", "run", "--no-strict", "--jobs", "2"], consumer);
   return verifyReports(consumer, "Hex");
 }
 
@@ -394,7 +440,7 @@ function buildEscript(temporaryRoot) {
   const smoke = path.join(temporaryRoot, "escript-smoke");
   makeMutationProject(smoke);
   download(smoke, fixedEnvironment);
-  run("escript", [target, "run", "--no-strict", "--jobs", "2"], smoke);
+  smokeRun("escript", [target, "run", "--no-strict", "--jobs", "2"], smoke);
   return { artifact: target, report: verifyReports(smoke, "Escript") };
 }
 
@@ -474,7 +520,7 @@ const javascriptBuild = path.join(root, "build", "dev", "javascript");
   const installed = path.join(smoke, "node_modules", "gleam-mutants", "bin", "gleam-mutants.mjs");
   const output = run(process.execPath, [installed, "--version"], smoke, { capture: true });
   if (!output.includes(version)) throw new Error(`Unexpected npm CLI version: ${output}`);
-  run(process.execPath, [installed, "run", "--no-strict", "--jobs", "2"], smoke);
+  smokeRun(process.execPath, [installed, "run", "--no-strict", "--jobs", "2"], smoke);
   return { artifact, stage, report: verifyReports(smoke, "npm") };
 }
 
