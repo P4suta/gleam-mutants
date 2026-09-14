@@ -11,6 +11,7 @@ Version 0.1 provides these versioned operators, each at version 1:
 | --- | --- |
 | `boolean-literal` | `True` to `False` |
 | `boolean-negation` | remove `!` |
+| `integer-negation` | remove a unary `-` |
 | `boolean-connective` | `&&` to `||` |
 | `equality` | `==` to `!=` |
 | `comparison-boundary` | `<` to `<=`, `>` to `>=` |
@@ -54,7 +55,11 @@ writable to swap in.
 `<>` is evidence of the same kind: it joins two strings, so each half is
 definitely a string and definitely the same type as the whole, and either half
 can stand where the join stood. Dropping one asks whether anything checks that
-the other reaches the answer.
+the other reaches the answer. Gleam's unary `-` is an integer one, so the same
+holds for the number under it. A written-out negative number never reaches that
+rule: `-1` is lexed as a single token and is `integer-neutral`'s business, so
+`integer-negation` is exactly the sign that neither that rule nor a swap of `+`
+for `-` can reach.
 
 An arbitrary expression is not treated as an integer, float, string, list, or
 option by guesswork. Candidates that are emitted but fail compiler validation

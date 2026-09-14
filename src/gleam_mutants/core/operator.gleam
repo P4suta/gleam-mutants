@@ -19,6 +19,7 @@ pub type Operator {
   OptionNeutral
   PipelineStageDeletion
   ConcatenationOperand
+  IntegerNegation
 }
 
 pub fn all() -> List(Operator) {
@@ -37,6 +38,7 @@ pub fn all() -> List(Operator) {
     OptionNeutral,
     PipelineStageDeletion,
     ConcatenationOperand,
+    IntegerNegation,
   ]
 }
 
@@ -56,6 +58,7 @@ pub fn name(operator: Operator) -> String {
     OptionNeutral -> "option-neutral"
     PipelineStageDeletion -> "pipeline-stage-deletion"
     ConcatenationOperand -> "concatenation-operand"
+    IntegerNegation -> "integer-negation"
   }
 }
 

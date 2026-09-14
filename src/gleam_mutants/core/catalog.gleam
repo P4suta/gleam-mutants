@@ -28,6 +28,7 @@ pub type AnalysisMode {
 pub type TypeEvidence {
   BooleanLiteralEvidence
   BooleanNegationEvidence
+  IntegerNegationEvidence
   IntegerLiteralEvidence
   FloatLiteralEvidence
   StringLiteralEvidence
@@ -345,6 +346,20 @@ fn expression_candidates(
         source,
         path,
         semantic_rule(operator.BooleanNegation, BooleanNegationEvidence),
+        location,
+        source_for(source, value.location),
+      ),
+    ]
+    // The same removal on the other prefix operator. Gleam's unary `-` is an
+    // integer one, so dropping the sign keeps the type and flips the answer.
+    // A written-out negative number never arrives here -- `-1` is lexed as one
+    // token and answered by `integer-neutral` -- so this is exactly the sign
+    // that neither that rule nor a swap of `+` and `-` can reach.
+    glance.NegateInt(location, value) -> [
+      make_candidate(
+        source,
+        path,
+        semantic_rule(operator.IntegerNegation, IntegerNegationEvidence),
         location,
         source_for(source, value.location),
       ),

@@ -261,6 +261,41 @@ pub fn catalog_drops_either_half_of_a_concatenation_test() {
     == ["a", "a <> b", "b", "c"]
 }
 
+/// The sign comes off a negated integer.
+///
+/// `!` was already removed and `-` was not, though it is the same shape and
+/// the same kind of evidence: Gleam's unary `-` is an integer one, so dropping
+/// the sign keeps the type and flips the answer. Nothing else reaches that
+/// sign. A written-out negative number is lexed as a single token and is
+/// `integer-neutral`'s business, and a swap of `+` for `-` needs a binary
+/// operator that is not there.
+pub fn catalog_drops_an_integer_sign_test() {
+  let source =
+    "pub fn shift(value: Int, scale: Float) {\n"
+    <> "  let _ = -value\n  let _ = scale *. -1.0\n  value - 1\n}\n"
+  let assert Ok(discovered) =
+    catalog.discover("src/shift.gleam", source, operator.all())
+  let signs =
+    list.filter(discovered.mutants, fn(item) {
+      item.operator == operator.IntegerNegation
+    })
+
+  assert list.map(signs, fn(item) { #(item.original, item.replacement) })
+    == [#("-value", "value")]
+  // `-1.0` is one token, not a sign in front of `1.0`, so it belongs to the
+  // neutral rule; `value - 1` is a subtraction and belongs to the arithmetic
+  // one. Neither is a sign this rule may take.
+  assert list.sort(
+      discovered.mutants
+        |> list.map(fn(item) { operator.name(item.operator) }),
+      string.compare,
+    )
+    == [
+      "float-arithmetic", "float-neutral", "integer-arithmetic",
+      "integer-negation", "integer-neutral",
+    ]
+}
+
 pub fn catalog_preserves_unicode_comments_and_crlf_test() {
   let source =
     "// 日本語 && comment\r\npub fn classify(n: Int) {\r\n  n < 10 && True\r\n}\r\n"
