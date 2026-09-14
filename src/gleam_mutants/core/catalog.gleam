@@ -254,7 +254,53 @@ fn inert(expression: glance.Expression) -> Bool {
     glance.NegateInt(_, value) | glance.NegateBool(_, value) -> inert(value)
     glance.BinaryOperator(_, name, left, right) ->
       name != glance.Pipe && inert(left) && inert(right)
+    // Reading a field runs nothing, and which fields a value has is settled by
+    // the compiler rather than at run time, so there is no absent one to fall
+    // over. The same access spells a constructor of another module.
+    glance.FieldAccess(_, container, _) -> inert(container)
+    glance.TupleIndex(_, tuple, _) -> inert(tuple)
+    // Building a value is not running the program. What goes in it still has
+    // to be safe, which is what these check.
+    glance.Tuple(_, elements) -> list.all(elements, inert)
+    glance.List(_, elements, rest) ->
+      list.all(elements, inert) && inert_option(rest)
+    glance.RecordUpdate(_, _, _, record, fields) ->
+      inert(record) && list.all(record_update_expressions(fields), inert)
+    // A constructor applied is a value built; a function applied is the
+    // program run, and the program may reach an external function.
+    glance.Call(_, function, arguments) ->
+      constructor(function) && list.all(field_expressions(arguments), inert)
     _ -> False
+  }
+}
+
+fn inert_option(value: Option(glance.Expression)) -> Bool {
+  case value {
+    Some(expression) -> inert(expression)
+    None -> True
+  }
+}
+
+/// Whether the thing being applied names a constructor rather than a function.
+///
+/// Gleam spells a constructor with a capital and a function without one, and
+/// the compiler holds every name to that, so this is exact rather than a
+/// guess. A shorthand argument is always the variable of the same name, so it
+/// carries nothing that needs checking.
+fn constructor(expression: glance.Expression) -> Bool {
+  case expression {
+    glance.Variable(_, name) -> capitalised(name)
+    glance.FieldAccess(_, container, label) ->
+      capitalised(label) && inert(container)
+    _ -> False
+  }
+}
+
+fn capitalised(name: String) -> Bool {
+  case string.first(name) {
+    Ok(letter) ->
+      string.uppercase(letter) == letter && string.lowercase(letter) != letter
+    Error(_) -> False
   }
 }
 
