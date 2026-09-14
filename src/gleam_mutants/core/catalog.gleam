@@ -57,6 +57,7 @@ pub fn discover(
   enabled: List(Operator),
 ) -> Result(Catalog, glance.Error) {
   use module_ <- result.map(glance.module(source))
+  let scope = option_scope(module_)
   let expressions =
     list.append(
       module_.functions
@@ -70,7 +71,7 @@ pub fn discover(
     )
   let candidates =
     expressions
-    |> list.flat_map(expression_candidates(source, path, _))
+    |> list.flat_map(expression_candidates(source, path, scope, _))
     |> list.filter(fn(candidate) { list.contains(enabled, candidate.operator) })
   let rejected =
     expressions
@@ -82,6 +83,100 @@ pub fn discover(
   |> list.map(mutant.from_candidate_indexed(source, _, source_index))
   |> assign_display_ids
   |> fn(mutants) { Catalog(mutants, rejected) }
+}
+
+/// The names a module has for the two `Option` constructors.
+type OptionScope {
+  OptionScope(
+    /// The local name of `Some`, paired with how to write `None` beside it,
+    /// when the module can write both without a qualifier on `Some`.
+    unqualified: Option(#(String, String)),
+    /// Qualifiers that reach `gleam/option` as a module.
+    qualifiers: set.Set(String),
+  )
+}
+
+const option_module = "gleam/option"
+
+fn option_scope(module_: glance.Module) -> OptionScope {
+  let imports =
+    module_.imports
+    |> list.map(fn(definition) { definition.definition })
+    |> list.filter(fn(import_) { import_.module == option_module })
+
+  let qualifiers =
+    imports
+    |> list.filter_map(fn(import_) {
+      case import_.alias {
+        Some(glance.Named(alias)) -> Ok(alias)
+        // `import gleam/option as _` keeps the module out of reach.
+        Some(glance.Discarded(_)) -> Error(Nil)
+        None -> Ok(last_segment(import_.module))
+      }
+    })
+    |> set.from_list
+
+  let some =
+    list.find_map(imports, fn(import_) {
+      local_name(import_.unqualified_values, "Some")
+    })
+  // `None` is written unqualified when it was imported that way, and through
+  // the module otherwise, which is what `import gleam/option.{Some}` leaves.
+  let none =
+    list.find_map(imports, fn(import_) {
+      local_name(import_.unqualified_values, "None")
+    })
+    |> result.lazy_or(fn() {
+      qualifiers
+      |> set.to_list
+      |> list.sort(string.compare)
+      |> list.first
+      |> result.map(fn(qualifier) { qualifier <> ".None" })
+    })
+
+  let unqualified =
+    case some, none {
+      Ok(some), Ok(none) -> Ok(#(some, none))
+      _, _ -> Error(Nil)
+    }
+    |> result.lazy_or(fn() { declared_option(module_) })
+
+  OptionScope(option.from_result(unqualified), qualifiers)
+}
+
+/// A type declared in this module carrying both variants: `gleam/option`
+/// itself when that is what is being scanned, and any module that writes its
+/// own option out longhand.
+fn declared_option(module_: glance.Module) -> Result(#(String, String), Nil) {
+  list.find_map(module_.custom_types, fn(definition) {
+    let names =
+      definition.definition.variants
+      |> list.map(fn(variant) { variant.name })
+    case list.contains(names, "Some") && list.contains(names, "None") {
+      True -> Ok(#("Some", "None"))
+      False -> Error(Nil)
+    }
+  })
+}
+
+/// The name an unqualified import goes by locally, keeping any alias.
+fn local_name(
+  values: List(glance.UnqualifiedImport),
+  name: String,
+) -> Result(String, Nil) {
+  list.find_map(values, fn(value) {
+    case value.name == name {
+      True -> Ok(option.unwrap(value.alias, name))
+      False -> Error(Nil)
+    }
+  })
+}
+
+fn last_segment(module_name: String) -> String {
+  module_name
+  |> string.split("/")
+  |> list.last
+  |> result.unwrap(module_name)
 }
 
 fn semantic_rule(operator: Operator, evidence: TypeEvidence) -> MutationRule {
@@ -223,6 +318,7 @@ fn common_prefix_length(left: String, right: String, offset: Int) -> Int {
 fn expression_candidates(
   source: String,
   path: String,
+  scope: OptionScope,
   expression: glance.Expression,
 ) -> List(Candidate) {
   let own = case expression {
@@ -303,26 +399,42 @@ fn expression_candidates(
     // the expression around it might be. Nothing similar holds for `Ok` and
     // `Error`, whose two type arguments need not agree, so a `Result` that is
     // built is left alone rather than mutated on a hunch.
-    glance.Call(location, glance.Variable(_, "Some"), [_]) -> [
-      make_candidate(
-        source,
-        path,
-        semantic_rule(operator.OptionNeutral, OptionConstructorEvidence),
-        location,
-        "None",
-      ),
-    ]
+    //
+    // Which name the module has for each constructor is read off its imports,
+    // because `import gleam/option.{Some}` leaves `None` unnameable and a
+    // mutant that cannot be written is worth less than no mutant at all.
+    glance.Call(location, glance.Variable(_, name), [_]) ->
+      case scope.unqualified {
+        Some(#(some, none)) if name == some -> [
+          make_candidate(
+            source,
+            path,
+            semantic_rule(operator.OptionNeutral, OptionConstructorEvidence),
+            location,
+            none,
+          ),
+        ]
+        _ -> []
+      }
     // The same constructor reached through the module it is declared in. The
-    // qualifier is copied from the source so that an alias is kept.
-    glance.Call(location, glance.FieldAccess(_, container, "Some"), [_]) -> [
-      make_candidate(
-        source,
-        path,
-        semantic_rule(operator.OptionNeutral, OptionConstructorEvidence),
-        location,
-        source_for(source, container.location) <> ".None",
-      ),
-    ]
+    // qualifier is copied from the call so that an alias is kept.
+    glance.Call(
+      location,
+      glance.FieldAccess(_, glance.Variable(_, qualifier), "Some"),
+      [_],
+    ) ->
+      case set.contains(scope.qualifiers, qualifier) {
+        True -> [
+          make_candidate(
+            source,
+            path,
+            semantic_rule(operator.OptionNeutral, OptionConstructorEvidence),
+            location,
+            qualifier <> ".None",
+          ),
+        ]
+        False -> []
+      }
     glance.BinaryOperator(location, binary_operator, left, right) ->
       binary_candidates(source, path, location, binary_operator, left, right)
     _ -> []
@@ -331,7 +443,7 @@ fn expression_candidates(
   list.append(
     own,
     child_expressions(expression)
-      |> list.flat_map(expression_candidates(source, path, _)),
+      |> list.flat_map(expression_candidates(source, path, scope, _)),
   )
 }
 

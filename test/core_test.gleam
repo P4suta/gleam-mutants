@@ -168,6 +168,57 @@ pub fn catalog_leaves_a_constructed_result_alone_test() {
   })
 }
 
+/// The replacement is spelled the way the module itself can write it.
+///
+/// `import gleam/option.{Some}` leaves `None` out of scope, so a bare `None`
+/// would not compile there. The names are read off the imports instead: an
+/// alias is kept, a module holding only `Some` unqualified reaches `None`
+/// through the module, and a lookalike constructor that has no `None` beside
+/// it is left alone rather than mutated into something unwritable.
+pub fn catalog_spells_none_the_way_the_module_can_test() {
+  // Only `Some` is unqualified, so `None` has to go through the module.
+  assert option_replacements(
+      "import gleam/option.{Some}\n\npub fn wrap(n: Int) {\n  Some(n)\n}\n",
+    )
+    == ["option.None"]
+  // Both constructors renamed on the way in.
+  assert option_replacements(
+      "import gleam/option.{None as Nothing, Some as Just}\n\n"
+      <> "pub fn wrap(n: Int) {\n  Just(n)\n}\n",
+    )
+    == ["Nothing"]
+  // The module itself renamed on the way in.
+  assert option_replacements(
+      "import gleam/option as opt\n\npub fn wrap(n: Int) {\n  opt.Some(n)\n}\n",
+    )
+    == ["opt.None"]
+  // `gleam/option` scanning itself: the variants are declared right here.
+  assert option_replacements(
+      "pub type Option(a) {\n  Some(a)\n  None\n}\n\n"
+      <> "pub fn wrap(n: Int) {\n  Some(n)\n}\n",
+    )
+    == ["None"]
+  // A constructor that merely shares the name, with no absence to swap in.
+  assert option_replacements(
+      "pub type Box(a) {\n  Some(a)\n}\n\npub fn wrap(n: Int) {\n  Some(n)\n}\n",
+    )
+    == []
+  // A qualifier that reaches some other module is not `gleam/option`.
+  assert option_replacements(
+      "import mine/box\n\npub fn wrap(n: Int) {\n  box.Some(n)\n}\n",
+    )
+    == []
+}
+
+fn option_replacements(source: String) -> List(String) {
+  let assert Ok(discovered) =
+    catalog.discover("src/opt.gleam", source, operator.all())
+  discovered.mutants
+  |> list.filter(fn(item) { item.operator == operator.OptionNeutral })
+  |> list.map(fn(item) { item.replacement })
+  |> list.sort(string.compare)
+}
+
 pub fn catalog_preserves_unicode_comments_and_crlf_test() {
   let source =
     "// 日本語 && comment\r\npub fn classify(n: Int) {\r\n  n < 10 && True\r\n}\r\n"
