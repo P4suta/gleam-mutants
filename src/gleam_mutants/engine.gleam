@@ -281,7 +281,7 @@ fn run_locked(
   options: Options,
   run_id: String,
 ) -> Result(RunOutput, String) {
-  with_catalog_session(workspace, options, fn(session) {
+  with_kept_catalog_session(workspace, options, fn(session) {
     let configured = session.config
     let snapshot = session.snapshot
     let changed_paths = session.changed_paths
@@ -334,6 +334,29 @@ pub fn with_catalog_session(
   options: Options,
   action: fn(CatalogSession) -> Result(a, String),
 ) -> Result(a, String) {
+  with_session(workspace, options, False, action)
+}
+
+/// The same, into the copy this workspace keeps between runs.
+///
+/// Only `run` asks for it, because only `run` holds the workspace lock for its
+/// whole length, and a kept directory two commands wrote at once would be
+/// neither of theirs. Everything else captures a copy of its own, the way this
+/// always did.
+fn with_kept_catalog_session(
+  workspace: String,
+  options: Options,
+  action: fn(CatalogSession) -> Result(a, String),
+) -> Result(a, String) {
+  with_session(workspace, options, True, action)
+}
+
+fn with_session(
+  workspace: String,
+  options: Options,
+  keep: Bool,
+  action: fn(CatalogSession) -> Result(a, String),
+) -> Result(a, String) {
   use source <- result.try(read_project_config(workspace))
   use decoded <- result.try(
     config.decode(source, platform.cpu_count())
@@ -343,9 +366,24 @@ pub fn with_catalog_session(
   use _ <- result.try(validate_effective_config(configured))
   use _ <- result.try(validate_report_configuration(workspace, configured))
   use changed_paths <- result.try(resolve_changed(workspace, options.changed))
-  use captured <- result.try(
-    snapshot.create_excluding(workspace, [configured.report.directory]),
-  )
+  let excluded = [configured.report.directory]
+  use captured <- result.try(case keep && configured.cache_mode != CacheOff {
+    False -> snapshot.create_excluding(workspace, excluded)
+    // Never a reason to fail. A kept directory that cannot be written, or that
+    // does not come back as the workspace byte for byte, is removed and the
+    // run captures a copy of its own -- which is what every run did before
+    // there was one to keep.
+    True ->
+      case
+        snapshot.keep(workspace, cache.workspace_snapshot(workspace), excluded)
+      {
+        Ok(captured) -> Ok(captured)
+        Error(_) -> {
+          let _ = platform.delete_tree(cache.workspace_snapshot(workspace))
+          snapshot.create_excluding(workspace, excluded)
+        }
+      }
+  })
   let files =
     snapshot.source_files(captured, configured.includes, configured.excludes)
     |> selected_files(changed_paths)
