@@ -30,6 +30,7 @@ test_selection = "auto"  # auto, full
 
 [tools.gleam_mutants.cache]
 mode = "auto"              # auto, off, read-only, write-only, read-write
+keep_snapshots = 4         # workspaces whose copy survives between runs; 0 declines
 # key = "custom-suite-v1"  # required for persistent custom-command caching
 # files = ["test/support.json"]
 # env = ["FEATURE_MODE"]
@@ -130,7 +131,11 @@ every dependency from cold. The copy is held to the workspace byte for byte
 every time it is written -- anything the workspace no longer has is removed, and
 a copy that does not come back matching is thrown away and made fresh -- so it
 cannot change a verdict, only what a verdict costs. `cache = off` declines it,
-`cache status` names it, and `cache clean` removes it along with the outcomes.
+`cache status` names it and says how many bytes it holds, and `cache clean`
+removes it along with the outcomes. One copy is a whole workspace and its build
+directory, so `keep_snapshots` bounds how many workspaces keep one: every run
+removes the copies of all but that many most recently used, and
+`keep_snapshots = 0` declines the copy entirely.
 
 Enabled project formats atomically replace fixed `mutation.json` and
 `mutation.html` targets in that directory. `formats = []` or `--report none`

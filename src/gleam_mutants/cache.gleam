@@ -82,6 +82,89 @@ pub fn workspace_snapshot(workspace: String) -> String {
   workspace_directory(workspace_id(workspace)) |> path.join("snapshot")
 }
 
+/// Records that this workspace's kept copy was used now.
+///
+/// The marker is what collection sorts by, rather than the directory's own
+/// timestamp: a directory is only touched when its immediate entries change,
+/// and a capture that rewrote a file three levels down would leave the root
+/// looking untouched and the copy looking abandoned.
+pub fn mark_snapshot_used(workspace: String) -> Nil {
+  let _ =
+    simplifile.write(
+      snapshot_marker(workspace),
+      int.to_string(platform.now_milliseconds()) <> "\n",
+    )
+  Nil
+}
+
+/// Removes every kept copy but the `keep` most recently used.
+///
+/// A copy is a whole workspace and its build directory, so it is the largest
+/// thing this tool leaves behind, and nothing else here ever removes anything.
+/// Collection is by use rather than by size: reading a marker is one small
+/// file per workspace, where measuring one copy means walking every artefact
+/// in it, and a run should not pay a walk of every workspace to find out it is
+/// within its budget.
+pub fn collect_snapshots(root: String, keep: Int) -> Nil {
+  let kept =
+    simplifile.read_directory(root)
+    |> result.unwrap([])
+    |> list.filter_map(fn(id) {
+      let directory = path.join(root, id)
+      case simplifile.is_directory(path.join(directory, "snapshot")) {
+        Ok(True) ->
+          Ok(#(used_at(path.join(directory, "snapshot.used")), directory))
+        _ -> Error(Nil)
+      }
+    })
+    |> list.sort(fn(a, b) { int.compare(b.0, a.0) })
+  kept
+  |> list.drop(int.max(0, keep))
+  |> list.each(fn(entry) {
+    let _ = platform.delete_tree(path.join(entry.1, "snapshot"))
+    let _ = simplifile.delete(path.join(entry.1, "snapshot.used"))
+    Nil
+  })
+}
+
+/// How many bytes this workspace's kept copy holds, walked on demand.
+pub fn snapshot_bytes(workspace: String) -> Int {
+  tree_bytes(workspace_snapshot(workspace))
+}
+
+fn tree_bytes(target: String) -> Int {
+  case simplifile.read_directory(target) {
+    Error(_) ->
+      simplifile.file_info(target)
+      |> result.map(fn(info) { info.size })
+      |> result.unwrap(0)
+    Ok(names) ->
+      list.fold(names, 0, fn(total, name) {
+        total + tree_bytes(path.join(target, name))
+      })
+  }
+}
+
+fn used_at(marker: String) -> Int {
+  simplifile.read(marker)
+  |> result.unwrap("")
+  |> string.trim
+  |> int.parse
+  |> result.unwrap(0)
+}
+
+/// The directory every workspace's kept state lives under.
+///
+/// Named here and passed in by the composition root, so that nothing else
+/// resolves it for itself and collects out of a directory it does not own.
+pub fn workspaces_root() -> String {
+  platform.cache_directory() |> path.join("gleam-mutants/v1/workspaces")
+}
+
+fn snapshot_marker(workspace: String) -> String {
+  workspace_directory(workspace_id(workspace)) |> path.join("snapshot.used")
+}
+
 fn workspace_directory(id: String) -> String {
   platform.cache_directory()
   |> path.join("gleam-mutants/v1/workspaces")
@@ -210,6 +293,10 @@ pub fn status(workspace: String) -> String {
   <> directory
   <> "\nsnapshot: "
   <> presence(kept)
+  <> case simplifile.is_directory(kept) {
+    Ok(True) -> " (" <> int.to_string(snapshot_bytes(workspace)) <> " bytes)"
+    _ -> ""
+  }
   <> "\nsnapshot path: "
   <> kept
   <> "\n"
@@ -226,7 +313,8 @@ pub fn clean(workspace: String) -> Result(Nil, String) {
   let outcomes =
     workspace_directory(workspace_id(workspace)) |> path.join("outcomes")
   use _ <- result.try(remove(outcomes))
-  remove(workspace_snapshot(workspace))
+  use _ <- result.try(remove(workspace_snapshot(workspace)))
+  remove(snapshot_marker(workspace))
 }
 
 fn remove(target: String) -> Result(Nil, String) {

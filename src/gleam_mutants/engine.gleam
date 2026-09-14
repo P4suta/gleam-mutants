@@ -378,7 +378,9 @@ fn with_session(
   use _ <- result.try(validate_report_configuration(workspace, configured))
   use changed_paths <- result.try(resolve_changed(workspace, options.changed))
   let excluded = [configured.report.directory]
-  use captured <- result.try(case keep && configured.cache_mode != CacheOff {
+  let keeping =
+    keep && configured.cache_mode != CacheOff && configured.keep_snapshots > 0
+  use captured <- result.try(case keeping {
     False -> snapshot.create_excluding(workspace, excluded)
     // Never a reason to fail. A kept directory that cannot be written, or that
     // does not come back as the workspace byte for byte, is removed and the
@@ -388,7 +390,14 @@ fn with_session(
       case
         snapshot.keep(workspace, cache.workspace_snapshot(workspace), excluded)
       {
-        Ok(captured) -> Ok(captured)
+        Ok(captured) -> {
+          cache.mark_snapshot_used(workspace)
+          cache.collect_snapshots(
+            cache.workspaces_root(),
+            configured.keep_snapshots,
+          )
+          Ok(captured)
+        }
         Error(_) -> {
           let _ = platform.delete_tree(cache.workspace_snapshot(workspace))
           snapshot.create_excluding(workspace, excluded)
