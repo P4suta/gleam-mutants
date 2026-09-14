@@ -4,6 +4,7 @@
 import gleam/io
 import gleam/list
 import gleam/option.{Some}
+import gleam/string
 import gleam_mutants/cache
 import gleam_mutants/core/outcome
 import gleam_mutants/engine
@@ -35,12 +36,18 @@ pub fn main() {
       ),
     )
 
-  let verdict = fn(original) {
+  let found = fn(original) {
     let assert Ok(result) =
       list.find(output.report.results, fn(item) {
         item.mutant.original == original
       })
-    result.aggregate
+    result
+  }
+  let verdict = fn(original) { found(original).aggregate }
+  let reason = fn(original) {
+    found(original).outcomes
+    |> list.map(fn(item) { item.output })
+    |> string.join("")
   }
 
   assert verdict("n * 1") == outcome.Survived
@@ -49,6 +56,10 @@ pub fn main() {
   assert output.execution.discharged == 1
   // And nothing was narrowed, because this runner reports no impact.
   assert output.execution.narrowed == 0
+  // A verdict reached without running anything says so where the reader is:
+  // beside the mutant, not only in a count on the way past.
+  assert string.contains(reason("n * 1"), "survived without a test run")
+  assert reason("a + b") == ""
   io.println(
     "discharge smoke: a mutant that never answers differently is settled "
     <> "without a test run",

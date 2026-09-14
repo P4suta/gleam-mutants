@@ -1781,7 +1781,15 @@ fn discharge(
           value.runtime == impact.runtime
         })
       {
-        True -> Ok(RuntimeOutcome(impact.runtime, Survived, 0, "", False))
+        True ->
+          Ok(RuntimeOutcome(
+            impact.runtime,
+            Survived,
+            0,
+            "survived without a test run: this replacement answered exactly "
+              <> "what it replaces, everywhere the suite went",
+            False,
+          ))
         False -> Error(Nil)
       }
     })
