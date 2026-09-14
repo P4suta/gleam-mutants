@@ -99,6 +99,7 @@ run = [
   "node scripts/check-vendor.mjs",
   "node scripts/check-version.mjs",
   "node scripts/check-package-information.mjs",
+  "node scripts/check-errors.mjs",
   "node scripts/check-schema.mjs",
 ]
 

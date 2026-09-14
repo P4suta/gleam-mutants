@@ -2526,9 +2526,7 @@ fn help_text() -> String {
     )
     |> glint.add(
       at: ["suggest"],
-      do: command(
-        "Propose tests that kill surviving mutants (Erlang and Node).",
-      ),
+      do: command("Propose tests that kill surviving mutants (every runtime)."),
     )
     |> glint.add(
       at: ["explain"],
@@ -2541,9 +2539,7 @@ fn help_text() -> String {
     )
     |> glint.add(
       at: ["apply"],
-      do: command(
-        "Write the suggested tests into the project (Erlang and Node).",
-      ),
+      do: command("Write the suggested tests into the project (every runtime)."),
     )
     |> glint.add(
       at: ["report", "latest"],

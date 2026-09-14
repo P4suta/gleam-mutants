@@ -99,7 +99,7 @@ accept `--root`; without it, the nearest parent `gleam.toml` is selected. Run
 
 `suggest` proposes the tests that kill surviving mutants and `explain` shows one
 mutant with the input that separates it; both probe the workspace differentially
-and run on Erlang and Node.
+and run on every runtime: Erlang, Node, Deno, and Bun.
 
 **The probe calls every public function of the selected modules for real**, with
 generated arguments, in the environment you ran it in — the snapshot isolates
@@ -253,8 +253,9 @@ absent from ordinary PR CI and the daily nightly matrix, but is required by the
 manual release-candidate and publish gates.
 
 See [Smartest](docs/smartest.md), [configuration](docs/configuration.md),
-[operators](docs/operators.md), [suggesting tests](docs/suggest.md), and
-[architecture](docs/architecture.md) for details.
+[operators](docs/operators.md), [suggesting tests](docs/suggest.md),
+[error codes](docs/errors.md), and [architecture](docs/architecture.md) for
+details.
 
 ## Licence
 
