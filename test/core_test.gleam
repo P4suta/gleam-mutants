@@ -3,6 +3,7 @@
 
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/set
 import gleam/string
 import gleam_mutants/cache
 import gleam_mutants/cli
@@ -142,7 +143,8 @@ pub fn catalog_mutates_a_constructed_option_to_none_test() {
   assert list.length(options) == 2
   // Byte spans still describe the file they came from.
   let assert Ok(forest) = interval_tree.build(source, discovered.mutants)
-  let instrumented = interval_tree.render(source, forest, "internal/runtime")
+  let instrumented =
+    interval_tree.render(source, forest, "internal/runtime", set.new())
   assert string.contains(
     instrumented,
     "import gleam/option.{type Option, None, Some}",
@@ -296,6 +298,55 @@ pub fn catalog_drops_an_integer_sign_test() {
     ]
 }
 
+/// Which mutants may be answered twice, and which may not.
+///
+/// A run already walks the suite once with nothing mutated. Where the
+/// replacement may be evaluated beside what it replaces on that same walk, the
+/// run learns whether the two ever part -- and a mutant whose two answers never
+/// parted cannot be told from the original by any of those tests, so it needs
+/// none of them run against it.
+///
+/// The whole mutated expression has to be safe, not just the token that
+/// changes, because the replacement re-evaluates all of it. Gleam makes that a
+/// question about syntax alone: there are no effects outside external
+/// functions, and the arithmetic is total on both targets, so literals,
+/// variables and operators answer the same however often they are asked. A
+/// call is where it stops.
+pub fn catalog_marks_what_may_be_answered_twice_test() {
+  let source =
+    "pub fn scale(a: Int, b: Int, c: Int) -> Int {\n"
+    <> "  let doubled = a + b\n"
+    <> "  let called = double(a) + b\n"
+    <> "  let listed = [a, b] == [b, a]\n"
+    <> "  doubled + called + c\n}\n\n"
+    <> "pub fn double(n: Int) -> Int {\n  n * 2\n}\n"
+  let assert Ok(discovered) =
+    catalog.discover("src/scale.gleam", source, operator.all())
+  let comparable = set.from_list(discovered.comparable)
+  let original = fn(id) {
+    let assert Ok(item) =
+      list.find(discovered.mutants, fn(item) { item.id == id })
+    item.original
+  }
+  let marked =
+    discovered.mutants
+    |> list.filter(fn(item) { set.contains(comparable, item.id) })
+    |> list.map(fn(item) { item.original })
+    |> list.sort(string.compare)
+
+  // Variables and operators: safe, and so is every literal inside them.
+  assert list.contains(marked, "a + b")
+  assert list.contains(marked, "n * 2")
+  assert list.contains(marked, "2")
+  // A call may reach an external function, and an external function may do
+  // anything -- including not returning.
+  assert !list.contains(marked, "double(a) + b")
+  // A list is not made of operators, so nothing vouches for what is inside it.
+  assert !list.contains(marked, "[a, b] == [b, a]")
+  // Nothing is marked that is not a mutant of this file.
+  assert list.all(discovered.comparable, fn(id) { original(id) != "" })
+}
+
 pub fn catalog_preserves_unicode_comments_and_crlf_test() {
   let source =
     "// 日本語 && comment\r\npub fn classify(n: Int) {\r\n  n < 10 && True\r\n}\r\n"
@@ -310,7 +361,8 @@ pub fn catalog_preserves_unicode_comments_and_crlf_test() {
   })
   assert list.any(mutants, fn(item) { item.operator == operator.BooleanLiteral })
   let assert Ok(forest) = interval_tree.build(source, mutants)
-  let instrumented = interval_tree.render(source, forest, "internal/runtime")
+  let instrumented =
+    interval_tree.render(source, forest, "internal/runtime", set.new())
   assert string.contains(instrumented, "// 日本語 && comment\r\n")
   assert list.any(discovered.rejected, fn(item) {
     item.reason == "type-evidence-unavailable"
@@ -340,7 +392,7 @@ pub fn nested_instrumentation_selects_each_mutant_once_test() {
   let outer = mutant.from_candidate(source, outer_candidate)
   let inner = mutant.from_candidate(source, inner_candidate)
   let assert Ok(forest) = interval_tree.build(source, [outer, inner])
-  let rendered = interval_tree.render(source, forest, "runtime")
+  let rendered = interval_tree.render(source, forest, "runtime", set.new())
   assert string.contains(rendered, outer.id)
   assert string.contains(rendered, inner.id)
   assert string.contains(rendered, "1 - 2")

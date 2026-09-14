@@ -61,6 +61,12 @@ rule: `-1` is lexed as a single token and is `integer-neutral`'s business, so
 `integer-negation` is exactly the sign that neither that rule nor a swap of `+`
 for `-` can reach.
 
+Whether an operator's mutants can be settled without running a test is a
+different question about the same syntax, and it is answered in
+[architecture](architecture.md): a replacement may be evaluated beside what it
+replaces wherever the expression is literals, variables and operators, and a
+mutant whose two answers never part cannot be told from the original.
+
 An arbitrary expression is not treated as an integer, float, string, list, or
 option by guesswork. Candidates that are emitted but fail compiler validation
 remain visible as rejected candidates with a normalized diagnostic in validated

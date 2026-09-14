@@ -9,7 +9,8 @@ import gleam_mutants/engine
 import gleam_mutants/platform
 import simplifile
 
-const calc_source = "pub fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n"
+const calc_source = "pub fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n\n"
+  <> "pub fn scaled(a: Int, b: Int) -> Int {\n  add(a, b) + b\n}\n"
 
 const inert_source = "pub fn identity(value: Int) -> Int {\n  value\n}\n"
 
@@ -54,16 +55,27 @@ pub fn instrument_wraps_selected_mutants_and_leaves_other_files_alone_test() {
   let mutants = list.flat_map(catalogs, fn(entry) { entry.mutants })
   assert list.length(mutants) >= 1
 
-  let assert Ok(Nil) = engine.instrument(root, catalogs, mutants, "rt_mod")
+  let assert Ok(_) = engine.instrument(root, catalogs, mutants, "rt_mod")
 
   let assert Ok(instrumented) =
     simplifile.read(path.join(root, "src/calc.gleam"))
   let assert Ok(untouched) = simplifile.read(path.join(root, "src/inert.gleam"))
 
   assert first_meaningful_line(instrumented) == "import rt_mod"
+  // Every mutant is wrapped, and which guard it gets says whether the walk
+  // with nothing mutated may also answer what the replacement would have said.
   assert list.all(mutants, fn(mutant) {
     string.contains(instrumented, "rt_mod.select(\"" <> mutant.id)
+    || string.contains(instrumented, "rt_mod.compare(\"" <> mutant.id)
   })
+  // `a + b` is variables and an operator, so it may be evaluated twice.
+  let assert Ok(inert) =
+    list.find(mutants, fn(mutant) { mutant.original == "a + b" })
+  assert string.contains(instrumented, "rt_mod.compare(\"" <> inert.id)
+  // `add(a, b) + b` reaches a call, and a call may do anything, so it may not.
+  let assert Ok(effectful) =
+    list.find(mutants, fn(mutant) { mutant.original == "add(a, b) + b" })
+  assert string.contains(instrumented, "rt_mod.select(\"" <> effectful.id)
   assert string.contains(instrumented, "pub fn add(a: Int, b: Int) -> Int {")
   assert untouched == inert_source
 

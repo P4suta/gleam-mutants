@@ -107,6 +107,7 @@ pub fn smartest_runner_exposes_constant_compile_jobs_without_unassigning_them_te
       source,
       discovered.mutants,
       discovered.rejected,
+      discovered.comparable,
     )
   let assert Ok(preview) =
     diff_runner.preview_plan(
@@ -304,6 +305,7 @@ pub fn smartest_runner_executes_compile_jobs_against_their_catalog_source_test()
       source,
       discovered.mutants,
       discovered.rejected,
+      discovered.comparable,
     )
   let assert Ok(preview) =
     diff_runner.preview_plan(

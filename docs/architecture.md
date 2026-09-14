@@ -74,6 +74,28 @@ the full suite, and only that final verdict is cached. `test_selection =
 "full"` does not start the impact protocol and follows the full-suite path
 directly.
 
+The same walk answers a second question for free. Where the catalogue can
+vouch that a replacement may be evaluated beside what it replaces, the guard
+evaluates both and records whether they ever parted, into
+`GLEAM_MUTANTS_OBSERVED_DIR` below the snapshot's `.gleam_mutants/`. Gleam
+makes that a question about syntax alone: there are no effects outside external
+functions, and the arithmetic is total on both targets -- `7 / 0` is `0`, not a
+crash -- so an expression of literals, variables and operators answers the same
+however often it is asked. A call is where that stops, and a call is where the
+vouching stops.
+
+A mutant that was compared and never parted answered exactly what it replaces
+wherever the suite went, so no test in that suite can tell it from the original
+and it is settled as survived without a worker, a process, or a test. Both
+answers are recorded and a mutant is settled only on the strength of the one
+saying they agreed: silence -- a guard that never ran, a directory that could
+not be written, a runtime with no such guard -- is read as no evidence, never
+as agreement. Only what the instrumenter actually wrote a comparing guard into
+is considered, because an absence means nothing where nothing was recording.
+This evidence is written by the instrumented program rather than by the runner,
+so it is available to a project whose runner supplies no test impact at all and
+therefore narrows nothing.
+
 A bounded worker pool receives independent copies of the instrumented snapshot.
 The cache is read for every mutant/runtime pair before that pool is allocated,
 so only mutants with misses receive workers and an all-hit run creates none.

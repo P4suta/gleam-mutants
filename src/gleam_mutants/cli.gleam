@@ -1671,7 +1671,9 @@ fn render_execution_summary(summary: engine.ExecutionSummary) -> String {
   <> int.to_string(summary.fallbacks)
   <> " fallback(s); "
   <> int.to_string(summary.cache_hits)
-  <> " cache hit(s)"
+  <> " cache hit(s); "
+  <> int.to_string(summary.discharged)
+  <> " never differed"
 }
 
 fn fail(message: String) -> Nil {

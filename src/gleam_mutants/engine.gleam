@@ -6,7 +6,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/set
+import gleam/set.{type Set}
 import gleam/string
 import gleam_mutants/cache
 import gleam_mutants/config.{
@@ -104,6 +104,7 @@ pub type ExecutionSummary {
     confirmations: Int,
     fallbacks: Int,
     cache_hits: Int,
+    discharged: Int,
     details: List(String),
   )
 }
@@ -128,6 +129,9 @@ pub type SourceCatalog {
     source: String,
     mutants: List(Mutant),
     rejected: List(RejectedCandidate),
+    /// Mutants of this file whose replacement may be evaluated beside what it
+    /// replaces, so a run can learn whether the two ever part.
+    comparable: List(String),
   )
 }
 
@@ -183,7 +187,13 @@ type RunMode {
 }
 
 type RuntimeImpact {
-  RuntimeImpact(runtime: Runtime, state: ImpactState)
+  RuntimeImpact(
+    runtime: Runtime,
+    state: ImpactState,
+    /// Mutants the instrumented walk compared and never saw answer differently
+    /// from what they replace. Nothing these tests do can tell them apart.
+    discharged: Set(String),
+  )
 }
 
 type ImpactState {
@@ -206,6 +216,7 @@ type ExecutionCounts {
     confirmations: Int,
     fallbacks: Int,
     cache_hits: Int,
+    discharged: Int,
   )
 }
 
@@ -720,7 +731,7 @@ fn complete_empty(
       project_reports.json_path,
       project_reports.html_path,
       exit_code,
-      ExecutionSummary(0, 0, 0, 0, []),
+      ExecutionSummary(0, 0, 0, 0, 0, []),
       [],
     ),
   )
@@ -812,7 +823,7 @@ fn prepare(session: CatalogSession) -> Result(Prepared, String) {
   ))
   let planned_mutants = plan.mutants(mutation_plan)
   let phase3 = pipeline.validated(phase2, planned_mutants, rejected)
-  use _ <- result.try(instrument(
+  use compared <- result.try(instrument(
     snapshot.root(snapshot),
     catalogs,
     planned_mutants,
@@ -825,6 +836,7 @@ fn prepare(session: CatalogSession) -> Result(Prepared, String) {
     config,
     baseline.1,
     planned_mutants,
+    compared,
   ))
   let phase4 = pipeline.instrumented(phase3)
   Ok(Prepared(
@@ -1029,6 +1041,7 @@ pub fn discover_catalogs(
         source,
         discovered.mutants,
         discovered.rejected,
+        discovered.comparable,
       ))
     }),
   )
@@ -1085,6 +1098,7 @@ pub fn grant_deno_probe_permissions(root: String) -> Result(Nil, String) {
       tomlet.StringValue("GLEAM_MUTANTS_RUNTIME"),
       tomlet.StringValue("GLEAM_MUTANTS_TEST_IMPACT_FILE"),
       tomlet.StringValue("GLEAM_MUTANTS_TEST_SELECTION_FILE"),
+      tomlet.StringValue("GLEAM_MUTANTS_OBSERVED_DIR"),
     ])
     |> result.map_error(fn(_) { "could not set Deno env permission" }),
   )
@@ -1116,22 +1130,25 @@ fn configure_deno_permissions(
         tomlet.set_bool(document, ["javascript", "deno", "allow_read"], True)
         |> result.map_error(fn(_) { "could not set Deno read permission" }),
       )
-      use document <- result.try(case test_selection {
-        config.TestSelectionFull -> Ok(document)
-        config.TestSelectionAuto ->
-          tomlet.set_bool(document, ["javascript", "deno", "allow_write"], True)
-          |> result.map_error(fn(_) { "could not set Deno write permission" })
-      })
+      // The walk with nothing mutated writes what it observed whichever way
+      // tests are selected, so the write permission is not the selection's to
+      // withhold.
+      use document <- result.try(
+        tomlet.set_bool(document, ["javascript", "deno", "allow_write"], True)
+        |> result.map_error(fn(_) { "could not set Deno write permission" }),
+      )
       let environment_names = case test_selection {
         config.TestSelectionFull -> [
           tomlet.StringValue("GLEAM_MUTANTS_ACTIVE"),
           tomlet.StringValue("GLEAM_MUTANTS_RUNTIME"),
+          tomlet.StringValue("GLEAM_MUTANTS_OBSERVED_DIR"),
         ]
         config.TestSelectionAuto -> [
           tomlet.StringValue("GLEAM_MUTANTS_ACTIVE"),
           tomlet.StringValue("GLEAM_MUTANTS_RUNTIME"),
           tomlet.StringValue("GLEAM_MUTANTS_TEST_IMPACT_FILE"),
           tomlet.StringValue("GLEAM_MUTANTS_TEST_SELECTION_FILE"),
+          tomlet.StringValue("GLEAM_MUTANTS_OBSERVED_DIR"),
         ]
       }
       use document <- result.try(
@@ -1211,9 +1228,22 @@ fn run_instrumented_baseline(
   config: Config,
   timeout_ms: Int,
   mutants: List(Mutant),
+  compared: List(String),
 ) -> Result(List(RuntimeImpact), String) {
   list.try_map(runtimes, fn(runtime) {
     let runtime_name = outcome.runtime_name(runtime)
+    let observed =
+      path.join(
+        path.join(root, ".gleam_mutants"),
+        "observed-" <> runtime_name <> "-" <> platform.random_nonce(),
+      )
+    use _ <- result.try(
+      [path.join(observed, "same"), path.join(observed, "differing")]
+      |> list.try_each(fn(directory) {
+        simplifile.create_directory_all(directory)
+        |> result.map_error(simplifile.describe_error)
+      }),
+    )
     let impact_path =
       path.join(
         path.join(root, ".gleam_mutants"),
@@ -1229,6 +1259,7 @@ fn run_instrumented_baseline(
           #("GLEAM_MUTANTS_ACTIVE", ""),
           #("GLEAM_MUTANTS_TEST_IMPACT_FILE", ""),
           #("GLEAM_MUTANTS_TEST_SELECTION_FILE", ""),
+          #("GLEAM_MUTANTS_OBSERVED_DIR", observed),
         ])
       config.TestSelectionAuto -> {
         use _ <- result.try(
@@ -1243,6 +1274,7 @@ fn run_instrumented_baseline(
             test_impact.protocol_name(impact_path),
           ),
           #("GLEAM_MUTANTS_TEST_SELECTION_FILE", ""),
+          #("GLEAM_MUTANTS_OBSERVED_DIR", observed),
         ])
       }
     })
@@ -1260,15 +1292,41 @@ fn run_instrumented_baseline(
           <> process.stderr,
         )
     })
+    let never_differed = read_observations(observed, compared)
     case config.test_selection {
-      config.TestSelectionFull -> Ok(RuntimeImpact(runtime, ImpactDisabled))
+      config.TestSelectionFull ->
+        Ok(RuntimeImpact(runtime, ImpactDisabled, never_differed))
       config.TestSelectionAuto ->
         Ok(RuntimeImpact(
           runtime,
           read_impact_manifest(impact_path, runtime_name, mutants),
+          never_differed,
         ))
     }
   })
+}
+
+/// Mutants whose two answers never parted, wherever the suite went.
+///
+/// Both answers are recorded, and a mutant counts only on the strength of the
+/// one saying they agreed. Silence is not agreement: a guard that never ran, a
+/// directory that could not be written, a runtime that has no such guard at
+/// all -- each leaves nothing behind, and nothing is read as no evidence, so
+/// the mutant is run the way it always was.
+///
+/// Only what the instrumenter actually wrote a comparing guard into is
+/// considered, because an absence means nothing where nothing was recording.
+fn read_observations(directory: String, compared: List(String)) -> Set(String) {
+  compared
+  |> set.from_list
+  |> set.intersection(listing(path.join(directory, "same")))
+  |> set.difference(listing(path.join(directory, "differing")))
+}
+
+fn listing(directory: String) -> Set(String) {
+  simplifile.read_directory(directory)
+  |> result.map(set.from_list)
+  |> result.unwrap(set.new())
 }
 
 fn read_impact_manifest(
@@ -1499,20 +1557,25 @@ fn normalize_snapshot_location(
 
 /// Rewrites every catalogued source that owns a selected mutant so each
 /// mutation site is wrapped in a `runtime_module.select` call.
+///
+/// Answers which mutants were written as the guard that compares instead. An
+/// absence in the observation record is only evidence where something was
+/// recording, so what the instrumenter actually wrote is what the discharge
+/// rests on -- never what the catalogue would have liked to write.
 pub fn instrument(
   root: String,
   catalogs: List(SourceCatalog),
   mutants: List(Mutant),
   runtime_module: String,
-) -> Result(Nil, String) {
+) -> Result(List(String), String) {
   let selected_by_path = mutants_by_path(mutants)
-  use source_catalog <- list.try_each(catalogs)
+  use written, source_catalog <- list.try_fold(catalogs, [])
   let selected =
     dict.get(selected_by_path, source_catalog.path)
     |> result.map(list.reverse)
     |> result.unwrap([])
   case selected {
-    [] -> Ok(Nil)
+    [] -> Ok(written)
     _ -> {
       use forest <- result.try(
         interval_tree.build(source_catalog.source, selected)
@@ -1520,11 +1583,24 @@ pub fn instrument(
           "overlapping mutation spans: " <> string.inspect(error)
         }),
       )
+      let comparable =
+        selected
+        |> list.map(fn(item) { item.id })
+        |> set.from_list
+        |> set.intersection(set.from_list(source_catalog.comparable))
       let rendered =
-        interval_tree.render(source_catalog.source, forest, runtime_module)
+        interval_tree.render(
+          source_catalog.source,
+          forest,
+          runtime_module,
+          comparable,
+        )
         |> add_runtime_import(runtime_module)
-      simplifile.write(path.join(root, source_catalog.path), rendered)
-      |> result.map_error(simplifile.describe_error)
+      use _ <- result.try(
+        simplifile.write(path.join(root, source_catalog.path), rendered)
+        |> result.map_error(simplifile.describe_error),
+      )
+      Ok(list.append(set.to_list(comparable), written))
     }
   }
 }
@@ -1630,7 +1706,7 @@ fn run_mutants(prepared: Prepared) -> Result(MutantRun, String) {
   let pipeline.State(workspace, _, _, _, _, _) = pipeline.state(prepared.phase)
   let workspace_id = cache.workspace_id(workspace)
   let planned = plan.mutants(prepared.mutation_plan)
-  let cached =
+  let preloaded =
     preload_cache(
       planned,
       prepared.runtimes,
@@ -1638,20 +1714,26 @@ fn run_mutants(prepared: Prepared) -> Result(MutantRun, String) {
       fingerprint,
       workspace_id,
     )
+  let cache_hits = outcome_count(preloaded)
+  let cached = list.map(preloaded, discharge(prepared.impact, _))
+  let discharged = outcome_count(cached) - cache_hits
   let missing =
     list.filter(cached, fn(entry) {
       list.length(entry.outcomes) < list.length(prepared.runtimes)
     })
   let worker_count = int.min(prepared.config.jobs, list.length(missing))
-  let cache_hits =
-    list.fold(cached, 0, fn(total, entry) {
-      total + list.length(entry.outcomes)
-    })
   case worker_count {
     0 ->
       Ok(MutantRun(
         list.map(cached, cached_result),
-        ExecutionSummary(0, 0, 0, cache_hits, impact_details(prepared.impact)),
+        ExecutionSummary(
+          0,
+          0,
+          0,
+          cache_hits,
+          discharged,
+          impact_details(prepared.impact),
+        ),
       ))
     _ -> {
       use adaptive <- result.try(prepare_adaptive_plan(prepared, missing))
@@ -1665,9 +1747,40 @@ fn run_mutants(prepared: Prepared) -> Result(MutantRun, String) {
         workspace_id,
         adaptive,
         cache_hits,
+        discharged,
       )
     }
   }
+}
+
+/// Adds the verdict a mutant earned without being run.
+///
+/// A mutant the instrumented walk compared and never saw part answered exactly
+/// what it replaces, everywhere every test went. No test in that suite can
+/// tell it from the original, so it survives -- and the cheapest way to run the
+/// tests that would say so is not to.
+fn discharge(
+  impacts: List(RuntimeImpact),
+  entry: CachedMutant,
+) -> CachedMutant {
+  let added =
+    impacts
+    |> list.filter_map(fn(impact) {
+      case
+        set.contains(impact.discharged, entry.mutant.id)
+        && !list.any(entry.outcomes, fn(value) {
+          value.runtime == impact.runtime
+        })
+      {
+        True -> Ok(RuntimeOutcome(impact.runtime, Survived, 0, "", False))
+        False -> Error(Nil)
+      }
+    })
+  CachedMutant(..entry, outcomes: list.append(entry.outcomes, added))
+}
+
+fn outcome_count(entries: List(CachedMutant)) -> Int {
+  list.fold(entries, 0, fn(total, entry) { total + list.length(entry.outcomes) })
 }
 
 fn run_cache_misses(
@@ -1680,6 +1793,7 @@ fn run_cache_misses(
   workspace_id: String,
   adaptive: AdaptivePlan,
   cache_hits: Int,
+  discharged: Int,
 ) -> Result(MutantRun, String) {
   use workers <- result.try(create_workers(prepared.snapshot, worker_count))
   let cached_outcomes =
@@ -1698,7 +1812,7 @@ fn run_cache_misses(
       adaptive,
       [],
       [],
-      ExecutionCounts(0, 0, 0, cache_hits),
+      ExecutionCounts(0, 0, 0, cache_hits, discharged),
     )
   let cleanup_result = dispose_workers(workers)
   case run_result, cleanup_result {
@@ -1746,6 +1860,7 @@ fn execution_summary(
     counts.confirmations,
     counts.fallbacks,
     counts.cache_hits,
+    counts.discharged,
     unique_preserving_order(details),
   )
 }
@@ -2132,7 +2247,7 @@ fn run_mutant_wave(
       fingerprint,
       workspace_id,
       adaptive,
-      ExecutionCounts(0, 0, 0, 0),
+      ExecutionCounts(0, 0, 0, 0, 0),
       [],
     ),
   )
@@ -2260,6 +2375,7 @@ fn run_runtime_phases(
           count_narrowed(pending),
           list.length(confirmations),
           count_fallbacks(pending),
+          0,
           0,
         )
       let phase_details =
@@ -2445,6 +2561,7 @@ fn add_counts(
     left.confirmations + right.confirmations,
     left.fallbacks + right.fallbacks,
     left.cache_hits + right.cache_hits,
+    left.discharged + right.discharged,
   )
 }
 

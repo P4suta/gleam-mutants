@@ -4,6 +4,7 @@
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import gleam/string_tree.{type StringTree}
 import gleam_mutants/core/bytes
@@ -135,10 +136,19 @@ fn parse_nodes(
   }
 }
 
+/// Writes every mutant of `forest` into `source` as a guard.
+///
+/// A mutant named in `comparable` gets the guard that also answers whether its
+/// replacement ever differs from what it replaces, which the run reads off the
+/// one walk it already makes with nothing mutated. Naming them rather than
+/// deciding here is deliberate: whether an expression may be evaluated twice
+/// is a question about the syntax under it, and the catalogue is what has the
+/// syntax.
 pub fn render(
   source: String,
   forest: Forest,
   runtime_module: String,
+  comparable: Set(String),
 ) -> String {
   render_nodes(
     source,
@@ -146,6 +156,7 @@ pub fn render(
     0,
     string.byte_size(source),
     runtime_module,
+    comparable,
   )
   |> string_tree.to_string
 }
@@ -156,6 +167,7 @@ fn render_nodes(
   cursor: Int,
   limit: Int,
   runtime_module: String,
+  comparable: Set(String),
 ) -> StringTree {
   case nodes {
     [] -> bytes.unsafe_slice(source, cursor, limit) |> string_tree.from_string
@@ -163,8 +175,15 @@ fn render_nodes(
       string_tree.concat([
         bytes.unsafe_slice(source, cursor, span.start(node.span))
           |> string_tree.from_string,
-        render_node(source, node, runtime_module),
-        render_nodes(source, rest, span.end(node.span), limit, runtime_module),
+        render_node(source, node, runtime_module, comparable),
+        render_nodes(
+          source,
+          rest,
+          span.end(node.span),
+          limit,
+          runtime_module,
+          comparable,
+        ),
       ])
   }
 }
@@ -173,6 +192,7 @@ fn render_node(
   source: String,
   node: Node,
   runtime_module: String,
+  comparable: Set(String),
 ) -> StringTree {
   let original =
     render_nodes(
@@ -181,14 +201,19 @@ fn render_node(
       span.start(node.span),
       span.end(node.span),
       runtime_module,
+      comparable,
     )
 
   node.mutants
   |> list.sort(fn(a, b) { string.compare(a.id, b.id) })
   |> list.fold(original, fn(rendered, mutant) {
+    let guard = case set.contains(comparable, mutant.id) {
+      True -> ".compare("
+      False -> ".select("
+    }
     string_tree.concat([
       string_tree.from_string(
-        runtime_module <> ".select(" <> string.inspect(mutant.id) <> ", fn() { ",
+        runtime_module <> guard <> string.inspect(mutant.id) <> ", fn() { ",
       ),
       rendered,
       string_tree.from_string(" }, fn() { " <> mutant.replacement <> " })"),

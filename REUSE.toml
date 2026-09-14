@@ -15,6 +15,7 @@ path = [
   "fixtures/basic_project/manifest.toml",
   "fixtures/boundary_project/manifest.toml",
   "fixtures/compile_invalid_project/manifest.toml",
+  "fixtures/discharge_project/manifest.toml",
   "fixtures/unitest_project/manifest.toml",
   "package.json",
   "package-lock.json",
