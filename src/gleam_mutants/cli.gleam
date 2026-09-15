@@ -868,6 +868,18 @@ fn execute(command: Command) -> Nil {
                   "GMU0005",
                   render_execution_summary(output.execution),
                 )
+                // A run that fell back ran the whole suite against every
+                // mutant of it, which is the largest thing a run can be paying
+                // for and the one the reader can act on. The reason is not
+                // detail: it is the answer to the question the count raises.
+                case output.execution.fallbacks > 0 {
+                  True ->
+                    output.execution.details
+                    |> list.each(fn(detail) {
+                      emit_info(options, "GMU0006", detail)
+                    })
+                  False -> Nil
+                }
                 case options.quiet {
                   True -> Nil
                   False -> {
@@ -908,10 +920,14 @@ fn execute(command: Command) -> Nil {
                           )
                             <> " files",
                         )
-                        output.execution.details
-                        |> list.each(fn(detail) {
-                          emit_info(options, "GMU0006", detail)
-                        })
+                        case output.execution.fallbacks > 0 {
+                          True -> Nil
+                          False ->
+                            output.execution.details
+                            |> list.each(fn(detail) {
+                              emit_info(options, "GMU0006", detail)
+                            })
+                        }
                       }
                       False -> Nil
                     }
