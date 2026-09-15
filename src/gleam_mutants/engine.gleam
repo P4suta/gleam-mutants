@@ -1345,7 +1345,11 @@ fn read_impact_manifest(
 ) -> ImpactState {
   let known = list.map(mutants, fn(mutant) { mutant.id })
   case simplifile.read(manifest_path) {
-    Error(_) -> ImpactUnavailable("runner did not provide an impact manifest")
+    Error(_) ->
+      ImpactUnavailable(
+        "the test runner reported no test impact, so every mutant runs the "
+        <> "whole suite",
+      )
     Ok(source) ->
       case test_impact.decode_manifest(source) {
         Error(error) -> ImpactUnavailable(error)
