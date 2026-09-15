@@ -903,27 +903,40 @@ pub fn f12(a: Int, b: Int) -> Int {
 pub fn run_blames_a_workspace_that_does_not_compile_once_test() {
   let narrow_root =
     workspace(stdlib_toml, [#("src/broken.gleam", uncompilable_source)])
-  let narrow_started = platform.monotonic_milliseconds()
   let narrow = diff_runner.run(quick(narrow_root, ["src/broken.gleam"]))
-  let narrow_ms = platform.monotonic_milliseconds() - narrow_started
   discard(narrow_root)
   discard_run(narrow)
 
   let wide_root =
     workspace(stdlib_toml, [#("src/broken.gleam", wide_uncompilable_source)])
-  let wide_started = platform.monotonic_milliseconds()
   let wide = diff_runner.run(quick(wide_root, ["src/broken.gleam"]))
-  let wide_ms = platform.monotonic_milliseconds() - wide_started
   discard(wide_root)
   discard_run(wide)
 
-  let assert Error(error) = wide
-  assert error.code == "GMU8003"
-  assert wide_ms <= narrow_ms * 2 + 5000
   // Blamed as the workspace's failure, not as a mutant's: a run that reached
   // GMU8003 by rejecting every mutant in turn would be reporting the build of
   // the instrumented snapshot instead.
+  let assert Error(error) = wide
+  assert error.code == "GMU8003"
   assert string.contains(error.message, "before anything is mutated")
+
+  // The same file with one mutation site in it is answered the other way
+  // round, and that is the whole of what this pins. One mutant has nothing to
+  // bisect, so the run names it. Many have, and the run buys one pristine
+  // build to find out the workspace is at fault before blaming any of them --
+  // where a bisect would have narrowed down to a single mutant and answered
+  // like the narrow file, one build at a time on the way.
+  //
+  // Which is a question about what the run does, not about how long it took:
+  // a clock here would fail on a busy machine and say nothing about the
+  // engine.
+  let assert Error(narrow_error) = narrow
+  assert narrow_error.code == error.code
+  assert string.contains(
+    narrow_error.message,
+    "the instrumented snapshot did not compile",
+  )
+  assert !string.contains(error.message, "the instrumented snapshot")
 }
 
 @target(erlang)
