@@ -8,6 +8,7 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 Mutation testing for Gleam on Erlang, Node.js, Deno, and Bun.
 Runs tests in disposable snapshots and produces JSON and offline HTML reports.
 Current artifacts are development snapshots.
+The current package version is 0.1.0.
 
 ## Use from source
 
