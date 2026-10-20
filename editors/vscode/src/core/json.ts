@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+const DEFAULT_EXCERPT_CHARACTERS = 200;
+
 // The three parsers below all read one JSON value the CLI printed, and all
 // fail the same way when it is not one. Shared so that a caller who catches
 // the error sees the same wording whichever document it was.
@@ -25,7 +27,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
  * @param limit - How many characters to keep. Defaults to 200.
  * @returns The excerpt, or `(empty)` when there was nothing to quote.
  */
-export function excerpt(text: string, limit = 200): string {
+export function excerpt(text: string, limit: number = DEFAULT_EXCERPT_CHARACTERS): string {
   if (text === "") return "(empty)";
   return text.length <= limit ? text : `${text.slice(0, limit)}…`;
 }
