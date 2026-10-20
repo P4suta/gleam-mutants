@@ -32,8 +32,6 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 - [ ] Verify every Sigstore bundle and GitHub artifact attestation against the
       immutable workflow identity and commit
 - [ ] Confirm the immutable candidate commit is on protected `main`
-- [ ] Confirm the Sunday 03:41 UTC/manual Linux ecosystem workflow completed
-      inside its 15-minute cap and retained the normalized summary artifact
 - [ ] Obtain explicit approval before tagging, creating a GitHub Release, or
       publishing to a registry
 
