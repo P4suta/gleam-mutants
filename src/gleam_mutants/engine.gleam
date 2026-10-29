@@ -514,15 +514,12 @@ pub fn list_session(
         snapshot.root(session.snapshot),
         runtimes,
       ))
-      // The build above is what makes `True` true: the snapshot compiles with
-      // nothing mutated in it, so a batch that fails fails over a mutant.
       use validation <- result.try(delta_validate(
         session.snapshot,
         session.catalogs,
         candidates,
         runtimes,
         runtime_module,
-        True,
       ))
       let #(valid, rejected) = validation
       use mutation_plan <- result.try(plan.build(
@@ -791,15 +788,13 @@ fn prepare(session: CatalogSession) -> Result(Prepared, String) {
     snapshot.root(snapshot),
     snapshot.digest(snapshot),
   ))
-  // The baseline above built the snapshot and ran its tests in it, so the
-  // copy is known to compile with nothing mutated in it.
+  use _ <- result.try(build_targets(snapshot.root(snapshot), runtimes))
   use validation <- result.try(delta_validate(
     snapshot,
     catalogs,
     candidates,
     runtimes,
     runtime_module,
-    True,
   ))
   let #(valid, rejected) = validation
   use _ <- result.try(case candidates != [] && valid == [] {
@@ -1320,20 +1315,13 @@ fn read_impact_manifest(
 
 /// Splits `mutants` into the ones that build and the ones that do not.
 ///
-/// `base_compiles` says whether the copy is known to compile with nothing
-/// mutated in it. A caller that has already built it — `run` after its
-/// baseline, `list --validate` after its build — says `True` and pays nothing;
-/// a caller that has not says `False`, and the first batch that fails buys one
-/// pristine build to find out whose fault it is before any bisecting begins.
-/// Below that first split the answer is known either way, so the recursion
-/// carries `True`.
+/// Each failed batch requires a fresh pristine build before any candidate can be rejected.
 fn delta_validate(
   base: Snapshot,
   catalogs: List(SourceCatalog),
   mutants: List(Mutant),
   runtimes: List(Runtime),
   runtime_module: RuntimeModule,
-  base_compiles: Bool,
 ) -> Result(#(List(Mutant), List(RejectedMutant)), String) {
   case mutants {
     [] -> Ok(#([], []))
@@ -1349,15 +1337,17 @@ fn delta_validate(
       {
         Ok(Nil) -> Ok(#(mutants, []))
         Error(ValidationInfrastructure(error)) -> Error(error)
-        Error(CandidateInvalid(diagnostic)) ->
+        Error(CandidateInvalid(diagnostic)) -> {
+          use _ <- result.try(validate_base(
+            base,
+            catalogs,
+            runtimes,
+            runtime_module,
+          ))
           case mutants {
             [mutant] ->
               Ok(#([], [RejectedMutant(mutant, "compile-invalid", diagnostic)]))
             _ -> {
-              use _ <- result.try(case base_compiles {
-                True -> Ok(Nil)
-                False -> validate_base(base, catalogs, runtimes, runtime_module)
-              })
               let middle = list.length(mutants) / 2
               let left = list.take(mutants, middle)
               let right = list.drop(mutants, middle)
@@ -1367,7 +1357,6 @@ fn delta_validate(
                 left,
                 runtimes,
                 runtime_module,
-                True,
               ))
               use right_result <- result.try(delta_validate(
                 base,
@@ -1375,7 +1364,6 @@ fn delta_validate(
                 right,
                 runtimes,
                 runtime_module,
-                True,
               ))
               Ok(#(
                 list.append(left_result.0, right_result.0),
@@ -1383,6 +1371,7 @@ fn delta_validate(
               ))
             }
           }
+        }
       }
   }
 }
@@ -1425,17 +1414,13 @@ fn validate_batch(
     |> result.map_error(ValidationInfrastructure),
   )
   let validation = {
-    use _ <- result.try(
-      instrument(snapshot.root(worker), catalogs, mutants, runtime_module)
-      |> result.map_error(CandidateInvalid),
-    )
-    build_targets(snapshot.root(worker), runtimes)
-    |> result.map_error(fn(message) {
-      case error.interruption_code(message) {
-        Some(_) -> ValidationInfrastructure(message)
-        None -> CandidateInvalid(message)
-      }
-    })
+    use _ <- result.try(instrument_for_validation(
+      snapshot.root(worker),
+      catalogs,
+      mutants,
+      runtime_module,
+    ))
+    compile_targets(snapshot.root(worker), runtimes)
   }
   let normalize = fn(error) {
     normalize_validation_diagnostic(error, snapshot.root(worker))
@@ -1517,6 +1502,22 @@ pub fn instrument(
   mutants: List(Mutant),
   runtime_module: String,
 ) -> Result(List(String), String) {
+  instrument_for_validation(root, catalogs, mutants, runtime_module)
+  |> result.map_error(validation_message)
+}
+
+fn validation_message(error: ValidationError) -> String {
+  case error {
+    CandidateInvalid(message) | ValidationInfrastructure(message) -> message
+  }
+}
+
+fn instrument_for_validation(
+  root: String,
+  catalogs: List(SourceCatalog),
+  mutants: List(Mutant),
+  runtime_module: String,
+) -> Result(List(String), ValidationError) {
   let selected_by_path = mutants_by_path(mutants)
   use written, source_catalog <- list.try_fold(catalogs, [])
   let selected =
@@ -1529,7 +1530,9 @@ pub fn instrument(
       use forest <- result.try(
         interval_tree.build(source_catalog.source, selected)
         |> result.map_error(fn(error) {
-          "overlapping mutation spans: " <> string.inspect(error)
+          CandidateInvalid(
+            "overlapping mutation spans: " <> string.inspect(error),
+          )
         }),
       )
       let comparable =
@@ -1547,7 +1550,9 @@ pub fn instrument(
         |> add_runtime_import(runtime_module)
       use _ <- result.try(
         simplifile.write(path.join(root, source_catalog.path), rendered)
-        |> result.map_error(simplifile.describe_error),
+        |> result.map_error(fn(error) {
+          ValidationInfrastructure(simplifile.describe_error(error))
+        }),
       )
       Ok(list.append(set.to_list(comparable), written))
     }
@@ -1602,6 +1607,16 @@ pub fn build_targets(
   root: String,
   runtimes: List(Runtime),
 ) -> Result(Nil, String) {
+  compile_targets(root, runtimes)
+  |> result.map_error(validation_message)
+}
+
+const compilation_timeout_ms = 300_000
+
+fn compile_targets(
+  root: String,
+  runtimes: List(Runtime),
+) -> Result(Nil, ValidationError) {
   let targets = runtimes |> list.map(runtime_target) |> list.unique
   use target <- list.try_each(targets)
   let process_result =
@@ -1610,13 +1625,32 @@ pub fn build_targets(
       ["build", "--target", target],
       root,
       [],
-      300_000,
+      compilation_timeout_ms,
     )
-  use _ <- result.try(check_process(process_result))
-  case process_result.timed_out, process_result.status {
-    True, _ -> Error("candidate validation timed out for " <> target)
-    False, 0 -> Ok(Nil)
-    False, _ -> Error(process_result.stdout <> process_result.stderr)
+  use _ <- result.try(
+    check_process(process_result) |> result.map_error(ValidationInfrastructure),
+  )
+  let diagnostic = process_result.stdout <> process_result.stderr
+  case
+    process_result.timed_out,
+    process_result.status,
+    limits.compiler_rejected(process_result.status)
+  {
+    True, _, _ ->
+      Error(ValidationInfrastructure(
+        "compiler timed out for " <> target <> ":\n" <> diagnostic,
+      ))
+    False, 0, _ -> Ok(Nil)
+    False, _, True -> Error(CandidateInvalid(diagnostic))
+    False, status, False ->
+      Error(ValidationInfrastructure(
+        "compiler failed for "
+        <> target
+        <> " with exit code "
+        <> int.to_string(status)
+        <> ":\n"
+        <> diagnostic,
+      ))
   }
 }
 

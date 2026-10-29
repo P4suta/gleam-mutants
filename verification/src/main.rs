@@ -10,7 +10,45 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SOURCE: &str = "src/gleam_mutants/core/limits.gleam";
-const THEOREMS: [&str; 3] = ["jobs_contract", "timeout_contract", "interruption_contract"];
+const CONTRACT_SOURCE: &str = "verification/Contracts.lean";
+struct Contract {
+    theorem: &'static str,
+    predicate: &'static str,
+    original: &'static str,
+    broken: &'static str,
+}
+const CONTRACTS: [Contract; 5] = [
+    Contract {
+        theorem: "jobs_contract",
+        predicate: "valid_jobs",
+        original: "maximum_jobs = 32",
+        broken: "maximum_jobs = 33",
+    },
+    Contract {
+        theorem: "timeout_contract",
+        predicate: "valid_timeout",
+        original: "minimum_timeout_ms = 100",
+        broken: "minimum_timeout_ms = 101",
+    },
+    Contract {
+        theorem: "interruption_contract",
+        predicate: "interrupted",
+        original: "interrupt_exit_code = 130",
+        broken: "interrupt_exit_code = 131",
+    },
+    Contract {
+        theorem: "unshared_file_contract",
+        predicate: "unshared_file",
+        original: "unshared_file_link_count = 1",
+        broken: "unshared_file_link_count = 2",
+    },
+    Contract {
+        theorem: "compiler_rejection_contract",
+        predicate: "compiler_rejected",
+        original: "compiler_rejection_exit_code = 1",
+        broken: "compiler_rejection_exit_code = 2",
+    },
+];
 const PROOF_TIMEOUT: Duration = Duration::from_secs(900);
 const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CONTAINER_KILLED_EXIT_CODE: i32 = 137;
@@ -33,14 +71,11 @@ fn text(result: &Output) -> String {
     )
 }
 
-fn model(directory: &Path, source: &str) -> Result<(), String> {
+fn model(directory: &Path, source: &str, contracts: &str) -> Result<(), String> {
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     write(directory.join("Derived.lean"), &limits::derive(source)?)?;
     write(directory.join("source.gleam"), source)?;
-    write(
-        directory.join("Contracts.lean"),
-        &read("verification/Contracts.lean")?,
-    )
+    write(directory.join("Contracts.lean"), contracts)
 }
 
 fn bounded(image: &str, directory: &Path, args: &[&str]) -> Result<Output, String> {
@@ -134,6 +169,7 @@ fn checked(image: &str, directory: &Path, args: &[&str]) -> Result<Output, Strin
 
 fn prove() -> Result<(), String> {
     let source = read(SOURCE)?;
+    let contracts = read(CONTRACT_SOURCE)?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -157,7 +193,7 @@ fn prove() -> Result<(), String> {
     let image = read(image_file)?;
     let image = image.trim();
     let positive = directory.join("positive");
-    model(&positive, &source)?;
+    model(&positive, &source, &contracts)?;
     let version = checked(image, &positive, &["lean", "--version"])?;
     if !text(&version).contains("Lean (version 4.34.1,") {
         return Err(format!("unexpected verifier version: {}", text(&version)));
@@ -173,7 +209,8 @@ fn prove() -> Result<(), String> {
         &["lean", "-o", "Contracts.olean", "Contracts.lean"],
     )?;
     let axioms = text(&proof);
-    for theorem in THEOREMS {
+    for contract in &CONTRACTS {
+        let theorem = contract.theorem;
         if !axioms.contains(&format!("'{theorem}' does not depend on any axioms")) {
             return Err(format!("missing axiom-free theorem {theorem}:\n{axioms}"));
         }
@@ -188,38 +225,46 @@ fn prove() -> Result<(), String> {
         return Err(format!("missing fresh-kernel replay: {}", text(&replay)));
     }
     write(positive.join("replay.log"), &text(&replay))?;
-    let broken = source.replace("maximum_jobs = 32", "maximum_jobs = 33");
-    if broken == source {
-        return Err("negative control could not change the production jobs bound".into());
+    for contract in &CONTRACTS {
+        let broken = source.replace(contract.original, contract.broken);
+        if broken == source {
+            return Err(format!(
+                "negative control could not change {}",
+                contract.predicate
+            ));
+        }
+        let negative = directory.join(contract.predicate);
+        model(&negative, &broken, &contracts)?;
+        checked(
+            image,
+            &negative,
+            &["lean", "-o", "Derived.olean", "Derived.lean"],
+        )?;
+        let refused = bounded(
+            image,
+            &negative,
+            &["lean", "-o", "Contracts.olean", "Contracts.lean"],
+        )?;
+        let diagnostic = text(&refused);
+        if refused.status.success()
+            || !diagnostic.contains("Tactic `rfl` failed")
+            || !diagnostic.contains(&format!("Derived.{} value", contract.predicate))
+            || !diagnostic.contains("error:")
+        {
+            return Err(format!(
+                "negative control for {} did not produce the expected failed equality proof:\n{diagnostic}",
+                contract.predicate
+            ));
+        }
+        write(negative.join("refusal.log"), &diagnostic)?;
     }
-    let negative = directory.join("negative");
-    model(&negative, &broken)?;
-    checked(
-        image,
-        &negative,
-        &["lean", "-o", "Derived.olean", "Derived.lean"],
-    )?;
-    let refused = bounded(
-        image,
-        &negative,
-        &["lean", "-o", "Contracts.olean", "Contracts.lean"],
-    )?;
-    let diagnostic = text(&refused);
-    if refused.status.success()
-        || !diagnostic.contains("Tactic `rfl` failed")
-        || !diagnostic.contains("Derived.valid_jobs value")
-        || !diagnostic.contains("error:")
-    {
-        return Err(format!(
-            "negative control did not produce the expected failed equality proof:\n{diagnostic}"
-        ));
-    }
-    write(negative.join("refusal.log"), &diagnostic)?;
-    if read(SOURCE)? != source {
-        return Err("production source changed during verification".into());
+    if read(SOURCE)? != source || read(CONTRACT_SOURCE)? != contracts {
+        return Err("production source or contracts changed during verification".into());
     }
     println!(
-        "3 source-derived contracts passed without axioms; fresh-kernel replay and jobs-bound negative control passed"
+        "{} source-derived contracts passed without axioms; fresh-kernel replay and all {} negative controls passed",
+        CONTRACTS.len(),
+        CONTRACTS.len()
     );
     println!("Evidence: {}", directory.display());
     Ok(())
@@ -229,7 +274,11 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [command] if command == "prove" => prove(),
-        [command, directory] if command == "derive" => model(Path::new(directory), &read(SOURCE)?),
+        [command, directory] if command == "derive" => model(
+            Path::new(directory),
+            &read(SOURCE)?,
+            &read(CONTRACT_SOURCE)?,
+        ),
         [] => {
             println!(
                 "usage: gleam-mutants-verification derive OUTPUT_DIRECTORY | prove\nRun from the repository root; prove needs Docker and uses offline 2-CPU, 2-GiB containers."

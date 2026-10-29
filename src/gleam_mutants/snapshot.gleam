@@ -9,6 +9,7 @@ import gleam/set
 import gleam/string
 import gleam_mutants/core/bytes
 import gleam_mutants/core/glob
+import gleam_mutants/core/limits
 import gleam_mutants/core/mutant
 import gleam_mutants/core/path
 import gleam_mutants/platform
@@ -141,6 +142,7 @@ pub fn keep(
   destination: String,
   excluded_directories: List(String),
 ) -> Result(Snapshot, String) {
+  use _ <- result.try(check_destination(destination))
   use _ <- result.try(
     simplifile.create_directory_all(destination)
     |> result.map_error(simplifile.describe_error),
@@ -413,6 +415,7 @@ fn copy_entry(
       Error("refusing symlink or junction in workspace: " <> relative)
     simplifile.Other, _ -> Error(special_file_refusal(relative))
     simplifile.Directory, _ -> {
+      use _ <- result.try(check_destination(destination))
       use _ <- result.try(
         simplifile.create_directory_all(destination)
         |> result.map_error(simplifile.describe_error),
@@ -434,6 +437,7 @@ fn copy_entry(
       Ok(entries)
     }
     simplifile.File, _ -> {
+      use _ <- result.try(check_destination(destination))
       use content <- result.try(
         simplifile.read_bits(source)
         |> result.map_error(simplifile.describe_error),
@@ -458,6 +462,25 @@ fn copy_entry(
         ..entries
       ])
     }
+  }
+}
+
+fn check_destination(destination: String) -> Result(Nil, String) {
+  case simplifile.link_info(destination) {
+    Error(simplifile.Enoent) -> Ok(Nil)
+    Error(error) -> Error(simplifile.describe_error(error))
+    Ok(info) ->
+      case
+        simplifile.file_info_type(info),
+        platform.is_reparse_point(destination),
+        limits.unshared_file(info.nlinks)
+      {
+        simplifile.Directory, False, _ | simplifile.File, False, True -> Ok(Nil)
+        _, _, _ ->
+          Error(
+            "refusing linked or special snapshot destination: " <> destination,
+          )
+      }
   }
 }
 

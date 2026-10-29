@@ -174,18 +174,28 @@ pub fn derive(source: &str) -> Result<String, String> {
     let constants: Vec<_> = parser.constants.keys().map(String::as_str).collect();
     if constants
         != [
+            "compiler_rejection_exit_code",
             "interrupt_exit_code",
             "maximum_jobs",
             "maximum_timeout_ms",
             "minimum_jobs",
             "minimum_timeout_ms",
             "terminate_exit_code",
+            "unshared_file_link_count",
         ]
     {
         return Err("source constant inventory changed".into());
     }
     let names: Vec<_> = functions.keys().map(String::as_str).collect();
-    if names != ["interrupted", "valid_jobs", "valid_timeout"] {
+    if names
+        != [
+            "compiler_rejected",
+            "interrupted",
+            "unshared_file",
+            "valid_jobs",
+            "valid_timeout",
+        ]
+    {
         return Err("source predicate inventory changed".into());
     }
     let mut model = "namespace Derived\n".to_owned();
@@ -208,7 +218,13 @@ mod tests {
     #[test]
     fn derives_all_production_predicates() {
         let model = derive(SOURCE).expect("supported production source");
-        for name in ["valid_jobs", "valid_timeout", "interrupted"] {
+        for name in [
+            "compiler_rejected",
+            "valid_jobs",
+            "valid_timeout",
+            "interrupted",
+            "unshared_file",
+        ] {
             assert!(model.contains(&format!("def {name} ")));
         }
         assert!(model.contains("86400000"));

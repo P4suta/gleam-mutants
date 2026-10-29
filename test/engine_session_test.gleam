@@ -30,6 +30,59 @@ fn workspace(label: String) -> String {
   root
 }
 
+pub fn retained_snapshot_links_never_overwrite_their_targets_test() {
+  list.each(["file", "directory", "root", "hard-link"], fn(kind) {
+    let source = workspace("destination-" <> kind)
+    let external = workspace("external-" <> kind)
+    let destination = external <> "-kept"
+    let original = path.join(external, "src/main.gleam")
+    let marker = "pub fn preserve() { Nil }\n"
+    let assert Ok(Nil) = simplifile.write(original, marker)
+    let assert Ok(_) = snapshot.keep(source, destination, [])
+    let link = case kind {
+      "root" -> destination
+      "directory" -> path.join(destination, "src")
+      _ -> path.join(destination, "src/main.gleam")
+    }
+    let target = case kind {
+      "root" -> external
+      "directory" -> path.join(external, "src")
+      _ -> original
+    }
+    let assert Ok(Nil) = platform.delete_tree(link)
+    case kind {
+      "hard-link" -> {
+        let linked =
+          platform.run_process(
+            "node",
+            [
+              "-e",
+              "require('node:fs').linkSync(process.argv[1], process.argv[2])",
+              target,
+              link,
+            ],
+            ".",
+            [],
+            10_000,
+          )
+        assert linked.status == 0
+      }
+      _ -> {
+        let assert Ok(Nil) = simplifile.create_symlink(target, link)
+        Nil
+      }
+    }
+    let attempted = snapshot.keep(source, destination, [])
+    let preserved = simplifile.read(original)
+    let assert Ok(Nil) = platform.delete_tree(destination)
+    let assert Ok(Nil) = platform.delete_tree(external)
+    let assert Ok(Nil) = platform.delete_tree(source)
+    assert preserved == Ok(marker)
+    let assert Error(error) = attempted
+    assert string.contains(error, "snapshot destination")
+  })
+}
+
 pub fn catalogue_session_disposes_its_single_snapshot_after_success_test() {
   let root = workspace("success")
   let assert Ok(#(captured, ids)) =

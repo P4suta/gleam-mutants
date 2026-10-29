@@ -18,7 +18,7 @@ It rejects additional declarations, missing predicates, unknown names, arithmeti
 Boolean precedence is preserved.
 The generated model and the exact source copy are isolated under a fresh `build/verification/` directory.
 
-[Independent contracts](../verification/Contracts.lean) require jobs in 1–32, explicit timeouts in 100–86,400,000 milliseconds, and interruption exactly at 130 or 143.
+[Independent contracts](../verification/Contracts.lean) require jobs in 1–32, explicit timeouts in 100–86,400,000 milliseconds, interruption exactly at 130 or 143, and file link counts and compiler rejection statuses exactly equal to one.
 Each theorem quantifies over all mathematical integers.
 This covers admitted Gleam integer inputs under the compiler's ordinary integer-comparison semantics.
 Constants and boundary values are exactly representable on the JavaScript target.
@@ -33,10 +33,10 @@ Both Gleam targets compile the same production predicates.
 Lean 4.34.1 and elan 4.2.4 are downloaded with pinned SHA-256 checksums in the [proof image](../verification/Dockerfile).
 Proof commands run without network access, with two CPUs, 2GiB memory and no additional swap, 256 processes, and a 900-second operational limit.
 A resource stop is inconclusive.
-The gate requires all three named theorems to have no axioms and replays their compiled module through a fresh kernel.
-It then changes the source jobs bound from 32 to 33 and requires an equality-proof failure against the unchanged contract.
+The gate requires all five named theorems to have no axioms and replays their compiled module through a fresh kernel.
+It changes one production constant for each predicate and requires the corresponding equality-proof failure against the unchanged contracts.
 A successful broken proof or another kind of tool failure fails the gate.
-The original production source must still match the copy at completion.
+The original production source and independent contracts must still match their copies at completion.
 Generated models and logs are evidence for that invocation; later invocations generate fresh evidence.
 
 See Lean's [proof validation documentation](https://lean-lang.org/doc/reference/latest/ValidatingProofs/) for the distinction between elaboration and kernel replay.
@@ -51,16 +51,16 @@ Reassess this boundary when a maintained verifier can import the relevant Gleam 
 
 | Affected contract | Production path | Required check and boundary |
 | --- | --- | --- |
-| Option admission | API, engine, configuration, CLI | Three source-derived contracts; invalid root, job, timeout, and command regressions |
+| Option admission | API, engine, configuration, CLI | Source-derived jobs, timeout, and interruption contracts; invalid root, job, timeout, and command regressions |
 | Shared API and results | API and canonical types | `api_smoke` compares actual engine scores, selection, policy, identities, and outcomes |
 | Report persistence | API and report adapters | Default no-write and explicit persistence; installed Hex consumer and report storage faults |
 | Host preservation | Process FFI, engine, CLI | Child exit 130/143 during compilation, baseline, and mutation batches on all four runtimes; API continuation and CLI exit |
 | Input preservation | Snapshot and instrumenter | Byte digests, spaces, Unicode/CRLF, link rejection, generated-link cleanup, 10,000 fixed-seed properties |
 | Local dependency closure | Local dependency capture and snapshot identity | All 512 directed three-package graphs against an independent transitive-closure reference; shared, absolute, development, Git, retained-copy, and link boundaries; real locked builds and cache invalidation on four runtimes |
-| Compiler classification | Validation batches | Mixed and all-rejected catalogues; invalid mutants remain rejected; interruption aborts validation |
+| Compiler classification | Validation batches | Source-derived rejection-status contract; mixed and all-rejected catalogues; invalid mutants remain rejected; persistent compiler failures with exit 1 and 75 abort validation on all four runtimes |
 | Baseline and aggregation | Execution and outcome core | Baseline failure returns an error; all 341 outcome-category lists of length zero through four match an independent priority reference |
 | Selection and cache | Engine, impact protocol, cache | Automatic and full-suite parity, conservative confirmation, all-hit behavior, runtime/compiler identity |
-| Cleanup and durability | Snapshots, locks, report storage | Process-tree, interruption, workspace-lock, report lifecycle, and storage fault smokes |
+| Cleanup and durability | Snapshots, locks, report storage | Source-derived file-link admission; retained-copy file, directory, root symlink, and hard-link refusal; process-tree, interruption, workspace-lock, report lifecycle, and storage fault smokes |
 | Consumer compatibility | CLI and artifacts | Schema validation, four-runtime report parity, offline browsers, installed Hex API, escript/npm execution, reproducible packages |
 | Mutation semantics | Core and engine | Dogfood score mutation and five fixed official-library corpora with exact expected outcomes and source hashes |
 
