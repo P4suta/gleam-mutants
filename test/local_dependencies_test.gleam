@@ -218,6 +218,31 @@ pub fn git_subdirectory_paths_are_not_local_dependencies_test() {
   let assert Ok(Nil) = platform.delete_tree(root)
 }
 
+pub fn stale_local_manifest_entries_do_not_require_removed_dependencies_test() {
+  let root = fixture()
+  let source =
+    package(
+      root,
+      "consumer",
+      "[dependencies]\nlibrary = { path = \"../library\" }\n",
+    )
+  let _ = package(root, "library", "")
+  let manifest =
+    "packages = [\n"
+    <> "{ name = \"library\", version = \"0.0.0\", build_tools = [\"gleam\"], requirements = [], source = \"local\", path = \"../library\" },\n"
+    <> "{ name = \"retired\", version = \"0.0.0\", build_tools = [\"gleam\"], requirements = [], source = \"local\", path = \"../retired\" },\n]\n"
+    <> "[requirements]\nlibrary = { path = \"../library\" }\nretired = { path = \"../retired\" }\n"
+  let assert Ok(Nil) =
+    simplifile.write(path.join(source, "manifest.toml"), manifest)
+  let assert Ok(captured) = snapshot.create(source)
+  let attempted = local_dependencies.prepare(source, captured, [])
+  let unchanged = simplifile.read(path.join(source, "manifest.toml"))
+  let assert Ok(Nil) = snapshot.dispose(captured)
+  let assert Ok(Nil) = platform.delete_tree(root)
+  assert unchanged == Ok(manifest)
+  let assert Ok(_) = attempted
+}
+
 pub fn unvalidated_listing_does_not_require_local_dependencies_test() {
   let root = fixture()
   let source =

@@ -10,6 +10,7 @@ import gleam_mutants/core/path
 import gleam_mutants/platform
 import gleam_mutants/types
 import simplifile
+import tomlet
 
 const project_config = "name = \"local_dependency_consumer\"\nversion = \"0.0.0\"\n"
   <> "[dependencies]\narithmetic_fixture = { path = \"../arithmetic\" }\n"
@@ -112,6 +113,33 @@ pub fn main() {
   let original_source =
     simplifile.read(path.join(project, "src/local_dependency_consumer.gleam"))
   let original_manifest = simplifile.read(path.join(project, "manifest.toml"))
+  let assert Ok(manifest_source) = original_manifest
+  let assert Ok(document) = tomlet.parse(manifest_source)
+  let assert Ok(tomlet.ArrayValue(packages)) =
+    tomlet.get(document, ["packages"])
+  let assert Ok(tomlet.InlineTableValue(first)) = list.first(packages)
+  let obsolete =
+    tomlet.InlineTableValue(
+      list.map(first, fn(entry) {
+        case entry.0 {
+          ["name"] -> #(["name"], tomlet.StringValue("retired"))
+          ["path"] -> #(["path"], tomlet.StringValue("../removed"))
+          _ -> entry
+        }
+      }),
+    )
+  let assert Ok(document) =
+    tomlet.set_array(document, ["packages"], [obsolete, ..packages])
+  let assert Ok(document) =
+    tomlet.set_inline_table(document, ["requirements", "retired"], [
+      #(["path"], tomlet.StringValue("../removed")),
+    ])
+  let stale_manifest = tomlet.to_string(document)
+  let assert Ok(Nil) =
+    simplifile.write(path.join(project, "manifest.toml"), stale_manifest)
+  let stale_validation = api.validate_mutants(project, options)
+  let unchanged_stale_manifest =
+    simplifile.read(path.join(project, "manifest.toml"))
   let cache_cleanup = cache.clean(project)
   let snapshot_cleanup = platform.delete_tree(cache.workspace_snapshot(project))
   let cleanup = platform.delete_tree(directory)
@@ -121,6 +149,8 @@ pub fn main() {
   assert built.status == 0
   let assert Ok(_) = manifest
   assert manifest == original_manifest
+  let assert Ok(_) = stale_validation
+  assert unchanged_stale_manifest == Ok(stale_manifest)
   let assert Ok(catalog) = validation
   assert catalog.validation == types.CompilerValidated
   let assert Ok(report) = execution

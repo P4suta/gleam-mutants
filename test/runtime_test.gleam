@@ -7,6 +7,7 @@ import gleam_mutants/core/path
 import gleam_mutants/platform
 import gleam_mutants/runtime
 import simplifile
+import tomlet
 
 @target(erlang)
 @external(erlang, "runtime_test_ffi", "load_generated")
@@ -43,7 +44,38 @@ fn fresh_snapshot_root() -> String {
       "gleam-mutants-runtime-" <> platform.random_nonce(),
     )
   let assert Ok(Nil) = simplifile.create_directory_all(root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      path.join(root, "gleam.toml"),
+      "name = \"runtime_fixture\"\nversion = \"0.0.0\"\n",
+    )
   root
+}
+
+pub fn generated_runtime_preserves_the_projects_internal_module_policy_test() {
+  let cases = [
+    #("", ["runtime_fixture/internal", "runtime_fixture/internal/*"]),
+    #("internal_modules = []\n", []),
+    #("internal_modules = [\"hidden/*\"]\n", ["hidden/*"]),
+  ]
+  list.each(cases, fn(test_case) {
+    let root = fresh_snapshot_root()
+    let assert Ok(Nil) =
+      simplifile.append(
+        to: path.join(root, "gleam.toml"),
+        contents: test_case.0,
+      )
+    let assert Ok(generated) = runtime.generate(root, platform.random_nonce())
+    let assert Ok(_) = runtime.generate(root, generated.tag)
+    let assert Ok(source) = simplifile.read(path.join(root, "gleam.toml"))
+    let assert Ok(document) = tomlet.parse(source)
+    let actual = tomlet.get(document, ["internal_modules"])
+    let assert Ok(Nil) = platform.delete_tree(root)
+    let expected =
+      list.append(test_case.1, [runtime.name(generated)])
+      |> list.map(tomlet.StringValue)
+    assert actual == Ok(tomlet.ArrayValue(expected))
+  })
 }
 
 fn generated_source_path(

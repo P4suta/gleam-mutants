@@ -83,6 +83,24 @@ pub fn retained_snapshot_links_never_overwrite_their_targets_test() {
   })
 }
 
+pub fn file_permissions_participate_in_snapshot_identity_test() {
+  let source = workspace("permissions")
+  let original = path.join(source, "src/main.gleam")
+  let #(before, after) = case platform.os_name() {
+    "windows" -> #(0o444, 0o644)
+    _ -> #(0o644, 0o755)
+  }
+  let assert Ok(Nil) = simplifile.set_permissions_octal(original, before)
+  let assert Ok(first) = snapshot.create(source)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(original, after)
+  let assert Ok(second) = snapshot.create(source)
+  let changed = snapshot.digest(first) != snapshot.digest(second)
+  let assert Ok(Nil) = snapshot.dispose(first)
+  let assert Ok(Nil) = snapshot.dispose(second)
+  let assert Ok(Nil) = platform.delete_tree(source)
+  assert changed
+}
+
 pub fn catalogue_session_disposes_its_single_snapshot_after_success_test() {
   let root = workspace("success")
   let assert Ok(#(captured, ids)) =

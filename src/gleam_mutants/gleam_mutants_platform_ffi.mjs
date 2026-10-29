@@ -232,7 +232,7 @@ async function readLimited(stream) {
   const result = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
-  const text = new TextDecoder().decode(result);
+  const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(result);
   return omitted > 0 ? text + "\n... " + omitted + " bytes omitted ...\n" : text;
 }
 

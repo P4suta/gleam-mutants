@@ -246,6 +246,44 @@ fn relocate_manifest(
         Ok(tomlet.ArrayValue(packages)) -> Ok(packages)
         _ -> Error("invalid dependency manifest packages")
       })
+      let obsolete =
+        list.filter_map(packages, fn(package) {
+          case
+            tomlet.value_get(package, ["source"]),
+            tomlet.value_get(package, ["name"])
+          {
+            Ok(tomlet.StringValue("local")), Ok(tomlet.StringValue(name)) ->
+              case dict.has_key(dependencies, name) {
+                True -> Error(Nil)
+                False -> Ok(name)
+              }
+            _, _ -> Error(Nil)
+          }
+        })
+      let packages =
+        list.filter(packages, fn(package) {
+          case
+            tomlet.value_get(package, ["source"]),
+            tomlet.value_get(package, ["name"])
+          {
+            Ok(tomlet.StringValue("local")), Ok(tomlet.StringValue(name)) ->
+              !list.contains(obsolete, name)
+            _, _ -> True
+          }
+        })
+      use document <- result.try(
+        list.try_fold(obsolete, document, fn(document, name) {
+          case tomlet.remove(document, ["requirements", name]) {
+            Ok(document) -> Ok(document)
+            Error(tomlet.MissingEditKey(_)) -> Ok(document)
+            Error(_) ->
+              Error(
+                "could not remove obsolete local dependency requirement: "
+                <> name,
+              )
+          }
+        }),
+      )
       use packages <- result.try(
         list.try_map(packages, fn(package) {
           case tomlet.value_get(package, ["source"]) {

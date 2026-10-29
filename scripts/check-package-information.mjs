@@ -40,6 +40,7 @@ try {
 			"gleam_mutants/core/*",
 			"gleam_mutants/engine",
 			"gleam_mutants/error",
+			"gleam_mutants/local_dependencies",
 			"gleam_mutants/mte_asset",
 			"gleam_mutants/pipeline",
 			"gleam_mutants/platform",

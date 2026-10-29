@@ -273,23 +273,56 @@ collect(Port, Timeout, Started, Output, Status, Eof) ->
         {Port, {data, Chunk}} ->
             collect(Port, Timeout, Started, bounded_append(Output, Chunk), Status, Eof);
         {Port, {exit_status, Code}} when Eof =:= true ->
-            {Code, Output, <<>>, false};
+            {Code, utf8_text(Output), <<>>, false};
         {Port, {exit_status, Code}} ->
             collect(Port, Timeout, Started, Output, Code, Eof);
         {Port, eof} when Status =/= undefined ->
-            {Status, Output, <<>>, false};
+            {Status, utf8_text(Output), <<>>, false};
         {Port, eof} ->
             collect(Port, Timeout, Started, Output, Status, true);
-        {'EXIT', Port, _} -> {status_or_default(Status), Output, <<>>, false}
+        {'EXIT', Port, _} -> {status_or_default(Status), utf8_text(Output), <<>>, false}
     after Remaining ->
         case Status of
             undefined ->
                 kill_port_tree(Port),
                 try erlang:port_close(Port) catch _:_ -> ok end,
-                {-1, Output, <<"process timed out">>, true};
-            _ -> {Status, Output, <<>>, false}
+                {-1, utf8_text(Output), <<"process timed out">>, true};
+            _ -> {Status, utf8_text(Output), <<>>, false}
         end
     end.
+
+-spec utf8_text(binary()) -> binary().
+utf8_text(Bytes) -> utf8_text(Bytes, []).
+
+-spec utf8_text(binary(), [binary()]) -> binary().
+utf8_text(Bytes, Acc) ->
+    case unicode:characters_to_binary(Bytes, utf8, utf8) of
+        Text when is_binary(Text) -> iolist_to_binary(lists:reverse([Text | Acc]));
+        {error, Prefix, Rest} ->
+            utf8_text(invalid_sequence_rest(Rest), [<<16#EF, 16#BF, 16#BD>>, Prefix | Acc]);
+        {incomplete, Prefix, _Rest} ->
+            iolist_to_binary(lists:reverse([<<16#EF, 16#BF, 16#BD>>, Prefix | Acc]))
+    end.
+
+-spec invalid_sequence_rest(binary()) -> binary().
+invalid_sequence_rest(<<Lead, Rest/binary>>) ->
+    case Lead of
+        _ when Lead >= 16#C2, Lead =< 16#DF -> continuations(Rest, 1, 16#80, 16#BF);
+        16#E0 -> continuations(Rest, 2, 16#A0, 16#BF);
+        16#ED -> continuations(Rest, 2, 16#80, 16#9F);
+        _ when Lead >= 16#E1, Lead =< 16#EF -> continuations(Rest, 2, 16#80, 16#BF);
+        16#F0 -> continuations(Rest, 3, 16#90, 16#BF);
+        16#F4 -> continuations(Rest, 3, 16#80, 16#8F);
+        _ when Lead >= 16#F1, Lead =< 16#F3 -> continuations(Rest, 3, 16#80, 16#BF);
+        _ -> Rest
+    end;
+invalid_sequence_rest(<<>>) -> <<>>.
+
+-spec continuations(binary(), non_neg_integer(), byte(), byte()) -> binary().
+continuations(Rest, 0, _Lower, _Upper) -> Rest;
+continuations(<<Byte, Rest/binary>>, Count, Lower, Upper) when Byte >= Lower, Byte =< Upper ->
+    continuations(Rest, Count - 1, 16#80, 16#BF);
+continuations(Rest, _Count, _Lower, _Upper) -> Rest.
 
 bounded_append(Output, Chunk) ->
     Combined = <<Output/binary, Chunk/binary>>,

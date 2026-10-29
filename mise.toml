@@ -49,6 +49,10 @@ run = [
   "gleam run -m api_smoke --target javascript --runtime node",
   "gleam run -m local_dependency_smoke --target erlang",
   "gleam run -m local_dependency_smoke --target javascript --runtime node",
+  "gleam run -m process_output_smoke --target erlang",
+  "gleam run -m process_output_smoke --target javascript --runtime node",
+  "gleam run -m process_output_smoke --target javascript --runtime deno",
+  "gleam run -m process_output_smoke --target javascript --runtime bun",
   "gleam run -m engine_smoke --target erlang",
   "gleam run -m engine_smoke --target javascript --runtime node",
   "gleam run -m adaptive_engine_smoke --target erlang",
@@ -113,7 +117,7 @@ run = [
 ]
 
 [tasks.check-verification]
-description = "Check source derivation and compiler interruption on all runtimes"
+description = "Check source derivation, compiler failures, and process supervision"
 run = [
   "cargo fmt --manifest-path verification/Cargo.toml --check",
   "cargo clippy --locked --manifest-path verification/Cargo.toml --target-dir build/verification-rust --all-targets -- -D warnings",
@@ -121,12 +125,13 @@ run = [
 ]
 
 [tasks.prove]
-description = "Prove source-derived limits and reject a broken bound in bounded offline containers"
+description = "Prove source-derived predicates and reject each broken contract in bounded containers"
 run = "cargo run --locked --manifest-path verification/Cargo.toml --target-dir build/verification-rust -- prove"
 
 [tasks.dogfood]
-description = "Mutation-test a deterministic pure-core unit-test subset"
-run = "gleam run -m gleam_mutants -- run --include src/gleam_mutants/core/score.gleam --strict --test-command gleam test"
+description = "Mutation-test pure-core scoring against the project unit tests"
+timeout = "15m"
+run = "gleam run -m gleam_mutants -- run --include src/gleam_mutants/core/score.gleam --strict --jobs 2 --test-command gleam test"
 
 [tasks.package]
 description = "Build and smoke-test development snapshot Hex, escript, and npm artifacts"

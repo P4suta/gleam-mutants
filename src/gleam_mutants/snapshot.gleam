@@ -16,7 +16,7 @@ import gleam_mutants/platform
 import simplifile
 
 pub type ManifestEntry {
-  ManifestEntry(path: String, digest: String, size: Int)
+  ManifestEntry(path: String, digest: String, size: Int, permissions: Int)
 }
 
 pub opaque type Snapshot {
@@ -355,6 +355,7 @@ fn scan_directory(
               child_relative,
               bytes.sha256_bits(content),
               bit_array.byte_size(content),
+              simplifile.file_info_permissions_octal(info),
             ),
             ..entries
           ])
@@ -458,6 +459,7 @@ fn copy_entry(
           relative,
           bytes.sha256_bits(content),
           bit_array.byte_size(content),
+          simplifile.file_info_permissions_octal(info),
         ),
         ..entries
       ])
@@ -530,6 +532,8 @@ fn manifest_digest(entries: List(ManifestEntry)) -> String {
     <> ":"
     <> entry.digest
     <> int.to_string(entry.size)
+    <> ":"
+    <> int.to_string(entry.permissions)
     <> ";"
   })
   |> string.concat
@@ -554,7 +558,7 @@ pub fn with_dependencies(
 ) -> Snapshot {
   let entries =
     list.map(dependencies, fn(dependency) {
-      ManifestEntry(dependency.0, dependency.1, 0)
+      ManifestEntry(dependency.0, dependency.1, 0, 0)
     })
   Snapshot(
     ..snapshot,
