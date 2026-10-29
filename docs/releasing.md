@@ -85,6 +85,14 @@ Verify the native integration's environment destination and visible secret names
 No active key, account registration, or registry trust registration is needed for release preparation.
 Never store keys in the repository, command arguments, candidate artifacts, or PR text.
 
+After credential issuance is separately authorized, use the dedicated `Verify registry credential transport` workflow with the selected registry and exact expected username.
+It requires the corresponding environment approval, builds a separate metadata-only executable before supplying the secret, and performs only the authenticated Hex `/users/me` or npm `/-/whoami` GET.
+It never invokes the production release controller, requests signing authority, tags, or publishes.
+Missing credentials, denied metadata permissions, and an unexpected account fail the check.
+Do not broaden a package-scoped key merely to make an account-metadata read succeed.
+This check verifies transport and account identity only; package ownership, publication permission, two-factor requirements, and npm trusted-publisher exchange remain separate obligations.
+It is intentionally unrun until authorized credentials exist.
+
 Hex currently uses its documented API-key authentication to upload the exact verified tarball.
 The first public package requires an authorized owner account and a narrowly scoped, short-lived bootstrap key.
 Use a package-scoped key for subsequent publications and revoke bootstrap access after the first verified publication.

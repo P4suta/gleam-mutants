@@ -81,6 +81,7 @@ jobs:
           "$RUN" "$ATTEMPT"
       - run: >-
           cargo build --locked --release --manifest-path tools/Cargo.toml
+          --bin gleam-mutants-release --bin release-publish
           --target-dir build/release-controller
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

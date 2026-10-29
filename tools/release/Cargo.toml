@@ -10,6 +10,10 @@ publish.workspace = true
 license.workspace = true
 default-run = "gleam-mutants-release"
 
+[[bin]]
+name = "registry-fixture"
+path = "tests/fixtures/registry_transport.rs"
+
 [dependencies]
 gleam-mutants-release-core = { path = "../release-core" }
 serde = { version = "1.0.229", features = ["derive"] }

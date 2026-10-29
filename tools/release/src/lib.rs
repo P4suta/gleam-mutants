@@ -4,6 +4,7 @@
 pub mod audit;
 pub mod candidate;
 mod constants;
+pub mod credentials;
 pub mod evidence;
 pub mod github;
 pub mod proofs;

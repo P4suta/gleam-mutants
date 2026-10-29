@@ -20,6 +20,12 @@ pub enum Registry {
     Npm,
 }
 
+enum Request<'a> {
+    Get,
+    AuthenticatedGet(&'a str),
+    Publish(&'a Path, &'a str),
+}
+
 impl Registry {
     fn metadata(&self, version: &Version) -> String {
         match self {
@@ -56,7 +62,12 @@ struct Response {
     body: Vec<u8>,
 }
 
-fn request(url: &str, upload: Option<(&Path, &str)>) -> Result<Response, String> {
+fn request(url: &str, request: Request<'_>) -> Result<Response, String> {
+    let (upload, key) = match request {
+        Request::Get => (None, None),
+        Request::AuthenticatedGet(key) => (None, Some(key)),
+        Request::Publish(path, key) => (Some(path), Some(key)),
+    };
     let mut command = Command::new("curl");
     command.args([
         "--silent",
@@ -72,16 +83,21 @@ fn request(url: &str, upload: Option<(&Path, &str)>) -> Result<Response, String>
         "--write-out",
         "\n%{http_code}",
     ]);
-    if let Some((path, _)) = upload {
+    if let Some(path) = upload {
         command
-            .args(["--request", "POST", "--header", "@-", "--data-binary"])
+            .args(["--request", "POST", "--data-binary"])
             .arg(format!("@{}", path.display()));
     } else {
-        command.args(["--request", "GET", "--header", "Accept: application/json"]);
+        command.args(["--request", "GET"]);
     }
+    command.args(if key.is_some() {
+        ["--header", "@-"]
+    } else {
+        ["--header", "Accept: application/json"]
+    });
     command
         .arg(url)
-        .stdin(if upload.is_some() {
+        .stdin(if key.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
@@ -91,7 +107,7 @@ fn request(url: &str, upload: Option<(&Path, &str)>) -> Result<Response, String>
     let mut child = command
         .spawn()
         .map_err(|e| format!("registry transport: {e}"))?;
-    if let Some((_, key)) = upload {
+    if let Some(key) = key {
         let header = format!(
             "Authorization: {key}\nAccept: application/json\nContent-Type: application/octet-stream\n"
         );
@@ -144,7 +160,7 @@ pub fn observe(
     version: &Version,
     expected_digest: &str,
 ) -> Result<Existing, String> {
-    let response = request(&registry.metadata(version), None)?;
+    let response = request(&registry.metadata(version), Request::Get)?;
     if response.status == HTTP_NOT_FOUND {
         return Ok(Existing::Missing);
     }
@@ -159,7 +175,7 @@ pub fn observe(
     if metadata["version"] != version.as_str() {
         return Err("registry version identity mismatch".into());
     }
-    let response = request(&registry.archive(version), None)?;
+    let response = request(&registry.archive(version), Request::Get)?;
     if response.status != HTTP_SUCCESS {
         return Err(format!(
             "registry archive read refused with HTTP {}",
@@ -177,7 +193,7 @@ pub fn publish_hex(path: &Path, key: &str) -> Result<(), String> {
     validate_key(key)?;
     let response = request(
         &format!("{}/publish", constants::HEX_API),
-        Some((path, key)),
+        Request::Publish(path, key),
     )?;
     if response.status != HTTP_CREATED {
         return Err(format!(
@@ -191,6 +207,33 @@ pub fn publish_hex(path: &Path, key: &str) -> Result<(), String> {
 pub fn validate_key(key: &str) -> Result<(), String> {
     if key.is_empty() || !key.bytes().all(|byte| byte.is_ascii_graphic()) || key.starts_with("${") {
         return Err("publishing key is missing, unresolved, or malformed".into());
+    }
+    Ok(())
+}
+
+pub fn verify_identity(registry: Registry, username: &str, key: &str) -> Result<(), String> {
+    validate_key(key)?;
+    if username.is_empty() || username.contains(['\r', '\n']) {
+        return Err("expected registry username is missing or malformed".into());
+    }
+    let (url, authorization) = match registry {
+        Registry::Hex => (format!("{}/users/me", constants::HEX_API), key.to_owned()),
+        Registry::Npm => (
+            format!("{}/-/whoami", constants::NPM_REGISTRY),
+            format!("Bearer {key}"),
+        ),
+    };
+    let response = request(&url, Request::AuthenticatedGet(&authorization))?;
+    if response.status != HTTP_SUCCESS {
+        return Err(format!(
+            "registry identity read refused with HTTP {}; authentication or metadata permission remains unverified",
+            response.status
+        ));
+    }
+    let metadata: Value = serde_json::from_slice(&response.body)
+        .map_err(|_| "registry identity response is malformed")?;
+    if metadata["username"] != username {
+        return Err("registry identity differs from the expected account".into());
     }
     Ok(())
 }
