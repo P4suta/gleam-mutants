@@ -2,7 +2,6 @@
 
 ## 0.1.0 (2026-10-29)
 
-
 ### ⚠ BREAKING CHANGES
 
 * limit the package to mutation testing ([#57](https://github.com/P4suta/gleam-mutants/issues/57))
@@ -22,7 +21,6 @@
 * suggest tests that kill surviving mutants by differential execution ([#6](https://github.com/P4suta/gleam-mutants/issues/6)) ([8f3c9ed](https://github.com/P4suta/gleam-mutants/commit/8f3c9ed2d75b7939a2b660d363c837f5fa9e966a))
 * take the sign off a negated integer ([#33](https://github.com/P4suta/gleam-mutants/issues/33)) ([216dfbf](https://github.com/P4suta/gleam-mutants/commit/216dfbf324cdef7995a47553106e6fd42716aee8))
 
-
 ### Bug Fixes
 
 * apply into the nested test module a project already has ([#20](https://github.com/P4suta/gleam-mutants/issues/20)) ([529405e](https://github.com/P4suta/gleam-mutants/commit/529405e5cc463d1b89d6481e7533472d9d4cb288))
@@ -40,12 +38,10 @@
 * **snapshot:** dispose read-only copies on Windows ([#63](https://github.com/P4suta/gleam-mutants/issues/63)) ([eafbe61](https://github.com/P4suta/gleam-mutants/commit/eafbe61b1ffb1308c42ba6e74afc42307ef6b49b))
 * spell the Option replacement the way the module can write it ([#31](https://github.com/P4suta/gleam-mutants/issues/31)) ([4d44bf6](https://github.com/P4suta/gleam-mutants/commit/4d44bf6feeef1acbbb210a9aa3502e6079a3dcaf))
 
-
 ### Performance Improvements
 
 * hand a worker the build directory instead of making it build ([#36](https://github.com/P4suta/gleam-mutants/issues/36)) ([86af191](https://github.com/P4suta/gleam-mutants/commit/86af191690e5a6c4765173b95503e636502ac98c))
 * keep a run's copy of the workspace between runs ([#37](https://github.com/P4suta/gleam-mutants/issues/37)) ([a39c4bf](https://github.com/P4suta/gleam-mutants/commit/a39c4bf05e77f558974ce2801a9eeb776b99a88f))
-
 
 ### Code Refactoring
 
@@ -60,11 +56,11 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 ## Unreleased
 
-- Add a typed mutation-testing API sharing the CLI's engine and results.
-- Remove Smartest, automatic test generation, generation schemas, and the VS Code extension.
-- Remove `suggest`, standalone `explain`, `apply`, and `run --suggest`.
-- Preserve library hosts on child interruption and include compiler/runtime versions in cache identity.
-- Reject empty runtime evidence during outcome aggregation.
+* Add a typed mutation-testing API sharing the CLI's engine and results.
+* Remove Smartest, automatic test generation, generation schemas, and the VS Code extension.
+* Remove `suggest`, standalone `explain`, `apply`, and `run --suggest`.
+* Preserve library hosts on child interruption and include compiler/runtime versions in cache identity.
+* Reject empty runtime evidence during outcome aggregation.
 
 See the [migration guide](docs/migration.md) for removed modules, commands, and configuration.
 
