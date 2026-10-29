@@ -96,6 +96,7 @@ fn result_json(result_: MutantResult) -> json.Json {
   json.object([
     #("mutant", mutant_json(result_.mutant)),
     #("aggregate", json.string(outcome_name(result_.aggregate))),
+    #("error", error_json(result_.aggregate)),
     #("outcomes", json.array(result_.outcomes, runtime_outcome_json)),
   ])
 }
@@ -123,6 +124,7 @@ fn runtime_outcome_json(runtime_outcome: RuntimeOutcome) -> json.Json {
   json.object([
     #("runtime", json.string(outcome.runtime_name(runtime_outcome.runtime))),
     #("outcome", json.string(outcome_name(runtime_outcome.outcome))),
+    #("error", error_json(runtime_outcome.outcome)),
     #("duration_ms", json.int(runtime_outcome.duration_ms)),
     #("cached", json.bool(runtime_outcome.cached)),
     #("output", json.string(runtime_outcome.output)),
@@ -143,6 +145,13 @@ fn outcome_name(value: Outcome) -> String {
     Survived -> "survived"
     TimedOut -> "timed-out"
     TestError(_) -> "test-error"
+  }
+}
+
+fn error_json(value: Outcome) -> json.Json {
+  case value {
+    TestError(message) -> json.string(message)
+    Killed | Survived | TimedOut -> json.null()
   }
 }
 

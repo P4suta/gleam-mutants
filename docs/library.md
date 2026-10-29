@@ -35,6 +35,8 @@ The same canonical mutant, outcome, score, and report types serve the API and CL
 `start_byte` and `end_byte` expose validated, zero-based, end-exclusive source positions.
 `operator_name` returns the stable configuration name.
 `report_json` serializes the CLI's native report format.
+Each mutant result and runtime outcome includes `error` with its test-error reason, or `null` for another outcome.
+An empty reason stays an empty string, and schemas continue to accept stored reports that omit this optional field.
 
 Absent option overrides inherit `gleam.toml`.
 The defaults are available through `default_options()`.

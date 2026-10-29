@@ -8,10 +8,14 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import gleam_mutants/api
+import gleam_mutants/cache
 import gleam_mutants/core/path
 import gleam_mutants/platform
+import gleam_mutants/snapshot
+import gleam_mutants/stryker_report
 import gleam_mutants/types
 import simplifile
+import tomlet
 
 const byte_values = 256
 
@@ -80,9 +84,86 @@ pub fn main() {
     string.contains(outcome.output, "\u{fffd}")
   })
   let assert Ok(_) = bit_array.to_string(<<api.report_json(report):utf8>>)
+  check_diagnostic_modes()
   io.println(
-    "Child output decoding, all 65,536 byte pairs, truncation, and API report serialization passed",
+    "Child output decoding, all 65,536 byte pairs, truncation, JSON error reasons, and diagnostic modes passed",
   )
+}
+
+fn check_diagnostic_modes() -> Nil {
+  let marker = "private diagnostic marker"
+  let assert Ok(captured) =
+    snapshot.create_excluding("fixtures/basic_project", ["reports/mutation"])
+  let root = snapshot.root(captured)
+  let configuration = path.join(root, "gleam.toml")
+  let assert Ok(text) = simplifile.read(configuration)
+  let assert Ok(document) = tomlet.parse(text)
+  let assert Ok(document) =
+    tomlet.set_string(
+      document,
+      ["tools", "gleam_mutants", "cache", "mode"],
+      "off",
+    )
+  let assert Ok(source) =
+    simplifile.read(path.join(root, "src/calculator.gleam"))
+  let options =
+    types.Options(
+      ..api.default_options(),
+      operators: Some([types.IntegerArithmetic]),
+      jobs: Some(1),
+      test_selection: Some(types.TestSelectionFull),
+      test_command: Some([
+        "node",
+        "-e",
+        "if (process.env.GLEAM_MUTANTS_ACTIVE) { process.stdout.write('private diagnostic marker'); process.exit(91); }",
+      ]),
+    )
+  let observed =
+    list.map(["none", "errors", "all"], fn(mode) {
+      let assert Ok(configured) =
+        tomlet.set_string(
+          document,
+          ["tools", "gleam_mutants", "report", "diagnostics"],
+          mode,
+        )
+      let assert Ok(Nil) =
+        simplifile.write(configuration, tomlet.to_string(configured))
+      let assert Ok(report) = api.run(root, options)
+      let assert Ok(projected) =
+        stryker_report.to_json(
+          report,
+          [stryker_report.SourceFile("src/calculator.gleam", source)],
+          80,
+          60,
+        )
+      #(mode, report, api.report_json(report), projected)
+    })
+  let assert Ok(Nil) =
+    platform.delete_tree(path.parent(cache.workspace_snapshot(root)))
+  let assert Ok(Nil) = snapshot.dispose(captured)
+  list.each(observed, fn(entry) {
+    let #(mode, report, native, projected) = entry
+    assert report.score.errors == 1
+    let assert [result] = report.results
+    case mode {
+      "none" -> {
+        assert result.aggregate == types.TestError("")
+        assert list.all(result.outcomes, fn(outcome) {
+          outcome.output == "" && outcome.outcome == types.TestError("")
+        })
+        assert !string.contains(native, marker)
+        assert !string.contains(projected, marker)
+      }
+      _ -> {
+        assert result.aggregate == types.TestError(marker)
+        assert list.all(result.outcomes, fn(outcome) {
+          outcome.output == marker
+        })
+        assert string.contains(native, marker)
+        assert string.contains(projected, marker)
+      }
+    }
+  })
 }
 
 fn check_two_byte_inputs() -> Nil {

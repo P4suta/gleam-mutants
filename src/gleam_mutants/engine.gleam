@@ -2535,6 +2535,11 @@ fn measured_outcome(
   config: Config,
 ) -> RuntimeOutcome {
   let #(value, raw_output) = process_outcome(timed)
+  let value = case value {
+    TestError(message) ->
+      TestError(diagnostic_output(config.report.diagnostics, value, message))
+    Killed | Survived | TimedOut -> value
+  }
   RuntimeOutcome(
     runtime,
     value,

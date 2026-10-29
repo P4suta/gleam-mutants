@@ -79,6 +79,8 @@ Reassess this boundary when a maintained verifier can import the relevant Gleam 
 | --- | --- | --- |
 | Option admission | API, engine, configuration, CLI | Source-derived jobs, timeout, and interruption contracts; invalid root, job, timeout, and command regressions |
 | Shared API and results | API and canonical types | `api_smoke` compares actual engine scores, selection, policy, identities, and outcomes |
+| Diagnostic traceability | Native report projection and schemas | Every outcome category preserves its optional error reason; empty, Unicode, control-character, and escaped messages round-trip through JSON |
+| Diagnostic privacy | Execution results and report projections | Real failing processes exercise none, errors, and all modes; suppressed text is absent from API outcomes, native JSON, and Stryker JSON on four runtimes |
 | Public package boundary | Package configuration and runtime generator | Exact public-module inventory; generated runtimes preserve explicit, empty, and default internal-module patterns; ordinary tests and mutation dogfood run the same gate |
 | Report persistence | API and report adapters | Default no-write and explicit persistence; installed Hex consumer and report storage faults |
 | Host preservation | Process FFI, engine, CLI | Child exit 130/143 during compilation, baseline, and mutation batches on all four runtimes; API continuation and CLI exit |
@@ -94,6 +96,8 @@ Reassess this boundary when a maintained verifier can import the relevant Gleam 
 | Mutation semantics | Core and engine | Dogfood score mutation and five fixed official-library corpora with exact expected outcomes and source hashes |
 
 The finite aggregation check covers the engine's one-runtime and four-runtime category domains, including missing evidence.
+Diagnostic round trips cover all outcome constructors, all ASCII scalar values, empty reasons, mixed Unicode and escapes, and text exceeding the process output limit.
+These are executable JSON-boundary checks, not an unbounded proof of the JSON library.
 It is an exhaustive executable check at that bound, not an unbounded theorem about every list length or arbitrary diagnostic text.
 The graph check covers every directed graph on three named packages, including self-edges and unreachable cycles.
 It checks the actual filesystem adapter against a separately computed reachability relation.

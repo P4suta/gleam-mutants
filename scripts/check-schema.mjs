@@ -85,6 +85,36 @@ if (!validateNative(nativeReport)) {
 	);
 }
 
+const storedNativeReport = JSON.parse(nativeErlang);
+for (const result of storedNativeReport.mutants) {
+	delete result.error;
+	for (const outcome of result.outcomes) delete outcome.error;
+}
+if (!validateNative(storedNativeReport)) {
+	throw new Error(
+		"Stored native reports without error fields must remain valid",
+	);
+}
+const nativeErrorErlang = fixture("report_traceability_test", "erlang");
+const nativeErrorNode = fixture("report_traceability_test", "javascript");
+if (nativeErrorErlang !== nativeErrorNode) {
+	throw new Error("Erlang and Node error diagnostics differ byte-for-byte");
+}
+const nativeErrorReport = JSON.parse(nativeErrorErlang);
+if (!validateNative(nativeErrorReport)) {
+	throw new Error("Native test-error diagnostics failed schema validation");
+}
+const errorResult = nativeErrorReport.mutants[0];
+errorResult.error = {};
+if (validateNative(nativeErrorReport)) {
+	throw new Error("Native schema accepted a structured aggregate error reason");
+}
+errorResult.error = "valid reason";
+errorResult.outcomes[0].error = [];
+if (validateNative(nativeErrorReport)) {
+	throw new Error("Native schema accepted a structured runtime error reason");
+}
+
 const failingTestCommand = [
 	"list",
 	"--json",

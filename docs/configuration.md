@@ -81,5 +81,8 @@ Existing path components must be ordinary directories without symlinks or juncti
 Thresholds must satisfy `0 <= low <= high <= 100`.
 They control the existing report renderer and are independent of `policy.minimum_score`.
 The library disables report persistence unless `write_reports` is explicitly enabled.
+`report.diagnostics` controls captured test-process output and test-error reasons.
+`none` removes both forms from completed mutation results.
+`errors` includes timeout and test-error output; `all` also includes killed and surviving test output.
 
 Remove obsolete generation settings according to the [migration guide](migration.md).
