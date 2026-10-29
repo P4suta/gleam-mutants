@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod limits;
+mod supervisor;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Output, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::process::{Command, ExitCode, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SOURCE: &str = "src/gleam_mutants/core/limits.gleam";
 const CONTRACT_SOURCE: &str = "verification/Contracts.lean";
@@ -50,8 +51,9 @@ const CONTRACTS: [Contract; 5] = [
     },
 ];
 const PROOF_TIMEOUT: Duration = Duration::from_secs(900);
-const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const CONTAINER_CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTAINER_KILLED_EXIT_CODE: i32 = 137;
+static CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn read(path: impl AsRef<Path>) -> Result<String, String> {
     fs::read_to_string(path.as_ref())
@@ -79,9 +81,15 @@ fn model(directory: &Path, source: &str, contracts: &str) -> Result<(), String> 
 }
 
 fn bounded(image: &str, directory: &Path, args: &[&str]) -> Result<Output, String> {
-    let name = format!("gleam-mutants-proof-{}", std::process::id());
-    let stdout = directory.join("stdout.log");
-    let stderr = directory.join("stderr.log");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let sequence = CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let name = format!(
+        "gleam-mutants-proof-{}-{nonce}-{sequence}",
+        std::process::id()
+    );
     let mut command = Command::new("docker");
     command
         .args([
@@ -110,43 +118,15 @@ fn bounded(image: &str, directory: &Path, args: &[&str]) -> Result<Output, Strin
             image,
         ])
         .args(args);
-    command.stdout(Stdio::from(
-        fs::File::create(&stdout).map_err(|e| e.to_string())?,
-    ));
-    command.stderr(Stdio::from(
-        fs::File::create(&stderr).map_err(|e| e.to_string())?,
-    ));
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait().map_err(|error| error.to_string())? {
-            Some(status) => break status,
-            None if started.elapsed() >= PROOF_TIMEOUT => {
-                let stopped = Command::new("docker")
-                    .args(["kill", &name])
-                    .output()
-                    .map_err(|e| e.to_string())?;
-                let status = child.wait().map_err(|error| {
-                    format!(
-                        "inconclusive: could not reap proof container {name}: {error}; stop: {}",
-                        text(&stopped)
-                    )
-                })?;
-                return Err(format!(
-                    "inconclusive: proof exceeded {}s; container exit: {status}; stop: {} ({})",
-                    PROOF_TIMEOUT.as_secs(),
-                    stopped.status,
-                    text(&stopped)
-                ));
-            }
-            None => thread::sleep(STATUS_POLL_INTERVAL),
-        }
-    };
-    let result = Output {
-        status,
-        stdout: fs::read(stdout).map_err(|e| e.to_string())?,
-        stderr: fs::read(stderr).map_err(|e| e.to_string())?,
-    };
+    let mut cleanup = Command::new("docker");
+    cleanup.args(["rm", "--force", &name]);
+    let result = supervisor::run(
+        &mut command,
+        &mut cleanup,
+        directory,
+        PROOF_TIMEOUT,
+        CONTAINER_CLEANUP_TIMEOUT,
+    )?;
     if result.status.code() == Some(CONTAINER_KILLED_EXIT_CODE) {
         return Err(
             "inconclusive: proof container was killed, possibly at its resource limit".into(),
@@ -175,7 +155,8 @@ fn prove() -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .as_nanos();
     let directory = PathBuf::from(format!("build/verification/{}-{nonce}", std::process::id()));
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    fs::create_dir_all("build/verification").map_err(|error| error.to_string())?;
+    fs::create_dir(&directory).map_err(|error| error.to_string())?;
     let directory = directory
         .canonicalize()
         .map_err(|error| error.to_string())?;

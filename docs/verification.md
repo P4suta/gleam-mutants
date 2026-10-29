@@ -33,6 +33,11 @@ Both Gleam targets compile the same production predicates.
 Lean 4.34.1 and elan 4.2.4 are downloaded with pinned SHA-256 checksums in the [proof image](../verification/Dockerfile).
 Proof commands run without network access, with two CPUs, 2GiB memory and no additional swap, 256 processes, and a 900-second operational limit.
 A resource stop is inconclusive.
+The process supervisor terminates and reaps a timed-out client before attempting container cleanup.
+Cleanup has a separate ten-second deadline and preserves the primary failure when it also fails.
+Native fixtures cover zero-deadline termination, completed statuses, cleanup failure, missing cleanup commands, and a blocked cleanup command.
+These checks depend on ordinary OS process termination and Docker daemon behavior.
+An inability to terminate a client or remove its container remains a reported failure, never a proof result.
 The gate requires all five named theorems to have no axioms and replays their compiled module through a fresh kernel.
 It changes one production constant for each predicate and requires the corresponding equality-proof failure against the unchanged contracts.
 A successful broken proof or another kind of tool failure fails the gate.
