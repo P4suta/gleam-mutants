@@ -110,7 +110,10 @@ fn capture_references(
   let location =
     path.from_native(dependency.location, platform.os_name() == "windows")
   let absolute =
-    string.starts_with(location, "/") || string.slice(location, 1, 1) == ":"
+    string.starts_with(location, "/")
+    || {
+      platform.os_name() == "windows" && string.slice(location, 1, 1) == ":"
+    }
   use dependency_source <- result.try(
     resolve(case absolute {
       True -> location

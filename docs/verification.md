@@ -102,6 +102,8 @@ It is an exhaustive executable check at that bound, not an unbounded theorem abo
 The graph check covers every directed graph on three named packages, including self-edges and unreachable cycles.
 It checks the actual filesystem adapter against a separately computed reachability relation.
 This is a finite executable check, not an induction proof for arbitrary graph size.
+A pinned compiler control accepts a POSIX relative dependency path containing a colon before the capture regression checks its package-relative resolution.
+Windows drive-prefix interpretation is conditional on the host platform.
 Tomlet document editing and recursive filesystem capture remain outside the restricted proof translator's semantics.
 The process-text corpus follows the [UTF-8 replacement decoder](https://encoding.spec.whatwg.org/#utf-8-decoder) and preserves a leading byte order mark as text.
 The exhaustive two-byte comparison covers that finite byte domain, and the longer vectors cover valid and malformed three-byte and four-byte boundaries.

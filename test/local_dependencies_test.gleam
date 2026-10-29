@@ -300,6 +300,48 @@ pub fn posix_dependency_backslashes_are_refused_before_reinterpretation_test() {
   }
 }
 
+pub fn posix_colon_dependency_paths_resolve_from_their_package_test() {
+  case platform.os_name() {
+    "windows" -> Nil
+    _ -> {
+      let root = fixture()
+      let source =
+        package(
+          root,
+          "consumer",
+          "[dependencies]\nlibrary = { path = 'x:library' }\n",
+        )
+      let library = package(root, "library", "")
+      let assert Ok(Nil) =
+        simplifile.rename(at: library, to: path.join(source, "x:library"))
+      let compiled =
+        platform.run_process(
+          "gleam",
+          ["build", "--target", "erlang"],
+          source,
+          [],
+          30_000,
+        )
+      assert compiled.status == 0
+      let assert Ok(captured) = snapshot.create(source)
+      let attempted = local_dependencies.prepare(source, captured, [])
+      let copied = case attempted {
+        Ok(prepared) ->
+          tomlet.get_string(
+            config(dependency_path(snapshot.root(prepared), "library")),
+            ["name"],
+          )
+          == Ok("library")
+        Error(_) -> False
+      }
+      let assert Ok(Nil) = snapshot.dispose(captured)
+      let assert Ok(Nil) = platform.delete_tree(root)
+      let assert Ok(_) = attempted
+      assert copied
+    }
+  }
+}
+
 pub fn all_three_package_graphs_match_an_independent_reachability_reference_test() {
   let root = fixture()
   check_graphs(root, 0)
