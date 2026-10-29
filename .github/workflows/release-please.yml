@@ -1,7 +1,6 @@
+---
 # SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
-
----
 
 name: Release PR
 
@@ -9,10 +8,7 @@ name: Release PR
   push:
     branches: [main]
 
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: release-please-${{ github.ref }}
@@ -20,13 +16,31 @@ concurrency:
 
 jobs:
   release-pr:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    name: Prepare version proposal
+    environment: release-prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Prepare the proposal and request its read-only CI check.
+    permissions:
+      contents: write  # Maintain the version proposal branch.
+      issues: write  # Maintain release-please tracking.
+      pull-requests: write  # Maintain the version proposal.
+      actions: write  # Dispatch CI for the bot-authored proposal.
     steps:
-      # googleapis/release-please-action v5.0.0
-      - id: release
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # yamllint disable-line rule:line-length
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # Release creation is deliberately reserved for release-publish.yml.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c
+        with:
+          version: 2026.10.22
+          install_args: rust
+          cache: false
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
+        with:
+          token: ${{ github.token }}
           skip-github-release: true
+      - name: Ensure the proposal has CI for its current head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: mise run release proposal-checks

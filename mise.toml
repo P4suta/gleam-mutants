@@ -8,6 +8,7 @@ node = "24.19.0"
 deno = "2.9.5"
 bun = "1.3.14"
 rust = { version = "1.99.1", components = "clippy,rustfmt" }
+"cargo:cargo-audit" = "0.22.2"
 syft = "1.51.0"
 grype = "0.116.1"
 uv = "0.12.0"
@@ -109,6 +110,7 @@ run = [
 description = "Run all local release-readiness checks"
 run = [
   "mise run check-verification",
+  "mise run check-release",
   "mise run fmt",
   "mise run build",
   "mise run test",
@@ -127,6 +129,40 @@ run = [
 [tasks.prove]
 description = "Prove source-derived predicates and reject each broken contract in bounded containers"
 run = "cargo run --locked --manifest-path verification/Cargo.toml --target-dir build/verification-rust -- prove"
+
+[tasks.check-release]
+description = "Check release identities, candidate evidence, and denied publication paths"
+run = [
+  "cargo fmt --all --manifest-path tools/Cargo.toml --check",
+  "cargo clippy --locked --workspace --manifest-path tools/Cargo.toml --target-dir build/release-rust --all-targets -- -D warnings",
+  "cargo test --locked --workspace --manifest-path tools/Cargo.toml --target-dir build/release-rust",
+]
+
+[tasks.release]
+description = "Inspect or prepare a candidate without signing, tagging, or publishing"
+run = "cargo run --locked --manifest-path tools/release/Cargo.toml --target-dir build/release-runner --"
+
+[tasks.prove-release]
+description = "Prove release decisions in bounded Kani containers and reject broken controls"
+run = "mise run release prove"
+
+[tasks.scan-sboms]
+description = "Assess every distribution SBOM for known High/Critical vulnerabilities"
+run = "node scripts/scan-sboms.mjs"
+
+[tasks.audit-tools]
+description = "Audit locked release dependencies against the pinned RustSec revision"
+run = "mise run release audit-tools"
+
+[tasks.test-minimum]
+description = "Check the declared minimum Gleam and Node versions and the current compiler on Node 20"
+run = [
+  "mise install gleam@1.17.0 node@20.0.0",
+  "mise x gleam@1.17.0 node@20.0.0 -- gleam test --target erlang",
+  "mise x gleam@1.17.0 node@20.0.0 -- gleam test --target javascript --runtime node",
+  "mise x node@20.0.0 -- gleam test --target javascript --runtime node",
+  "mise x node@20.0.0 -- gleam run -m gleam_mutants --target javascript --runtime node -- --version",
+]
 
 [tasks.dogfood]
 description = "Require all 50 score mutants to fail the full unit suite without cached or inconclusive outcomes"
@@ -161,8 +197,9 @@ run = "node scripts/ecosystem-smoke.mjs"
 description = "Verify already-built development snapshot artifacts without publishing"
 run = [
   "mise run prove",
-  "node scripts/release-candidate.mjs --dry-run",
-  "node scripts/scan-sboms.mjs",
+  "mise run prove-release",
+  "mise run release check-dist dist",
+  "mise run scan-sboms",
 ]
 
 [tasks.hooks]

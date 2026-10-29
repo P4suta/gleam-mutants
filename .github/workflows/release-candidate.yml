@@ -2,63 +2,46 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 ---
-
-name: Development snapshot evidence
+name: Release candidate evidence
 
 "on":
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact protected main commit to verify
+        required: true
+        type: string
+      attest:
+        description: Sign the verified candidate with GitHub attestations
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-candidate-${{ github.ref }}
+  group: release-candidate-${{ github.sha }}
   cancel-in-progress: false
 
+env:
+  CANDIDATE_SOURCE: ${{ inputs.source_sha }}
+
 jobs:
-  immutable-evidence:
-    name: >-
-      immutable-evidence (${{ matrix.os }},
-      ${{ matrix.host }}, ${{ matrix.target }})
-    if: github.ref == 'refs/heads/main'
+  runtimes:
+    name: Runtime compatibility (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        host: [erlang, node, deno, bun]
-        target: [erlang, node, deno, bun]
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-2025
+            platform: windows
+          - os: macos-15
+            platform: macos
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - run: git rev-parse HEAD
-      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c
-        with:
-          install: true
-          cache: true
-      - run: gleam deps download
-      - name: Check the runtime cell
-        shell: bash
-        env:
-          MATRIX_HOST: ${{ matrix.host }}
-          MATRIX_TARGET: ${{ matrix.target }}
-        run: node scripts/runtime-cell.mjs "$MATRIX_HOST" "$MATRIX_TARGET"
-
-  candidate-artifacts:
-    name: candidate-artifacts
-    needs: immutable-evidence
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    # Candidate signing needs OIDC and attestation write access.
-    permissions:
-      contents: read
-      id-token: write  # Obtain signing identities.
-      attestations: write  # Attach candidate provenance.
-      artifact-metadata: write  # Record artifact metadata.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -66,55 +49,169 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c
         with:
-          install: true
+          version: 2026.10.22
           cache: true
-      - run: gleam deps download
+      - run: node scripts/deps-download.mjs . fixtures/unitest_project
       - run: npm ci --ignore-scripts
-      - run: npx playwright install --with-deps chromium firefox webkit
-      - run: mise run check
-      - run: mise run test-integration
-      - run: mise run test-matrix
-      - run: mise run test-property
-      - run: mise run test-faults
-      - run: mise run benchmark
-      - run: mise run dogfood
-      - run: mise run test-ecosystem
-      - run: mise run package
-      - run: mise run release-candidate
-      # sigstore/cosign-installer v4.1.2
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
-      - name: Sign candidate files without publishing
-        shell: bash
-        run: |
-          set -euo pipefail
-          identity="https://github.com/${GITHUB_REPOSITORY}"
-          identity="${identity}/.github/workflows/release-candidate.yml"
-          find dist -type f ! -name '*.sigstore.json' \
-            -print0 > "$RUNNER_TEMP/files"
-          while IFS= read -r -d '' file; do
-            cosign sign-blob --yes --bundle "${file}.sigstore.json" "$file"
-            cosign verify-blob \
-              --bundle "${file}.sigstore.json" \
-              --certificate-oidc-issuer \
-              https://token.actions.githubusercontent.com \
-              --certificate-identity-regexp \
-              "^${identity}@refs/.*$" \
-              "$file"
-          done < "$RUNNER_TEMP/files"
-      - id: attest
-        # actions/attest v4.2.1
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
-        with:
-          subject-checksums: dist/SHA256SUMS
-      - name: Retain the GitHub attestation bundle
-        shell: bash
-        env:
-          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
-        run: cp "$ATTESTATION_BUNDLE" dist/github-attestation.sigstore.json
+      - if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium firefox webkit
+      - if: runner.os != 'Linux'
+        run: npx playwright install chromium firefox webkit
+      - run: mise run release runtimes-hosted build/runtime-evidence
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: >-
-            gleam-mutants-0.1.0-development-snapshot-signed-${{ github.sha }}
-          path: dist/
+            runtime-${{ matrix.platform }}-${{ github.run_id }}-${{
+            github.run_attempt }}
+          path: build/runtime-evidence/
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
+
+  build:
+    name: Verify and build distributions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c
+        with:
+          version: 2026.10.22
+          cache: true
+      - run: node scripts/deps-download.mjs . fixtures/unitest_project
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: mise run release gates-hosted build/release-gates
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: >-
+            build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/
+            build/release-gates/gates.json
+          if-no-files-found: error
+          retention-days: 7
+
+  seal:
+    name: Bind candidate evidence
+    # Read original producers across a partial workflow retry.
+    permissions:
+      contents: read  # Read the protected source.
+      actions: read  # Read exact producer artifacts.
+    needs: [runtimes, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      artifact: ${{ steps.candidate.outputs.artifact }}
+      version: ${{ steps.candidate.outputs.version }}
+      source: ${{ steps.candidate.outputs.source }}
+      npm-subject: ${{ steps.candidate.outputs.npm-subject }}
+      npm-sha512: ${{ steps.candidate.outputs.npm-sha512 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c
+        with:
+          version: 2026.10.22
+          install_args: rust
+          cache: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: mise run release collect-inputs build/incoming
+      - id: candidate
+        run: >-
+          mise run release stage-hosted build/incoming/dist
+          build/incoming/build/release-gates build/incoming/runtimes
+          build/candidate
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.candidate.outputs.artifact }}-unsigned
+          path: build/candidate/
+          if-no-files-found: error
+          retention-days: 7
+
+  attest:
+    name: Attest verified candidate
+    outputs:
+      artifact: >-
+        candidate-${{ needs.seal.outputs.source }}-${{ github.run_id }}-${{
+        github.run_attempt }}
+    if: inputs.attest
+    needs: seal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Sign verified digests without executing candidate code.
+    permissions:
+      contents: read  # Read repository identity.
+      actions: read  # Download the verified candidate.
+      id-token: write  # Request the signing identity.
+      attestations: write  # Retain signed provenance.
+      artifact-metadata: write  # Bind artifact metadata.
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: ${{ needs.seal.outputs.artifact }}-unsigned
+          path: candidate
+      - id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-checksums: candidate/CANDIDATE-SHA256SUMS
+      - name: Retain the candidate provenance bundle
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE" candidate/github-attestation.sigstore.json
+      - id: npm
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-name: ${{ needs.seal.outputs.npm-subject }}
+          subject-digest: ${{ needs.seal.outputs.npm-sha512 }}
+      - name: Retain the original npm provenance bundle
+        env:
+          BUNDLE: ${{ steps.npm.outputs.bundle-path }}
+        run: cp "$BUNDLE" candidate/npm-provenance.sigstore.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: >-
+            candidate-${{ needs.seal.outputs.source }}-${{ github.run_id }}-${{
+            github.run_attempt }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 7
+
+  verify-attestations:
+    name: Verify retained provenance
+    if: inputs.attest
+    needs: [seal, attest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Verify the retained bundles in a fresh job.
+    permissions:
+      contents: read  # Read source and signing identity.
+      actions: read  # Download the attested candidate.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c
+        with:
+          version: 2026.10.22
+          install_args: rust
+          cache: true
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: ${{ needs.attest.outputs.artifact }}
+          path: build/candidate
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ needs.seal.outputs.source }}
+          VERSION: ${{ needs.seal.outputs.version }}
+          RUN: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: >-
+          mise run release attest-verify build/candidate "$SOURCE"
+          "$VERSION" "$RUN" "$ATTEMPT"

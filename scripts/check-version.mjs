@@ -21,14 +21,6 @@ const expectations = [
 		`Version ${version} remains an unreleased development snapshot.`,
 	],
 	["SECURITY.md", `Version ${version} is an unreleased development snapshot`],
-	[
-		".github/workflows/ci.yml",
-		`name: gleam-mutants-${version}-development-snapshot`,
-	],
-	[
-		".github/workflows/release-candidate.yml",
-		`gleam-mutants-${version}-development-snapshot-signed-`,
-	],
 ];
 for (const [file, expected] of expectations) {
 	if (!fs.readFileSync(file, "utf8").includes(expected)) {
