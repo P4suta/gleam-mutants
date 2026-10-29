@@ -144,6 +144,9 @@ These proofs establish the core predicates under Kani's Rust model; they do not 
 The cargo-fuzz target is `fuzz/fuzz_targets/publication_phase.rs`.
 Native regressions cover sealed candidate tampering, missing evidence, source and attempt mismatches, latest-job invalidation, artifact selection, denied local publication, conflicting assets, and recovery after partial uploads.
 Proposal CI regressions reject foreign metadata and human approval cases, preserve active or failed runs, and constrain dispatch to the internal bot's version files and exact source.
+The protected preparation workflow formats the generated changelog with pinned rumdl before checking CI.
+It creates a single-file commit from the inspected proposal source, updates only the fixed bot branch without force, and checks CI at the resulting source.
+A native formatter regression checks known entries, blank lines, list markers, empty-input refusal, and idempotence.
 GitHub's event suppression and workflow execution remain external assumptions that require live verification.
 `mise run audit-tools` checks the release and fuzz dependency lockfiles against the exact RustSec commit in `tools/release/rustsec.commit`.
 Review upstream advisory changes and update that full commit explicitly to renew the shared audit snapshot.
