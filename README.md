@@ -5,16 +5,13 @@ Mutation testing for Gleam through a library and CLI.
 ## Installation
 
 ```sh
-git clone https://github.com/P4suta/gleam-mutants.git
-cd gleam-mutants
-mise install
-mise x -- gleam deps download
+gleam add --dev gleam_mutants
 ```
 
 ## Usage
 
 ```sh
-mise x -- gleam run -m gleam_mutants -- run --root path/to/project
+gleam run -m gleam_mutants -- run
 ```
 
 ## Documentation

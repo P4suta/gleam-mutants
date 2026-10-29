@@ -3,13 +3,8 @@
 
 name = "gleam_mutants"
 summary = "Mutation testing for Gleam through a library and CLI"
-install = """
-git clone https://github.com/P4suta/gleam-mutants.git
-cd gleam-mutants
-mise install
-mise x -- gleam deps download"""
-usage = """
-mise x -- gleam run -m gleam_mutants -- run --root path/to/project"""
+install = "gleam add --dev gleam_mutants"
+usage = "gleam run -m gleam_mutants -- run"
 documentation_index = true
 copyright = "Yasunobu"
 license = "MIT OR Apache-2.0"

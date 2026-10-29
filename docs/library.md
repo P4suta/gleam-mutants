@@ -5,11 +5,10 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 # Library API
 
-Add the checkout as a development dependency:
+Add the Hex package as a development dependency:
 
-```toml
-[dev_dependencies]
-gleam_mutants = { path = "../gleam-mutants" }
+```sh
+gleam add --dev gleam_mutants
 ```
 
 Use the public API and its shared domain types:
