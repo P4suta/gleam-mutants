@@ -3,6 +3,7 @@
 
 -module(gleam_mutants_platform_ffi).
 -include_lib("kernel/include/file.hrl").
+-define(OWNER_WRITE_MODE, 8#200).
 -export([arguments/0, env/1, current_directory/0, temporary_directory/0,
          cache_directory/0, cpu_count/0, now_milliseconds/0, monotonic_milliseconds/0,
          resolve_path/1, architecture/0, environment/0, random_nonce/0,
@@ -38,7 +39,35 @@ delete_tree_once(Path) ->
                     end;
                 {error, Reason} -> {error, Reason}
             end;
+        {ok, Info} when Info#file_info.type =:= regular ->
+            delete_regular_file(Path);
         {ok, _} -> file:delete(Path)
+    end.
+
+delete_regular_file(Path) ->
+    case file:delete(Path) of
+        {error, eacces} = Error ->
+            case os:type() of
+                {win32, _} -> delete_read_only_file(Path, Error);
+                _ -> Error
+            end;
+        Result -> Result
+    end.
+
+delete_read_only_file(Path, OriginalError) ->
+    case file:read_link_info(Path) of
+        {ok, #file_info{type = regular, links = Links, mode = Mode}}
+          when Mode band ?OWNER_WRITE_MODE =:= 0 ->
+            case 'gleam_mutants@core@limits':unshared_file(Links) of
+                true ->
+                    case file:change_mode(Path, Mode bor ?OWNER_WRITE_MODE) of
+                        ok -> file:delete(Path);
+                        Error -> Error
+                    end;
+                false -> OriginalError
+            end;
+        {ok, _} -> OriginalError;
+        {error, Reason} -> {error, Reason}
     end.
 
 delete_symlink(Path) ->
