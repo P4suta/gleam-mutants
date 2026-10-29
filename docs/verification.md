@@ -128,6 +128,7 @@ Release automation has a separate pure Rust core in `tools/release-core`.
 `mise run prove-release` imports that implementation directly into pinned Kani 0.68.0.
 Three harnesses check every admitted Boolean state for output reuse and finalization, and all `u64` count combinations for conclusive runtime measurements.
 The gate requires the exact three successful harness names and separately rejects three deliberately broken implementations at the corresponding harness.
+Each negative control selects only its named harness and requires its exact failed-harness summary.
 Tool failure, an empty harness inventory, or a resource stop supplies no proof result.
 The pinned container uses the same bounded supervisor as the Gleam proof gate and records its actual source hash.
 These proofs establish the core predicates under Kani's Rust model; they do not verify external I/O or provider semantics.
@@ -135,7 +136,7 @@ These proofs establish the core predicates under Kani's Rust model; they do not 
 `mise run check-release` runs strict Rust formatting, Clippy, unit and CLI tests, and the preserved publication-phase fuzz corpus with round-trip properties.
 The cargo-fuzz target is `fuzz/fuzz_targets/publication_phase.rs`.
 Native regressions cover sealed candidate tampering, missing evidence, source and attempt mismatches, latest-job invalidation, artifact selection, denied local publication, conflicting assets, and recovery after partial uploads.
-`mise run audit-tools` checks the locked Rust dependencies against the exact RustSec commit in `tools/release/rustsec.commit`.
+`mise run audit-tools` checks the release and fuzz dependency lockfiles against the exact RustSec commit in `tools/release/rustsec.commit`.
 Review upstream advisory changes and update that full commit explicitly to renew the shared audit snapshot.
 
 `mise run check` runs compilation, unit tests, documentation, metadata, dependency/security checks, and Rust derivation checks.

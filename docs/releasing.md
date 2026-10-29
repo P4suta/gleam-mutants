@@ -75,7 +75,8 @@ The environments have distinct responsibilities.
 `release-prepare` runs version proposals automatically on protected branches without production secrets or a production approval.
 `release-github`, `release-hex`, `release-npm`, and the final `release` environment require the repository owner's approval, restrict deployments to protected branches, and disable administrator bypass.
 The existing single-owner policy permits self-review.
-No credential belongs in the candidate, controller, or version-proposal jobs.
+No production publication credential belongs in the candidate, controller, or version-proposal jobs.
+Their scoped GitHub tokens supply only the permissions declared for those jobs.
 
 Use Doppler for the eventual Hex key and any temporary npm bootstrap token.
 Create a project and separate production configs only when credential issuance is authorized.

@@ -13,6 +13,15 @@ const CLEANUP_DEADLINE: Duration = Duration::from_secs(10);
 const RESOURCE_KILL: i32 = 137;
 const VERSION: &str = "Kani Rust Verifier 0.68.0";
 const POSITIVE_SUMMARY: &str = "3 successfully verified harnesses, 0 failures, 3 total";
+const NEGATIVE_SUMMARY: &str = "0 successfully verified harnesses, 1 failures, 1 total";
+
+fn counterexample(success: bool, diagnostics: &str, harness: &str) -> bool {
+    let failure = format!("Verification failed for - proofs::{harness}");
+    !success
+        && diagnostics.contains("VERIFICATION:- FAILED")
+        && diagnostics.contains(NEGATIVE_SUMMARY)
+        && diagnostics.lines().any(|line| line == failure)
+}
 
 fn text(output: &Output) -> String {
     format!(
@@ -141,13 +150,13 @@ pub fn prove() -> Result<(), String> {
             source.replacen(original, broken, 1),
         )
         .map_err(|e| e.to_string())?;
-        let result = check(image.trim(), &negative, label, &args)?;
+        let selected = format!("proofs::{harness}");
+        let mut control_args = args.to_vec();
+        control_args.extend(["--harness", &selected]);
+        let result = check(image.trim(), &negative, label, &control_args)?;
         let diagnostics = text(&result);
         fs::write(negative.join("result.log"), &diagnostics).map_err(|e| e.to_string())?;
-        if result.status.success()
-            || !diagnostics.contains("VERIFICATION:- FAILED")
-            || !diagnostics.contains(harness)
-        {
+        if !counterexample(result.status.success(), &diagnostics, harness) {
             return Err(format!(
                 "proof control {label} supplied no expected counterexample:\n{diagnostics}"
             ));
@@ -158,4 +167,33 @@ pub fn prove() -> Result<(), String> {
         candidate::digest(source.as_bytes())
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::counterexample;
+
+    #[test]
+    fn another_failed_harness_or_a_tool_error_cannot_supply_the_control() {
+        let wanted = "runtime_counts_exclude_empty_and_inconclusive_measurements";
+        let genuine = format!(
+            "VERIFICATION:- FAILED\nVerification failed for - proofs::{wanted}\nComplete - 0 successfully verified harnesses, 1 failures, 1 total.\n"
+        );
+        assert!(counterexample(false, &genuine, wanted));
+        assert!(!counterexample(true, &genuine, wanted));
+        let another = format!(
+            "Checking harness proofs::{wanted}...\nVERIFICATION:- FAILED\nVerification failed for - proofs::another\nComplete - 0 successfully verified harnesses, 1 failures, 1 total.\n"
+        );
+        assert!(!counterexample(false, &another, wanted));
+        assert!(!counterexample(
+            false,
+            &format!("failed to compile {wanted}"),
+            wanted
+        ));
+        assert!(!counterexample(
+            false,
+            &genuine.replace("1 failures, 1 total", "2 failures, 3 total"),
+            wanted
+        ));
+    }
 }

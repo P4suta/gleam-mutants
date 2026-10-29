@@ -3,6 +3,7 @@
 
 use crate::runner;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -43,6 +44,16 @@ pub fn conclusive(report: &Value, target: &str) -> Result<(), String> {
     {
         return Err("runtime compatibility is empty, cached, skipped, or inconclusive".into());
     }
+    let mut identities = BTreeSet::new();
+    for result in results.iter().chain(rejected) {
+        let identity = result["mutant"]["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("runtime candidate identity is missing")?;
+        if !identities.insert(identity) {
+            return Err("runtime candidate identity is duplicated or overlaps rejection".into());
+        }
+    }
     for result in results {
         if !matches!(result["aggregate"].as_str(), Some("killed" | "survived")) {
             return Err("runtime aggregate is inconclusive".into());
@@ -59,6 +70,17 @@ pub fn conclusive(report: &Value, target: &str) -> Result<(), String> {
         {
             return Err("runtime cell is cached or reports another target or outcome".into());
         }
+    }
+    let observed_killed = results
+        .iter()
+        .filter(|result| result["aggregate"] == "killed")
+        .count() as u64;
+    let observed_survived = results
+        .iter()
+        .filter(|result| result["aggregate"] == "survived")
+        .count() as u64;
+    if observed_killed != killed || observed_survived != survived {
+        return Err("runtime score disagrees with its individual outcomes".into());
     }
     Ok(())
 }
@@ -178,7 +200,7 @@ mod tests {
     fn report() -> serde_json::Value {
         serde_json::json!({"schema_version":1,"tool":"gleam-mutants","score":{"total":1,"killed":1,"survived":0,"timed_out":0,"errors":0},
             "selection":{"executed":1,"compile_errors":0,"skipped":false},"rejected":[],
-            "mutants":[{"aggregate":"killed","outcomes":[{"runtime":"node","outcome":"killed","cached":false}]}]})
+            "mutants":[{"mutant":{"id":"first"},"aggregate":"killed","outcomes":[{"runtime":"node","outcome":"killed","cached":false}]}]})
     }
     #[test]
     fn missing_cached_and_inconclusive_results_never_pass_a_runtime_cell() {
@@ -199,5 +221,27 @@ mod tests {
         let mut missing = value;
         missing["mutants"] = serde_json::json!([]);
         assert!(conclusive(&missing, "node").is_err());
+    }
+
+    #[test]
+    fn outcome_tallies_and_unique_candidate_identities_are_independent_obligations() {
+        let mut wrong_score = report();
+        wrong_score["score"]["killed"] = serde_json::json!(0);
+        wrong_score["score"]["survived"] = serde_json::json!(1);
+        assert!(conclusive(&wrong_score, "node").is_err());
+        let mut duplicate = report();
+        let first = duplicate["mutants"][0].clone();
+        duplicate["mutants"].as_array_mut().unwrap().push(first);
+        duplicate["score"]["total"] = serde_json::json!(2);
+        duplicate["score"]["killed"] = serde_json::json!(2);
+        duplicate["selection"]["executed"] = serde_json::json!(2);
+        assert!(conclusive(&duplicate, "node").is_err());
+        let mut missing_id = report();
+        missing_id["mutants"][0]["mutant"] = serde_json::json!({});
+        assert!(conclusive(&missing_id, "node").is_err());
+        let mut overlapping = report();
+        overlapping["rejected"] = serde_json::json!([{"mutant":{"id":"first"}}]);
+        overlapping["selection"]["compile_errors"] = serde_json::json!(1);
+        assert!(conclusive(&overlapping, "node").is_err());
     }
 }

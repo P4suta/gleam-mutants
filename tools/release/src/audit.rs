@@ -50,26 +50,26 @@ pub fn audit() -> Result<(), String> {
     if !clean.stdout.is_empty() {
         return Err("RustSec cache contains modified or untracked inputs".into());
     }
+    for lockfile in ["tools/Cargo.lock", "fuzz/Cargo.lock"] {
+        audit_lockfile(lockfile, &directory)?;
+    }
+    println!(
+        "Locked release and fuzz dependencies passed RustSec revision {}",
+        revision.as_str()
+    );
+    Ok(())
+}
+
+fn audit_lockfile(lockfile: &str, directory: &std::path::Path) -> Result<(), String> {
     let report = runner::output(
         Command::new("cargo")
-            .args([
-                "audit",
-                "--file",
-                "tools/Cargo.lock",
-                "--no-fetch",
-                "--json",
-                "--db",
-            ])
-            .arg(&directory),
+            .args(["audit", "--file", lockfile, "--no-fetch", "--json", "--db"])
+            .arg(directory),
     )?;
     let report: serde_json::Value =
         serde_json::from_slice(&report.stdout).map_err(|e| e.to_string())?;
     if report["vulnerabilities"]["found"] != false || report["vulnerabilities"]["count"] != 0 {
         return Err("locked release dependencies have known vulnerabilities".into());
     }
-    println!(
-        "Locked release dependencies passed RustSec revision {}",
-        revision.as_str()
-    );
     Ok(())
 }

@@ -71,7 +71,7 @@ mod proofs {
             && m.executed == m.total
             && m.results == m.total
             && m.compile_errors == m.rejected;
-        assert_eq!(super::conclusive_counts(m), requirements);
+        assert!(super::conclusive_counts(m) == requirements);
     }
 
     #[kani::proof]
@@ -79,18 +79,9 @@ mod proofs {
         let verified: bool = kani::any();
         let existing: Existing = kani::any();
         let plan = plan_write(verified, existing);
-        assert_eq!(
-            plan == WritePlan::Create,
-            verified && existing == Existing::Missing
-        );
-        assert_eq!(
-            plan == WritePlan::Reuse,
-            verified && existing == Existing::Matching
-        );
-        assert_eq!(
-            plan == WritePlan::Refuse,
-            !verified || existing == Existing::Conflicting
-        );
+        assert!((plan == WritePlan::Create) == (verified && existing == Existing::Missing));
+        assert!((plan == WritePlan::Reuse) == (verified && existing == Existing::Matching));
+        assert!((plan == WritePlan::Refuse) == (!verified || existing == Existing::Conflicting));
     }
 
     #[kani::proof]
