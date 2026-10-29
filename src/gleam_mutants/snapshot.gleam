@@ -525,6 +525,40 @@ pub fn digest(snapshot: Snapshot) -> String {
   snapshot.digest
 }
 
+pub fn with_dependencies(
+  snapshot: Snapshot,
+  dependencies: List(#(String, String)),
+) -> Snapshot {
+  let entries =
+    list.map(dependencies, fn(dependency) {
+      ManifestEntry(dependency.0, dependency.1, 0)
+    })
+  Snapshot(
+    ..snapshot,
+    digest: bytes.sha256(snapshot.digest <> manifest_digest(entries)),
+  )
+}
+
+pub fn verify_source(
+  source: String,
+  snapshot: Snapshot,
+  excluded_directories: List(String),
+) -> Result(Nil, String) {
+  use current <- result.try(scan_directory(source, "", [], excluded_directories))
+  let current_digest =
+    current
+    |> list.sort(fn(a, b) { string.compare(a.path, b.path) })
+    |> manifest_digest
+  case current_digest == snapshot.digest {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "workspace changed while local dependencies were being captured: "
+        <> source,
+      )
+  }
+}
+
 pub fn source_files(
   snapshot: Snapshot,
   includes: List(String),

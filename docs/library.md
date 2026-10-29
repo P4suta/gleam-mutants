@@ -56,5 +56,8 @@ Existing reports are preserved when writes are disabled.
 Snapshots, workspace locks, optional outcome caching, and configured tests still perform filesystem and process operations.
 Test processes have the caller's permissions.
 Deno embedders must grant the environment, filesystem, and subprocess permissions their operation requires.
+Compiler validation and execution also capture reachable local dependencies, including the target's development dependencies.
+Dependency contents participate in cache identity, and workers use relative paths within their captured copies.
+Unvalidated discovery does not resolve dependencies.
 The snapshot protects original source files from the mutation engine; it does not sandbox arbitrary test side effects.
 See the [configuration](configuration.md) and [verification contracts](verification.md).

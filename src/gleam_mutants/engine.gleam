@@ -28,6 +28,7 @@ import gleam_mutants/core/path
 import gleam_mutants/core/plan
 import gleam_mutants/core/score
 import gleam_mutants/error
+import gleam_mutants/local_dependencies
 import gleam_mutants/pipeline
 import gleam_mutants/platform
 import gleam_mutants/project_report
@@ -493,6 +494,12 @@ pub fn list_session(
       Ok(ListOutput(plan.mutants(mutation_plan), [], False))
     }
     True -> {
+      use captured <- result.try(
+        local_dependencies.prepare(session.workspace, session.snapshot, [
+          session.config.report.directory,
+        ]),
+      )
+      let session = CatalogSession(..session, snapshot: captured)
       let runtimes =
         detect_runtimes(
           session.gleam_toml,
@@ -532,6 +539,12 @@ fn execute(
   session: CatalogSession,
   run_id: String,
 ) -> Result(RunOutput, String) {
+  use captured <- result.try(
+    local_dependencies.prepare(session.workspace, session.snapshot, [
+      session.config.report.directory,
+    ]),
+  )
+  let session = CatalogSession(..session, snapshot: captured)
   let started = platform.now_milliseconds()
   let monotonic_started = platform.monotonic_milliseconds()
   let prepare_started = platform.monotonic_milliseconds()

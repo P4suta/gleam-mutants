@@ -56,6 +56,7 @@ Reassess this boundary when a maintained verifier can import the relevant Gleam 
 | Report persistence | API and report adapters | Default no-write and explicit persistence; installed Hex consumer and report storage faults |
 | Host preservation | Process FFI, engine, CLI | Child exit 130/143 during compilation, baseline, and mutation batches on all four runtimes; API continuation and CLI exit |
 | Input preservation | Snapshot and instrumenter | Byte digests, spaces, Unicode/CRLF, link rejection, generated-link cleanup, 10,000 fixed-seed properties |
+| Local dependency closure | Local dependency capture and snapshot identity | All 512 directed three-package graphs against an independent transitive-closure reference; shared, absolute, development, Git, retained-copy, and link boundaries; real locked builds and cache invalidation on four runtimes |
 | Compiler classification | Validation batches | Mixed and all-rejected catalogues; invalid mutants remain rejected; interruption aborts validation |
 | Baseline and aggregation | Execution and outcome core | Baseline failure returns an error; all 341 outcome-category lists of length zero through four match an independent priority reference |
 | Selection and cache | Engine, impact protocol, cache | Automatic and full-suite parity, conservative confirmation, all-hit behavior, runtime/compiler identity |
@@ -65,6 +66,11 @@ Reassess this boundary when a maintained verifier can import the relevant Gleam 
 
 The finite aggregation check covers the engine's one-runtime and four-runtime category domains, including missing evidence.
 It is an exhaustive executable check at that bound, not an unbounded theorem about every list length or arbitrary diagnostic text.
+The graph check covers every directed graph on three named packages, including self-edges and unreachable cycles.
+It checks the actual filesystem adapter against a separately computed reachability relation.
+This is a finite executable check, not an induction proof for arbitrary graph size.
+Tomlet document editing and recursive filesystem capture remain outside the restricted proof translator's semantics.
+The [local dependency ADR](adr/capture-local-dependencies-in-snapshots.md) records the model boundary and capture decision.
 External compiler and OS behavior remain integration assumptions.
 Tests cannot establish arbitrary test-program isolation or correctness.
 

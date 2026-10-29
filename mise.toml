@@ -47,6 +47,8 @@ description = "Run snapshot mutation-engine smoke tests"
 run = [
   "gleam run -m api_smoke --target erlang",
   "gleam run -m api_smoke --target javascript --runtime node",
+  "gleam run -m local_dependency_smoke --target erlang",
+  "gleam run -m local_dependency_smoke --target javascript --runtime node",
   "gleam run -m engine_smoke --target erlang",
   "gleam run -m engine_smoke --target javascript --runtime node",
   "gleam run -m adaptive_engine_smoke --target erlang",
