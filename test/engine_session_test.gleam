@@ -101,6 +101,73 @@ pub fn file_permissions_participate_in_snapshot_identity_test() {
   assert changed
 }
 
+pub fn disposing_read_only_snapshot_preserves_source_permissions_test() {
+  let source = workspace("read-only-cleanup")
+  let original = path.join(source, "src/main.gleam")
+  let assert Ok(Nil) = simplifile.set_permissions_octal(original, 0o444)
+  let assert Ok(before) = simplifile.file_info(original)
+  let assert Ok(contents) = simplifile.read(original)
+  let assert Ok(captured) = snapshot.create(source)
+  let disposed = snapshot.dispose(captured)
+  let preserved = simplifile.read(original)
+  let assert Ok(after) = simplifile.file_info(original)
+  let missing = simplifile.is_directory(snapshot.root(captured))
+  let assert Ok(Nil) = simplifile.set_permissions_octal(original, 0o644)
+  let assert Ok(Nil) = platform.delete_tree(source)
+  assert disposed == Ok(Nil)
+  assert missing == Ok(False)
+  assert preserved == Ok(contents)
+  assert after.mode == before.mode
+}
+
+pub fn cleanup_links_preserve_read_only_external_files_test() {
+  list.each(["symlink", "hard-link"], fn(kind) {
+    let source = workspace("read-only-target-" <> kind)
+    let original = path.join(source, "src/main.gleam")
+    let owned = workspace("read-only-link-" <> kind)
+    let link = path.join(owned, "external")
+    case kind {
+      "hard-link" -> {
+        let linked =
+          platform.run_process(
+            "node",
+            [
+              "-e",
+              "require('node:fs').linkSync(process.argv[1], process.argv[2])",
+              original,
+              link,
+            ],
+            ".",
+            [],
+            10_000,
+          )
+        assert linked.status == 0
+      }
+      _ -> {
+        let assert Ok(Nil) = simplifile.create_symlink(original, link)
+        Nil
+      }
+    }
+    let assert Ok(Nil) = simplifile.set_permissions_octal(original, 0o444)
+    let assert Ok(before) = simplifile.file_info(original)
+    let contents = simplifile.read(original)
+    let disposed = platform.delete_tree(owned)
+    let preserved = simplifile.read(original)
+    let assert Ok(after) = simplifile.file_info(original)
+    let assert Ok(Nil) = simplifile.set_permissions_octal(original, 0o644)
+    let assert Ok(Nil) = platform.delete_tree(owned)
+    let assert Ok(Nil) = platform.delete_tree(source)
+    case platform.os_name(), kind {
+      "windows", "hard-link" -> Nil
+      _, _ -> {
+        assert disposed == Ok(Nil)
+      }
+    }
+    assert preserved == contents
+    assert after.mode == before.mode
+  })
+}
+
 pub fn catalogue_session_disposes_its_single_snapshot_after_success_test() {
   let root = workspace("success")
   let assert Ok(#(captured, ids)) =

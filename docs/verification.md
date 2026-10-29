@@ -92,7 +92,7 @@ Reassess this boundary when a maintained verifier can import the relevant Gleam 
 | Compiler classification | Validation batches | Source-derived rejection-status contract; mixed and all-rejected catalogues; invalid mutants remain rejected; persistent compiler failures with exit 1 and 75 abort validation on all four runtimes |
 | Baseline and aggregation | Execution and outcome core | Baseline failure returns an error; all 341 outcome-category lists of length zero through four match an independent priority reference |
 | Selection and cache | Engine, impact protocol, cache | Automatic and full-suite parity, conservative confirmation, all-hit behavior, runtime/compiler identity, source file permissions, and external dependency contents |
-| Cleanup and durability | Snapshots, locks, report storage | Source-derived file-link admission; retained-copy file, directory, root symlink, and hard-link refusal; process-tree, interruption, workspace-lock, report lifecycle, and storage fault smokes |
+| Cleanup and durability | Snapshots, locks, report storage | Source-derived file-link admission; retained-copy file, directory, root symlink, and hard-link refusal; read-only snapshot disposal and external-link permission preservation; process-tree, interruption, workspace-lock, report lifecycle, and storage fault smokes |
 | Consumer compatibility | CLI and artifacts | Schema validation, four-runtime report parity, offline browsers, installed Hex API, escript/npm execution, reproducible packages |
 | Mutation semantics | Core and engine | Dogfood score mutation and five fixed official-library corpora with exact expected outcomes and source hashes |
 | Assurance completeness | Score dogfood runner | Exact admitted and rejected candidate identities, fresh single-runtime measurements, and negative controls for missing, duplicated, cached, timed-out, erroneous, and inconsistent results |
@@ -107,6 +107,12 @@ This is a finite executable check, not an induction proof for arbitrary graph si
 A pinned compiler control accepts a POSIX relative dependency path containing a colon before the capture regression checks its package-relative resolution.
 Windows drive-prefix interpretation is conditional on the host platform.
 Tomlet document editing and recursive filesystem capture remain outside the restricted proof translator's semantics.
+Windows Erlang cleanup first attempts ordinary file deletion.
+After access denial, it changes the owner-write bit only for a read-only regular file admitted by the source-derived unshared-file predicate.
+Symlinks and shared hard links cannot enter that permission-changing path.
+The regression tests dispose a read-only snapshot while checking source bytes and permissions, then check read-only external targets behind symbolic and hard links.
+The [Windows deletion contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-deletefile) and [Erlang file operations](https://www.erlang.org/doc/apps/kernel/file.html) remain external assumptions.
+The platform matrix supplies actual OS evidence for this adapter, rather than a theorem about Windows attributes or concurrent filesystem substitution.
 The process-text corpus follows the [UTF-8 replacement decoder](https://encoding.spec.whatwg.org/#utf-8-decoder) and preserves a leading byte order mark as text.
 The exhaustive two-byte comparison covers that finite byte domain, and the longer vectors cover valid and malformed three-byte and four-byte boundaries.
 Erlang's Unicode decoder and the JavaScript runtime decoders remain external library assumptions.
