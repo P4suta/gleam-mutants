@@ -19,6 +19,97 @@ const BUILD_JOB: &str = "Verify and build distributions";
 const SEAL_JOB: &str = "Bind candidate evidence";
 const ATTEST_JOB: &str = "Attest verified candidate";
 const VERIFY_JOB: &str = "Verify retained provenance";
+const PROPOSAL_BRANCH: &str = "release-please--branches--main--components--gleam-mutants";
+const ACTIONS_BOT: &str = "github-actions[bot]";
+
+#[derive(Debug, PartialEq, Eq)]
+enum ProposalRun {
+    Suppressed(u64),
+    Present,
+}
+
+fn proposal_run(run: &Value, source: &Revision) -> Result<ProposalRun, String> {
+    let id = run["id"]
+        .as_u64()
+        .filter(|id| *id > 0)
+        .ok_or("CI run identity is missing")?;
+    if run["head_sha"] != source.as_str()
+        || run["head_branch"] != PROPOSAL_BRANCH
+        || run["path"] != ".github/workflows/ci.yml"
+        || run["repository"]["id"] != candidate::REPOSITORY_ID
+        || run["head_repository"]["id"] != candidate::REPOSITORY_ID
+        || !matches!(
+            run["event"].as_str(),
+            Some("pull_request" | "workflow_dispatch")
+        )
+    {
+        return Err("proposal CI belongs to another source, workflow, or repository".into());
+    }
+    match (run["status"].as_str(), run["conclusion"].as_str()) {
+        (Some("completed"), Some("action_required")) => {
+            if run["event"] != "pull_request"
+                || run["actor"]["login"] != ACTIONS_BOT
+                || run["actor"]["type"] != "Bot"
+                || run["triggering_actor"]["login"] != ACTIONS_BOT
+                || run["triggering_actor"]["type"] != "Bot"
+            {
+                return Err(
+                    "CI needs an explicit workflow approval; no dispatch is authorized".into(),
+                );
+            }
+            Ok(ProposalRun::Suppressed(id))
+        }
+        (Some("queued" | "in_progress" | "requested" | "waiting" | "pending"), None)
+            if run["conclusion"].is_null() =>
+        {
+            Ok(ProposalRun::Present)
+        }
+        (
+            Some("completed"),
+            Some(
+                "success" | "failure" | "cancelled" | "timed_out" | "skipped" | "neutral" | "stale"
+                | "startup_failure",
+            ),
+        ) => Ok(ProposalRun::Present),
+        _ => Err("proposal CI state is missing or unsupported".into()),
+    }
+}
+
+fn validate_proposal(pull: &Value) -> Result<(), String> {
+    if pull["state"] != "open"
+        || pull["user"]["login"] != ACTIONS_BOT
+        || pull["user"]["type"] != "Bot"
+        || pull["head"]["ref"] != PROPOSAL_BRANCH
+        || pull["head"]["repo"]["id"] != candidate::REPOSITORY_ID
+        || pull["head"]["repo"]["fork"] != false
+        || pull["base"]["ref"] != "main"
+        || pull["base"]["repo"]["id"] != candidate::REPOSITORY_ID
+    {
+        return Err("proposal identity is outside the internal bot scope".into());
+    }
+    Ok(())
+}
+
+fn validate_proposal_files(files: &[Value]) -> Result<(), String> {
+    const ALLOWED: [&str; 5] = [
+        ".release-please-manifest.json",
+        "CHANGELOG.md",
+        "VERSION",
+        "gleam.toml",
+        "src/gleam_mutants/version.gleam",
+    ];
+    if files.is_empty()
+        || files.iter().any(|file| {
+            !file["filename"]
+                .as_str()
+                .is_some_and(|name| ALLOWED.contains(&name))
+                || !matches!(file["status"].as_str(), Some("added" | "modified"))
+        })
+    {
+        return Err("proposal changes files outside the version-preparation scope".into());
+    }
+    Ok(())
+}
 
 pub fn latest_success(jobs: &[Value], name: &str, identity: &Identity) -> Result<u32, String> {
     let Origin::GitHub { run, attempt, .. } = identity.origin else {
@@ -435,6 +526,7 @@ pub fn fetch(directory: &Path, identity: &Identity) -> Result<Candidate, String>
 }
 
 pub fn proposal_checks() -> Result<(), String> {
+    use gleam_mutants_release_core::{CiAction, CiRecord, proposal_ci};
     repository()?;
     let pulls = list(
         &format!("repos/{}/pulls?state=open", candidate::REPOSITORY),
@@ -444,18 +536,25 @@ pub fn proposal_checks() -> Result<(), String> {
         let branch = pull["head"]["ref"]
             .as_str()
             .ok_or("proposal head is missing")?;
-        if branch != "release-please--branches--main--components--gleam-mutants" {
+        if branch != PROPOSAL_BRANCH {
             continue;
         }
+        validate_proposal(&pull)?;
         let source = Revision::try_from(
             pull["head"]["sha"]
                 .as_str()
                 .ok_or("proposal source is missing")?
                 .to_owned(),
         )?;
-        if pull["head"]["repo"]["id"] != candidate::REPOSITORY_ID || pull["base"]["ref"] != "main" {
-            return Err("release proposal belongs to another source repository or base".into());
-        }
+        let number = pull["number"]
+            .as_u64()
+            .filter(|number| *number > 0)
+            .ok_or("proposal number is missing")?;
+        let files = list(
+            &format!("repos/{}/pulls/{number}/files", candidate::REPOSITORY),
+            None,
+        )?;
+        validate_proposal_files(&files)?;
         let runs = list(
             &format!(
                 "repos/{}/actions/workflows/ci.yml/runs?head_sha={}",
@@ -464,7 +563,29 @@ pub fn proposal_checks() -> Result<(), String> {
             ),
             Some("workflow_runs"),
         )?;
-        if runs.is_empty() {
+        let mut record = CiRecord::Missing;
+        for run in runs {
+            match proposal_run(&run, &source)? {
+                ProposalRun::Present => record = CiRecord::Present,
+                ProposalRun::Suppressed(id) => {
+                    if !jobs(id)?.is_empty() {
+                        return Err(
+                            "approval-required CI already has jobs; inspect it without redispatch"
+                                .into(),
+                        );
+                    }
+                    if record != CiRecord::Present {
+                        record = CiRecord::Suppressed;
+                    }
+                }
+            }
+        }
+        let current = required(&format!("repos/{}/pulls/{number}", candidate::REPOSITORY))?;
+        validate_proposal(&current)?;
+        if current["head"]["sha"] != source.as_str() {
+            return Err("proposal head changed while checking its CI".into());
+        }
+        if proposal_ci(record) == CiAction::Dispatch {
             runner::output(Command::new("gh").args([
                 "workflow",
                 "run",
@@ -473,6 +594,8 @@ pub fn proposal_checks() -> Result<(), String> {
                 candidate::REPOSITORY,
                 "--ref",
                 branch,
+                "--field",
+                &format!("source_sha={}", source.as_str()),
             ]))?;
         }
     }
@@ -482,6 +605,74 @@ pub fn proposal_checks() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn proposal_record() -> Value {
+        serde_json::json!({"id":1,"head_sha":"a".repeat(40),"head_branch":PROPOSAL_BRANCH,
+            "path":".github/workflows/ci.yml","event":"pull_request","status":"completed","conclusion":"action_required",
+            "actor":{"login":ACTIONS_BOT,"type":"Bot"},"triggering_actor":{"login":ACTIONS_BOT,"type":"Bot"},
+            "repository":{"id":candidate::REPOSITORY_ID},"head_repository":{"id":candidate::REPOSITORY_ID}})
+    }
+
+    #[test]
+    fn suppressed_internal_bot_records_are_not_executed_ci() {
+        let source = Revision::try_from("a".repeat(40)).unwrap();
+        let run = proposal_record();
+        assert_eq!(proposal_run(&run, &source), Ok(ProposalRun::Suppressed(1)));
+        for conclusion in ["success", "failure", "cancelled", "timed_out", "skipped"] {
+            let mut actual = run.clone();
+            actual["conclusion"] = serde_json::json!(conclusion);
+            assert_eq!(proposal_run(&actual, &source), Ok(ProposalRun::Present));
+        }
+        let mut active = run.clone();
+        active["status"] = serde_json::json!("in_progress");
+        active["conclusion"] = Value::Null;
+        assert_eq!(proposal_run(&active, &source), Ok(ProposalRun::Present));
+        for (field, value) in [
+            ("head_sha", serde_json::json!("b".repeat(40))),
+            ("head_branch", serde_json::json!("another")),
+            ("path", serde_json::json!("other.yml")),
+        ] {
+            let mut invalid = run.clone();
+            invalid[field] = value;
+            assert!(proposal_run(&invalid, &source).is_err());
+        }
+        let mut human = run.clone();
+        human["actor"]["login"] = serde_json::json!("human");
+        assert!(proposal_run(&human, &source).is_err());
+        let mut foreign = run;
+        foreign["head_repository"]["id"] = serde_json::json!(1);
+        assert!(proposal_run(&foreign, &source).is_err());
+    }
+
+    #[test]
+    fn proposal_file_scope_rejects_empty_removed_and_workflow_changes() {
+        let file = serde_json::json!({"filename":"CHANGELOG.md","status":"modified"});
+        validate_proposal_files(std::slice::from_ref(&file)).unwrap();
+        assert!(validate_proposal_files(&[]).is_err());
+        let mut removed = file.clone();
+        removed["status"] = serde_json::json!("removed");
+        assert!(validate_proposal_files(&[removed]).is_err());
+        let mut workflow = file;
+        workflow["filename"] = serde_json::json!(".github/workflows/ci.yml");
+        assert!(validate_proposal_files(&[workflow]).is_err());
+    }
+
+    #[test]
+    fn proposal_dispatch_requires_the_internal_bot_and_repository() {
+        let pull = serde_json::json!({"state":"open", "user":{"login":ACTIONS_BOT,"type":"Bot"},
+            "head":{"ref":PROPOSAL_BRANCH,"repo":{"id":candidate::REPOSITORY_ID,"fork":false}},
+            "base":{"ref":"main","repo":{"id":candidate::REPOSITORY_ID}}});
+        validate_proposal(&pull).unwrap();
+        let mut human = pull.clone();
+        human["user"]["login"] = serde_json::json!("human");
+        assert!(validate_proposal(&human).is_err());
+        let mut fork = pull.clone();
+        fork["head"]["repo"]["fork"] = serde_json::json!(true);
+        assert!(validate_proposal(&fork).is_err());
+        let mut foreign = pull;
+        foreign["base"]["repo"]["id"] = serde_json::json!(1);
+        assert!(validate_proposal(&foreign).is_err());
+    }
 
     #[test]
     fn artifact_selection_preserves_the_latest_eligible_producer() {

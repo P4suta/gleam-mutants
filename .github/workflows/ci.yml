@@ -8,6 +8,12 @@ name: CI
   pull_request:
   merge_group:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Optional exact commit expected by the dispatcher
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -22,6 +28,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
+      - name: Verify the requested source before execution
+        if: >-
+          github.event_name == 'workflow_dispatch' && inputs.source_sha != ''
+        env:
+          EXPECTED_SOURCE: ${{ inputs.source_sha }}
+        run: test "$GITHUB_SHA" = "$EXPECTED_SOURCE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
