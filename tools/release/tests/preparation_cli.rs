@@ -54,6 +54,13 @@ fn credential_verification_uses_only_identity_gets_and_stdin_authentication() {
         std::env::temp_dir().join(format!("gleam-release-credentials-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
     let executable = if cfg!(windows) { "curl.exe" } else { "curl" };
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        env!("CARGO_BIN_EXE_registry-fixture"),
+        root.join(executable),
+    )
+    .unwrap();
+    #[cfg(not(unix))]
     std::fs::copy(
         env!("CARGO_BIN_EXE_registry-fixture"),
         root.join(executable),
