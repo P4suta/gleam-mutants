@@ -126,8 +126,9 @@ These checks cover that finite corpus and the native boundaries; symlink aliases
 
 Release automation has a separate pure Rust core in `tools/release-core`.
 `mise run prove-release` imports that implementation directly into pinned Kani 0.68.0.
-Three harnesses check every admitted Boolean state for output reuse and finalization, and all `u64` count combinations for conclusive runtime measurements.
-The gate requires the exact three successful harness names and separately rejects three deliberately broken implementations at the corresponding harness.
+Four harnesses check output reuse, finalization, conclusive runtime counts, and the distinction between suppressed and actual proposal CI.
+They cover every admitted Boolean or enum state and all `u64` count combinations in those predicates.
+The gate requires the exact four successful harness names and separately rejects four deliberately broken implementations at the corresponding harness.
 Each negative control selects only its named harness and requires its exact failed-harness summary.
 Tool failure, an empty harness inventory, or a resource stop supplies no proof result.
 The pinned container uses the same bounded supervisor as the Gleam proof gate and records its actual source hash.
@@ -136,6 +137,8 @@ These proofs establish the core predicates under Kani's Rust model; they do not 
 `mise run check-release` runs strict Rust formatting, Clippy, unit and CLI tests, and the preserved publication-phase fuzz corpus with round-trip properties.
 The cargo-fuzz target is `fuzz/fuzz_targets/publication_phase.rs`.
 Native regressions cover sealed candidate tampering, missing evidence, source and attempt mismatches, latest-job invalidation, artifact selection, denied local publication, conflicting assets, and recovery after partial uploads.
+Proposal CI regressions reject foreign metadata and human approval cases, preserve active or failed runs, and constrain dispatch to the internal bot's version files and exact source.
+GitHub's event suppression and workflow execution remain external assumptions that require live verification.
 `mise run audit-tools` checks the release and fuzz dependency lockfiles against the exact RustSec commit in `tools/release/rustsec.commit`.
 Review upstream advisory changes and update that full commit explicitly to renew the shared audit snapshot.
 

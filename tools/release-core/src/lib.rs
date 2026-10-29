@@ -19,6 +19,27 @@ pub enum WritePlan {
     Refuse,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub enum CiRecord {
+    Missing,
+    Suppressed,
+    Present,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CiAction {
+    Dispatch,
+    Keep,
+}
+
+pub fn proposal_ci(record: CiRecord) -> CiAction {
+    match record {
+        CiRecord::Missing | CiRecord::Suppressed => CiAction::Dispatch,
+        CiRecord::Present => CiAction::Keep,
+    }
+}
+
 pub fn plan_write(verified: bool, existing: Existing) -> WritePlan {
     match (verified, existing) {
         (false, Existing::Missing | Existing::Matching | Existing::Conflicting)
@@ -59,6 +80,14 @@ pub fn conclusive_counts(m: RuntimeCounts) -> bool {
 #[cfg(kani)]
 mod proofs {
     use super::{Existing, WritePlan, can_finalize, plan_write};
+
+    #[kani::proof]
+    fn proposal_ci_distinguishes_suppression_from_execution() {
+        let record: super::CiRecord = kani::any();
+        let action = super::proposal_ci(record);
+        assert!((action == super::CiAction::Dispatch) == (record != super::CiRecord::Present));
+        assert!((action == super::CiAction::Keep) == (record == super::CiRecord::Present));
+    }
 
     #[kani::proof]
     fn runtime_counts_exclude_empty_and_inconclusive_measurements() {
@@ -106,6 +135,22 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::{Existing, WritePlan, can_finalize, plan_write};
+
+    #[test]
+    fn only_executed_or_pending_ci_prevents_a_dispatch() {
+        assert_eq!(
+            super::proposal_ci(super::CiRecord::Missing),
+            super::CiAction::Dispatch
+        );
+        assert_eq!(
+            super::proposal_ci(super::CiRecord::Suppressed),
+            super::CiAction::Dispatch
+        );
+        assert_eq!(
+            super::proposal_ci(super::CiRecord::Present),
+            super::CiAction::Keep
+        );
+    }
 
     #[test]
     fn checked_outputs_can_be_reused_and_conflicts_are_never_overwritten() {
