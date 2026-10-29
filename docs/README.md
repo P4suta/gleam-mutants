@@ -17,7 +17,9 @@ Its supported product is a mutation-testing library and CLI.
 - [Error codes](errors.md)
 - [Verification contracts](verification.md)
 - [Release checklist](release-checklist.md)
+- [Release preparation and publication](releasing.md)
 - [Package boundary decision](adr/mutation-testing-package-boundary.md)
+- [Verified candidate publication decision](adr/publish-verified-candidate-artifacts.md)
 
 Version 0.1.0 is an unreleased development snapshot.
 See the [third-party notices](../THIRD_PARTY_NOTICES.md) for embedded dependencies.

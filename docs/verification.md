@@ -124,6 +124,21 @@ These checks cover that finite corpus and the native boundaries; symlink aliases
 
 ## Gates
 
+Release automation has a separate pure Rust core in `tools/release-core`.
+`mise run prove-release` imports that implementation directly into pinned Kani 0.68.0.
+Three harnesses check every admitted Boolean state for output reuse and finalization, and all `u64` count combinations for conclusive runtime measurements.
+The gate requires the exact three successful harness names and separately rejects three deliberately broken implementations at the corresponding harness.
+Each negative control selects only its named harness and requires its exact failed-harness summary.
+Tool failure, an empty harness inventory, or a resource stop supplies no proof result.
+The pinned container uses the same bounded supervisor as the Gleam proof gate and records its actual source hash.
+These proofs establish the core predicates under Kani's Rust model; they do not verify external I/O or provider semantics.
+
+`mise run check-release` runs strict Rust formatting, Clippy, unit and CLI tests, and the preserved publication-phase fuzz corpus with round-trip properties.
+The cargo-fuzz target is `fuzz/fuzz_targets/publication_phase.rs`.
+Native regressions cover sealed candidate tampering, missing evidence, source and attempt mismatches, latest-job invalidation, artifact selection, denied local publication, conflicting assets, and recovery after partial uploads.
+`mise run audit-tools` checks the release and fuzz dependency lockfiles against the exact RustSec commit in `tools/release/rustsec.commit`.
+Review upstream advisory changes and update that full commit explicitly to renew the shared audit snapshot.
+
 `mise run check` runs compilation, unit tests, documentation, metadata, dependency/security checks, and Rust derivation checks.
 `mise run test-integration`, `test-matrix`, `test-property`, `test-faults`, `dogfood`, `test-ecosystem`, and `package` exercise the native obligations above.
 Properties use 10,000 cases and seed 24301.
@@ -138,7 +153,8 @@ Timeouts and execution errors leave this assurance inconclusive, even when the p
 The per-mutant limit is one minute, and the campaign limit is 15 minutes with two workers.
 Deadlines only stop resource use and never establish a passing verdict.
 
-The protected candidate and publication workflows run that inventory.
-Their `release-candidate` task also requires `mise run prove`.
+The manual candidate workflow runs the complete inventory on its exact protected-main source and records fourteen Linux gates and eighteen checks on each of three operating systems.
+The publication workflow verifies those retained receipts and bytes instead of rebuilding packages.
+The [release guide](releasing.md) defines source, producer-attempt, provenance, and approval checks.
 A skipped, empty, failed, or inconclusive required check leaves the corresponding obligation open.
 Local macOS results do not establish Linux or Windows behavior, hosted OIDC, signatures, or publication.

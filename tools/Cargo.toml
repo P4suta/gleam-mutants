@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[workspace]
+members = ["release-core", "release"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(kani)"] }
+
+[workspace.lints.clippy]
+all = "deny"

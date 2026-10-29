@@ -5,106 +5,42 @@
 name: CI
 
 "on":
-  push:
-    branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   quality:
     name: quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@fad17e00675108609d0c8a55e1fd76c7944932e9
+      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@a9d791ae40e6c8adaf154f6375d197e6ca521a93
       - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium firefox webkit
       - run: mise run check
-
-  platform-tests:
-    name: platform-tests (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@fad17e00675108609d0c8a55e1fd76c7944932e9
-      - run: npm ci --ignore-scripts
-      - if: runner.os == 'Linux'
-        run: npx playwright install --with-deps chromium firefox webkit
-      - if: runner.os != 'Linux'
-        run: npx playwright install chromium firefox webkit
+      - run: mise run audit-tools
       - run: mise run test-integration
 
-  runtime-matrix:
-    name: runtime-matrix
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@fad17e00675108609d0c8a55e1fd76c7944932e9
-      - run: mise run test-matrix
-
-  artifacts:
-    name: artifacts
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@fad17e00675108609d0c8a55e1fd76c7944932e9
-      - run: npm ci --ignore-scripts
-      - run: npx playwright install --with-deps chromium
-      - run: mise run package
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: gleam-mutants-0.1.0-development-snapshot
-          path: dist/
-          if-no-files-found: error
-          retention-days: 14
-
-  dogfood:
-    name: dogfood
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@fad17e00675108609d0c8a55e1fd76c7944932e9
-      - run: mise run dogfood
-
-  # The one status check branch protection requires,
-  # named the same in every P4suta repository.
-  # It passes only when every job it needs succeeded or was skipped.
   required:
     name: required
     if: always()
-    needs: [quality, platform-tests, runtime-matrix, artifacts, dogfood]
-    runs-on: ubuntu-latest
+    needs: quality
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
-      - name: Fail unless every needed job succeeded or was skipped
+      - name: Require a successful executed fast gate
         env:
-          RESULTS: ${{ toJSON(needs.*.result) }}
-        run: |
-          echo "${RESULTS}"
-          jq -e 'all(.[]; IN("success", "skipped"))' <<< "${RESULTS}"
+          RESULT: ${{ needs.quality.result }}
+        run: test "$RESULT" = success

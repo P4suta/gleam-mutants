@@ -7,6 +7,8 @@
 # A fixture built in place, which only a hand-run `gleam` in one leaves behind.
 /fixtures/*/build
 /dist
+/fuzz/target
+/fuzz/artifacts
 /.gleam_mutants
 /.smartest
 /gleam_mutants
