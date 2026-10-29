@@ -87,6 +87,7 @@ Reassess this boundary when a maintained verifier can import the relevant Gleam 
 | Process text | Process FFI and report serialization | UTF-8 boundary vectors, BOM preservation, all 65,536 two-byte inputs against Node's replacement decoder, truncated multibyte output, and actual API report serialization on four runtimes |
 | Input preservation | Snapshot and instrumenter | Byte digests, spaces, Unicode/CRLF, link rejection, generated-link cleanup, 10,000 fixed-seed properties |
 | Filesystem names and privacy | Entry predicate, physical paths, snapshot roots, shared cache | Source-derived scalar-sequence contract; complete two-character ASCII domain; escaped-write controls; four-runtime permissive-umask fixture; synchronized shared-directory creation |
+| Absolute workspace identity | Platform path resolution, cache, history, and locks | Dot and parent aliases share an identity; 11,718 rooted paths match Node's independent POSIX and Windows references; drive and UNC roots remain protected |
 | Local dependency closure | Local dependency capture and snapshot identity | All 512 directed three-package graphs against an independent transitive-closure reference; shared, absolute, development, Git, retained-copy, and link boundaries; real locked builds and cache invalidation on four runtimes |
 | Compiler classification | Validation batches | Source-derived rejection-status contract; mixed and all-rejected catalogues; invalid mutants remain rejected; persistent compiler failures with exit 1 and 75 abort validation on all four runtimes |
 | Baseline and aggregation | Execution and outcome core | Baseline failure returns an error; all 341 outcome-category lists of length zero through four match an independent priority reference |
@@ -116,6 +117,10 @@ Tests cannot establish arbitrary test-program isolation or correctness.
 The dogfood runner compares report records and identity lists outside the translator's admitted fragment.
 Its negative controls exercise missing or duplicated candidates, unexpected compiler rejections, skipped work, wrong or cached runtimes, timeouts, execution errors, and inconsistent scores.
 These finite checks do not prove the runner or compiler correct for every possible report.
+Absolute path normalization uses string splitting, list reduction, and platform root conventions outside the closed translator.
+Its fixed reference corpus covers every sequence of zero through five components from node, dot, parent, whitespace, and Unicode controls under three root forms.
+It also checks idempotence, root clamping, literal POSIX backslashes, and actual report-history reads through dot and parent aliases.
+These checks cover that finite corpus and the native boundaries; symlink aliases and arbitrary filesystem path semantics are not proven.
 
 ## Gates
 

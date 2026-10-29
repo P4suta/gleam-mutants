@@ -57,7 +57,9 @@ pub fn main() {
     api.run(root, types.Options(..options, write_reports: True))
   assert simplifile.is_file(path.join(root, "reports/mutation/mutation.json"))
     == Ok(True)
-  let assert Ok(_) = report.latest(root)
+  let assert Ok(latest) = report.latest(root)
+  assert report.latest(root <> "/.") == Ok(latest)
+  assert report.latest(root <> "/src/..") == Ok(latest)
   list.each(snapshot.entries(copy), fn(entry) {
     let assert Ok(contents) = simplifile.read(path.join(root, entry.path))
     assert bytes.sha256(contents) == entry.digest

@@ -71,7 +71,7 @@ pub fn monotonic_milliseconds() -> Int
 fn do_resolve_path(path: String) -> String
 
 pub fn resolve_path(value: String) -> String {
-  path.from_native(do_resolve_path(value), os_name() == "windows")
+  path.normalize_absolute(do_resolve_path(value), os_name() == "windows")
 }
 
 @external(erlang, "gleam_mutants_platform_ffi", "architecture")

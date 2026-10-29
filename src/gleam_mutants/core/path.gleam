@@ -12,6 +12,30 @@ pub fn from_native(value: String, windows: Bool) -> String {
   }
 }
 
+pub fn normalize_absolute(value: String, windows: Bool) -> String {
+  let #(root, segments) = case
+    string.split(from_native(value, windows), "/"),
+    windows
+  {
+    ["", "", server, share, ..rest], True -> #(
+      "//" <> server <> "/" <> share <> "/",
+      rest,
+    )
+    ["", ..rest], _ -> #("/", rest)
+    [drive, ..rest], True -> #(drive <> "/", rest)
+    parts, _ -> #("", parts)
+  }
+  let reversed =
+    list.fold(segments, [], fn(reversed, segment) {
+      case segment {
+        "" | "." -> reversed
+        ".." -> list.drop(reversed, 1)
+        _ -> [segment, ..reversed]
+      }
+    })
+  root <> string.join(list.reverse(reversed), "/")
+}
+
 pub fn join(left: String, right: String) -> String {
   case left, right {
     "", _ -> right

@@ -17,6 +17,7 @@ pub fn main() {
   all_snapshot_roots_are_owner_private_test()
   collection_never_removes_a_locked_snapshot_test()
   filesystem_join_preserves_native_spelling_test()
+  workspace_aliases_share_the_same_identity_test()
   component_admission_matches_an_independent_ascii_reference_test()
   duplicate_and_prune_refuse_ambiguous_native_entries_test()
   unsafe_retained_roots_are_refused_and_existing_directories_are_preserved_test()
@@ -136,6 +137,23 @@ pub fn filesystem_join_preserves_native_spelling_test() {
         != cache.workspace_id("/tmp/native/root")
     }
   }
+}
+
+pub fn workspace_aliases_share_the_same_identity_test() {
+  let workspace = platform.current_directory()
+  let expected = cache.workspace_id(workspace)
+  list.each(
+    [
+      ".",
+      "./",
+      workspace <> "/.",
+      workspace <> "/src/..",
+      workspace <> "/src/.././",
+    ],
+    fn(alias) {
+      assert cache.workspace_id(alias) == expected
+    },
+  )
 }
 
 pub fn component_admission_matches_an_independent_ascii_reference_test() {

@@ -23,6 +23,9 @@ Concurrent runs share cache ancestors but own separate snapshot roots.
 ## Decision
 
 Preserve physical path spelling and translate native Windows separators at the platform boundary.
+Normalize absolute workspace paths lexically before deriving cache, lock, and history identities.
+Keep POSIX roots, drive roots, and UNC shares outside the reducible component stack.
+This identifies dot and parent aliases without resolving symlink aliases.
 Validate each enumerated component before joins and exclusions.
 Refuse empty, dot, parent, separator-bearing, and NUL-bearing components.
 Backslash-bearing POSIX names remain unsupported because catalog identities use portable separators.
