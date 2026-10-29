@@ -26,8 +26,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: "P4suta/gleam-mutants/.github/actions/gleam-deps@\
-          fad17e00675108609d0c8a55e1fd76c7944932e9"
+      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@fad17e00675108609d0c8a55e1fd76c7944932e9
       - run: npm ci --ignore-scripts
       - run: mise run check
 
@@ -43,8 +42,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: "P4suta/gleam-mutants/.github/actions/gleam-deps@\
-          fad17e00675108609d0c8a55e1fd76c7944932e9"
+      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@fad17e00675108609d0c8a55e1fd76c7944932e9
       - run: npm ci --ignore-scripts
       - if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium firefox webkit
@@ -60,8 +58,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: "P4suta/gleam-mutants/.github/actions/gleam-deps@\
-          fad17e00675108609d0c8a55e1fd76c7944932e9"
+      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@fad17e00675108609d0c8a55e1fd76c7944932e9
       - run: mise run test-matrix
 
   artifacts:
@@ -72,8 +69,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: "P4suta/gleam-mutants/.github/actions/gleam-deps@\
-          fad17e00675108609d0c8a55e1fd76c7944932e9"
+      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@fad17e00675108609d0c8a55e1fd76c7944932e9
       - run: npm ci --ignore-scripts
       - run: npx playwright install --with-deps chromium
       - run: mise run package
@@ -92,8 +88,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: "P4suta/gleam-mutants/.github/actions/gleam-deps@\
-          fad17e00675108609d0c8a55e1fd76c7944932e9"
+      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@fad17e00675108609d0c8a55e1fd76c7944932e9
       - run: mise run dogfood
 
   # The one status check branch protection requires,

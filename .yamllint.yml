@@ -1,0 +1,11 @@
+---
+# SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+extends: default
+
+rules:
+  line-length:
+    max: 80
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
