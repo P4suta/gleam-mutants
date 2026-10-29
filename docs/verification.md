@@ -94,6 +94,7 @@ Reassess this boundary when a maintained verifier can import the relevant Gleam 
 | Cleanup and durability | Snapshots, locks, report storage | Source-derived file-link admission; retained-copy file, directory, root symlink, and hard-link refusal; process-tree, interruption, workspace-lock, report lifecycle, and storage fault smokes |
 | Consumer compatibility | CLI and artifacts | Schema validation, four-runtime report parity, offline browsers, installed Hex API, escript/npm execution, reproducible packages |
 | Mutation semantics | Core and engine | Dogfood score mutation and five fixed official-library corpora with exact expected outcomes and source hashes |
+| Assurance completeness | Score dogfood runner | Exact admitted and rejected candidate identities, fresh single-runtime measurements, and negative controls for missing, duplicated, cached, timed-out, erroneous, and inconsistent results |
 
 The finite aggregation check covers the engine's one-runtime and four-runtime category domains, including missing evidence.
 Diagnostic round trips cover all outcome constructors, all ASCII scalar values, empty reasons, mixed Unicode and escapes, and text exceeding the process output limit.
@@ -112,6 +113,9 @@ These native checks do not establish a theorem for arbitrary-length byte streams
 The [local dependency ADR](adr/capture-local-dependencies-in-snapshots.md) records the model boundary and capture decision.
 External compiler and OS behavior remain integration assumptions.
 Tests cannot establish arbitrary test-program isolation or correctness.
+The dogfood runner compares report records and identity lists outside the translator's admitted fragment.
+Its negative controls exercise missing or duplicated candidates, unexpected compiler rejections, skipped work, wrong or cached runtimes, timeouts, execution errors, and inconsistent scores.
+These finite checks do not prove the runner or compiler correct for every possible report.
 
 ## Gates
 
@@ -119,6 +123,14 @@ Tests cannot establish arbitrary test-program isolation or correctness.
 `mise run test-integration`, `test-matrix`, `test-property`, `test-faults`, `dogfood`, `test-ecosystem`, and `package` exercise the native obligations above.
 Properties use 10,000 cases and seed 24301.
 The ecosystem corpus identities and expected outcomes are fixed in the maintained runner.
+Score dogfood requires all 50 compiler-admitted candidates to fail the complete Erlang unit suite without cached outcomes.
+It compares both the admitted identities and the seven compile-invalid identities with a separate compiler-validation run.
+All 57 candidates must appear exactly once in the expected partition.
+Six rejected score candidates occur in clause guards, where runtime schemata are unsupported.
+The 50 executions do not establish detection at those guard sites.
+It checks the individual runtime outcomes independently of the reported score.
+Timeouts and execution errors leave this assurance inconclusive, even when the product's ordinary scoring counts a timeout as detected.
+The per-mutant limit is one minute, and the campaign limit is 15 minutes with two workers.
 Deadlines only stop resource use and never establish a passing verdict.
 
 The protected candidate and publication workflows run that inventory.
