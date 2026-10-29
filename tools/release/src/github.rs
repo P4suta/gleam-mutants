@@ -423,9 +423,12 @@ pub fn verify_source(identity: &Identity) -> Result<(), String> {
     Ok(())
 }
 
-pub fn attestations(directory: &Path, identity: &Identity) -> Result<(), String> {
-    let candidate = Candidate::load(directory)?;
-    candidate.verify(directory, identity)?;
+fn attestation_command(
+    subject: &Path,
+    identity: &Identity,
+    algorithm: &str,
+    bundle: Option<&Path>,
+) -> Command {
     let signer = format!(
         "{}/{}",
         candidate::REPOSITORY,
@@ -435,38 +438,44 @@ pub fn attestations(directory: &Path, identity: &Identity) -> Result<(), String>
         "{}/{signer}@refs/heads/main",
         crate::constants::GITHUB_ORIGIN
     );
+    let mut command = Command::new("gh");
+    command.args(["attestation", "verify"]).arg(subject).args([
+        "--repo",
+        candidate::REPOSITORY,
+        "--cert-identity",
+        &certificate,
+        "--source-ref",
+        "refs/heads/main",
+        "--source-digest",
+        identity.source.as_str(),
+        "--signer-digest",
+        identity.source.as_str(),
+        "--deny-self-hosted-runners",
+        "--digest-alg",
+        algorithm,
+    ]);
+    if let Some(bundle) = bundle {
+        command.arg("--bundle").arg(bundle);
+    }
+    command
+}
+
+pub fn attestations(directory: &Path, identity: &Identity) -> Result<(), String> {
+    let candidate = Candidate::load(directory)?;
+    candidate.verify(directory, identity)?;
     let npm = candidate.npm()?;
     for (name, algorithm, bundle) in [
         ("candidate.json", "sha256", GENERAL_BUNDLE),
         (npm.path.as_str(), "sha512", NPM_BUNDLE),
     ] {
         candidate::read(directory, bundle)?;
-        for offline in [false, true] {
-            let mut command = Command::new("gh");
-            command
-                .args(["attestation", "verify"])
-                .arg(directory.join(name))
-                .args([
-                    "--repo",
-                    candidate::REPOSITORY,
-                    "--signer-workflow",
-                    &signer,
-                    "--cert-identity",
-                    &certificate,
-                    "--source-ref",
-                    "refs/heads/main",
-                    "--source-digest",
-                    identity.source.as_str(),
-                    "--signer-digest",
-                    identity.source.as_str(),
-                    "--deny-self-hosted-runners",
-                    "--digest-alg",
-                    algorithm,
-                ]);
-            if offline {
-                command.arg("--bundle").arg(directory.join(bundle));
-            }
-            runner::output(&mut command)?;
+        for retained_bundle in [None, Some(directory.join(bundle))] {
+            runner::output(&mut attestation_command(
+                &directory.join(name),
+                identity,
+                algorithm,
+                retained_bundle.as_deref(),
+            ))?;
         }
     }
     Ok(())
@@ -619,6 +628,41 @@ pub fn proposal_checks() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attestation_arguments_reach_trust_root_validation() {
+        const RUN: u64 = 1;
+        const ATTEMPT: u32 = 1;
+        let identity = expected(
+            Revision::try_from("0123456789abcdef0123456789abcdef01234567".to_owned()).unwrap(),
+            Version::try_from("0.1.0".to_owned()).unwrap(),
+            RUN,
+            ATTEMPT,
+        )
+        .unwrap();
+        let project = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let malformed_root = project.join("Cargo.toml");
+        for algorithm in ["sha256", "sha512"] {
+            for bundle in [None, Some(malformed_root.as_path())] {
+                let output = attestation_command(&malformed_root, &identity, algorithm, bundle)
+                    .arg("--custom-trusted-root")
+                    .arg(&malformed_root)
+                    .env("GH_HOST", "github.com")
+                    .env("GH_CONFIG_DIR", project)
+                    .env("GH_TOKEN", "unused-native-parser-fixture")
+                    .env_remove("GITHUB_TOKEN")
+                    .env("GH_PROMPT_DISABLED", "1")
+                    .output()
+                    .unwrap();
+                let error = String::from_utf8(output.stderr).unwrap();
+                assert!(!output.status.success(), "{algorithm}: {error}");
+                assert!(
+                    error.contains("failed to proto-json unmarshal trusted root"),
+                    "{algorithm}, bundle {bundle:?}: {error}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn proposal_ci_uses_the_exact_branch_reference() {

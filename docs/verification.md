@@ -143,6 +143,11 @@ These proofs establish the core predicates under Kani's Rust model; they do not 
 `mise run check-release` runs strict Rust formatting, Clippy, unit and CLI tests, and the preserved publication-phase fuzz corpus with round-trip properties.
 The cargo-fuzz target is `fuzz/fuzz_targets/publication_phase.rs`.
 Native regressions cover sealed candidate tampering, missing evidence, source and attempt mismatches, latest-job invalidation, artifact selection, denied local publication, conflicting assets, and recovery after partial uploads.
+The pinned GitHub CLI checks the attestation adapter's arguments for SHA-256 and SHA-512 with online and retained-bundle modes.
+A malformed custom trust root must fail with the expected parsing error after argument admission.
+The test uses isolated configuration and a placeholder token without network access.
+The candidate workflow separately requires real retained and online provenance verification with the exact certificate identity, source and signer digests, protected ref, and hosted runner restriction.
+GitHub CLI and Sigstore verification remain external trust assumptions.
 Proposal CI regressions reject foreign metadata and human approval cases, preserve active or failed runs, and constrain dispatch to the internal bot's version files and exact source.
 The protected preparation workflow formats the generated changelog with pinned rumdl before checking CI.
 It creates a single-file commit from the inspected proposal source, updates only the fixed bot branch without force, and checks CI at the resulting source.
