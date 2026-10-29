@@ -39,7 +39,6 @@ Follow the [release guide](releasing.md) for the later authorized publication:
 - [ ] Review the read-only publication plan before production approvals
 - [ ] Verify downloaded release and registry bytes before finalizing the draft
 
-Version 0.1.0 remains an unreleased development snapshot.
 Production-readiness requires passing immutable GitHub-hosted evidence on all three operating systems plus verified signatures, attestations, SBOMs, benchmarks, and installation smokes.
 The [verification contracts](verification.md) define the required proof and native checks.
 A failed, skipped, or inconclusive obligation remains open.

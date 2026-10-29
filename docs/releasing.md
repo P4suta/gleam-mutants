@@ -5,7 +5,6 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 # Release preparation and publication
 
-Version 0.1.0 is an unreleased development snapshot.
 Preparation does not require creating a tag, GitHub Release, registry package, or publishing credential.
 The [checklist](release-checklist.md) distinguishes preparation evidence from later publication approval.
 The [artifact binding decision](adr/publish-verified-candidate-artifacts.md) records the architecture.

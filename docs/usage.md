@@ -8,31 +8,34 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 Mutation testing measures whether existing tests detect controlled changes to source.
 The library and CLI use one Gleam-native engine and canonical `RunReport`.
 Completed runs can also produce Stryker JSON and a single offline HTML report using Mutation Testing Elements 3.9.0.
-Version 0.1.0 remains an unreleased development snapshot.
+The current package version is 0.1.0.
 
 ## Install
 
-Add a checked-out repository as a development dependency:
+Add the Hex package to the target project's development dependencies:
 
-```toml
-[dev_dependencies]
-gleam_mutants = { path = "../gleam-mutants" }
+```sh
+gleam add --dev gleam_mutants
 ```
 
 Then use its CLI module:
 
 ```sh
-gleam deps download
 gleam run -m gleam_mutants -- run
 ```
 
-A Git dependency must pin a commit.
-The packaged escript and npm tarball expose the same command tree:
+The npm package exposes the same CLI for JavaScript projects:
 
 ```sh
-escript ./dist/escript/gleam-mutants.escript --version
-npm install --global ./dist/npm/gleam-mutants-0.1.0.tgz
+npm install --global gleam-mutants
 gleam-mutants --version
+```
+
+For the Erlang escript, download `gleam-mutants.escript` and `SHA256SUMS` from the matching [GitHub Release](https://github.com/P4suta/gleam-mutants/releases).
+Verify the escript's SHA-256 against its checksum entry, then run:
+
+```sh
+escript ./gleam-mutants.escript --version
 ```
 
 See the [library guide](library.md) for typed embedding.
@@ -126,6 +129,24 @@ JSON mode suppresses GitHub annotations.
 The library emits no annotations or terminal output.
 
 ## Development
+
+Clone the repository to work on its implementation:
+
+```sh
+git clone https://github.com/P4suta/gleam-mutants.git
+cd gleam-mutants
+mise install
+```
+
+Another local project can use the checkout as a development dependency:
+
+```toml
+[dev_dependencies]
+gleam_mutants = { path = "../gleam-mutants" }
+```
+
+A Git dependency must pin a commit.
+Run the repository's checks with its pinned toolchain:
 
 ```sh
 mise run bootstrap

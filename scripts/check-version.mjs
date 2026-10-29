@@ -16,11 +16,8 @@ if (match[1] !== version)
 
 const expectations = [
 	["src/gleam_mutants/version.gleam", `pub const current = "${version}"`],
-	[
-		"docs/usage.md",
-		`Version ${version} remains an unreleased development snapshot.`,
-	],
-	["SECURITY.md", `Version ${version} is an unreleased development snapshot`],
+	["docs/usage.md", `The current package version is ${version}.`],
+	["SECURITY.md", `The current package version is ${version}.`],
 ];
 for (const [file, expected] of expectations) {
 	if (!fs.readFileSync(file, "utf8").includes(expected)) {
