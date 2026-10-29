@@ -34,7 +34,7 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c
         with:
           version: 2026.10.22
-          install_args: rust
+          install_args: rust rumdl
           cache: false
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7
         with:

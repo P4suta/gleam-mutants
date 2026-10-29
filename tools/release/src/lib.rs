@@ -8,6 +8,7 @@ pub mod credentials;
 pub mod evidence;
 pub mod github;
 pub mod proofs;
+mod proposal;
 pub mod publication;
 pub mod registry;
 pub mod runner;

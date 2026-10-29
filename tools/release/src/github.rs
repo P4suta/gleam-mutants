@@ -19,7 +19,8 @@ const BUILD_JOB: &str = "Verify and build distributions";
 const SEAL_JOB: &str = "Bind candidate evidence";
 const ATTEST_JOB: &str = "Attest verified candidate";
 const VERIFY_JOB: &str = "Verify retained provenance";
-const PROPOSAL_BRANCH: &str = "release-please--branches--main--components--gleam-mutants";
+pub(crate) const PROPOSAL_BRANCH: &str =
+    "release-please--branches--main--components--gleam-mutants";
 const ACTIONS_BOT: &str = "github-actions[bot]";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -75,7 +76,7 @@ fn proposal_run(run: &Value, source: &Revision) -> Result<ProposalRun, String> {
     }
 }
 
-fn validate_proposal(pull: &Value) -> Result<(), String> {
+pub(crate) fn validate_proposal(pull: &Value) -> Result<(), String> {
     if pull["state"] != "open"
         || pull["user"]["login"] != ACTIONS_BOT
         || pull["user"]["type"] != "Bot"
@@ -555,6 +556,7 @@ pub fn proposal_checks() -> Result<(), String> {
             None,
         )?;
         validate_proposal_files(&files)?;
+        let source = crate::proposal::format(number, &source)?;
         let runs = list(
             &format!(
                 "repos/{}/actions/workflows/ci.yml/runs?head_sha={}",
