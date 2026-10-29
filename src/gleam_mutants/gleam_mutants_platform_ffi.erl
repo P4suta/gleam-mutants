@@ -222,7 +222,7 @@ is_reparse_point(Path) ->
 exit(Code) -> erlang:halt(Code).
 
 run_process(Executable0, Args0, WorkingDirectory, Environment, Timeout) ->
-    preserve_interrupt(run_process_raw(Executable0, Args0, WorkingDirectory, Environment, Timeout)).
+    run_process_raw(Executable0, Args0, WorkingDirectory, Environment, Timeout).
 
 run_process_raw(Executable0, Args0, WorkingDirectory, Environment, Timeout) ->
     Executable = resolve_executable(Executable0),
@@ -230,15 +230,11 @@ run_process_raw(Executable0, Args0, WorkingDirectory, Environment, Timeout) ->
     Env = [{unicode:characters_to_list(K), unicode:characters_to_list(V)} || {K, V} <- Environment],
     Options = [binary, exit_status, eof, use_stdio, stderr_to_stdout, hide,
                {args, Args}, {cd, unicode:characters_to_list(WorkingDirectory)}, {env, Env}],
-    Result = try erlang:open_port({spawn_executable, Executable}, Options) of
+    try erlang:open_port({spawn_executable, Executable}, Options) of
         Port -> collect(Port, Timeout, erlang:monotonic_time(millisecond), <<>>, undefined, false)
     catch
         Class:Reason -> {-2, <<>>, unicode:characters_to_binary(io_lib:format("~p:~p", [Class, Reason])), false}
-    end,
-    preserve_interrupt(Result).
-
-preserve_interrupt({130, _, _, _}) -> erlang:halt(130);
-preserve_interrupt(Result) -> Result.
+    end.
 
 run_process_batch([], _Jobs) -> [];
 run_process_batch(Requests, Jobs) ->
@@ -258,8 +254,8 @@ run_process_batch(Requests, Jobs) ->
         Ref
     end || Request <- Batch],
     Results = [receive {Ref, Result} -> Result end || Ref <- Refs],
-    case lists:any(fun({130, _, _, _, _}) -> true; (_) -> false end, Results) of
-        true -> erlang:halt(130);
+    case lists:any(fun({Code, _, _, _, _}) -> Code =:= 130 orelse Code =:= 143 end, Results) of
+        true -> Results;
         false -> Results ++ run_process_batch(Rest, Jobs)
     end.
 resolve_executable(Name) ->

@@ -5,22 +5,15 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam_mutants/core/outcome.{type Outcome}
+import gleam_mutants/types.{Score}
 
-pub type Score {
-  Score(
-    total: Int,
-    killed: Int,
-    timed_out: Int,
-    survived: Int,
-    errors: Int,
-    percent: Float,
-  )
-}
+pub type Score =
+  types.Score
 
 pub fn calculate(outcomes: List(Outcome)) -> Score {
-  let killed = count(outcomes, fn(value) { value == outcome.Killed })
-  let timed_out = count(outcomes, fn(value) { value == outcome.TimedOut })
-  let survived = count(outcomes, fn(value) { value == outcome.Survived })
+  let killed = count(outcomes, fn(value) { value == types.Killed })
+  let timed_out = count(outcomes, fn(value) { value == types.TimedOut })
+  let survived = count(outcomes, fn(value) { value == types.Survived })
   let total = killed + timed_out + survived
   let errors = list.length(outcomes) - total
   let percent = case total {

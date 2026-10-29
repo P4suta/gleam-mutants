@@ -5,20 +5,24 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 # Contributing
 
-Install the pinned tools and dependencies with `mise run bootstrap`. Before a
-change is submitted, run `mise run check` and `mise run test-matrix`. Mutation
-engine changes should also pass `mise run dogfood`.
+Install pinned tools and dependencies with `mise run bootstrap`.
+Run `mise run check` and `mise run test-matrix` before submitting changes.
+Mutation-engine changes also require `mise run test-integration`, `mise run test-property`, `mise run test-faults`, and `mise run dogfood`.
+Run `mise run prove` for changes to the input limits or source derivation.
+The full proof and release inventory is described in [verification contracts](docs/verification.md).
 
-Changes to discovery, compiler validation, runtime execution, or report counts
-must run the networked `mise run test-ecosystem` golden smoke (allow up to 13
-minutes). To update a corpus, review the upstream diff, replace its full commit
-SHA in `scripts/ecosystem-smoke.mjs`, run the task twice, and update expected
-counts plus the README table only when both reports and source hashes agree.
-Never float a branch/tag or weaken a count to make a transient failure pass.
-Survivors are intentional golden outcomes, so this task does not use a minimum
-score gate.
+Changes to discovery, compiler validation, runtime execution, or report counts require `mise run test-ecosystem`.
+Allow up to 13 minutes; a deadline stop supplies no passing evidence.
+To update a corpus, review the upstream diff and replace its full commit SHA in `scripts/ecosystem-smoke.mjs`.
+Run the task twice and update expected counts and the [usage table](docs/usage.md) only when both reports and source hashes agree.
+Never float a branch or tag or weaken an expected count to hide a failure.
+Expected survivors are compatibility outcomes, so this task does not use a minimum-score gate.
 
-Keep the pure domain model under `src/gleam_mutants/core`; operating-system
-operations belong behind capability records and the small platform FFI. New
-operators need byte-preservation tests, compiler-validation fixtures, and an
-operator version decision. Add SPDX headers to new files and run `reuse lint`.
+Keep pure domain logic under `src/gleam_mutants/core`.
+Operating-system operations belong behind capabilities and the platform FFI.
+New operators require byte-preservation tests, compiler-validation fixtures, and an operator-version decision.
+The supported product boundary is defined by the [ADR](docs/adr/mutation-testing-package-boundary.md).
+Add SPDX headers to new files and run the repository's REUSE check.
+
+README content is generated from `repository.toml`.
+The documentation index is [docs/README.md](docs/README.md).

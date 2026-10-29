@@ -11,11 +11,10 @@ import gleam_mutants/core/bytes
 import gleam_mutants/core/catalog.{type RejectedMutant}
 import gleam_mutants/core/mutant.{type Mutant}
 import gleam_mutants/core/operator
-import gleam_mutants/core/outcome.{
-  type Outcome, Killed, Survived, TestError, TimedOut,
-}
+import gleam_mutants/core/outcome.{type Outcome}
 import gleam_mutants/core/span
 import gleam_mutants/report.{type MutantResult, type RunReport}
+import gleam_mutants/types.{Killed, Survived, TestError, TimedOut}
 
 pub type SourceFile {
   SourceFile(path: String, source: String)

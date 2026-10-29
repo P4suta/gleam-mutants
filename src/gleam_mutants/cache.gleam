@@ -12,11 +12,13 @@ import gleam_mutants/config.{
 import gleam_mutants/core/bytes
 import gleam_mutants/core/mutant.{type Mutant}
 import gleam_mutants/core/outcome.{
-  type Outcome, type Runtime, type RuntimeOutcome, Killed, RuntimeOutcome,
-  Survived, TestError, TimedOut,
+  type Outcome, type Runtime, type RuntimeOutcome,
 }
 import gleam_mutants/core/path
 import gleam_mutants/platform
+import gleam_mutants/types.{
+  Killed, RuntimeOutcome, Survived, TestError, TimedOut,
+}
 import gleam_mutants/version
 import simplifile
 

@@ -15,48 +15,37 @@ import gleam_mutants/config.{
   DiagnosticsNone,
 }
 import gleam_mutants/core/bytes
-import gleam_mutants/core/catalog.{
-  type RejectedCandidate, type RejectedMutant, RejectedMutant,
-}
+import gleam_mutants/core/catalog.{type RejectedCandidate, type RejectedMutant}
 import gleam_mutants/core/exit_policy
 import gleam_mutants/core/interval_tree
+import gleam_mutants/core/limits
 import gleam_mutants/core/mutant.{type Mutant}
 import gleam_mutants/core/operator.{type Operator}
 import gleam_mutants/core/outcome.{
-  type Outcome, type Runtime, type RuntimeOutcome, Bun, Deno, Erlang, Killed,
-  Node, RuntimeOutcome, Survived, TestError, TimedOut,
+  type Outcome, type Runtime, type RuntimeOutcome,
 }
 import gleam_mutants/core/path
 import gleam_mutants/core/plan
 import gleam_mutants/core/score
+import gleam_mutants/error
 import gleam_mutants/pipeline
 import gleam_mutants/platform
 import gleam_mutants/project_report
-import gleam_mutants/report.{
-  type MutantResult, type RunReport, MutantResult, PolicySummary, RunReport,
-  SelectionSummary,
-}
+import gleam_mutants/report.{type MutantResult, type RunReport}
 import gleam_mutants/runtime.{type RuntimeModule}
 import gleam_mutants/snapshot.{type Snapshot}
 import gleam_mutants/stryker_html
 import gleam_mutants/stryker_report.{SourceFile}
 import gleam_mutants/test_impact
+import gleam_mutants/types.{
+  Bun, Deno, Erlang, Killed, MutantResult, Node, PolicySummary, RejectedMutant,
+  RunReport, RuntimeOutcome, SelectionSummary, Survived, TestError, TimedOut,
+}
 import gleam_mutants/workspace_lock
 import simplifile
 import tomlet
 
-/// Everything one run of the engine was asked for.
-///
-/// Every `Option` field overrides the workspace's own configuration when it is
-/// `Some`: `report_formats` replaces `report.formats` and `report_history`
-/// replaces `report.history`, so a caller that only wants a verdict — `apply
-/// --verify` is the one in this package — can run without writing a project
-/// report or storing a run the reader never asked for.
-///
-/// `annotations` is that caller's other switch. A run started by the reader
-/// annotates its survivors for GitHub Actions; a run started by another
-/// command on the reader's behalf must not, whatever that command prints,
-/// because the annotations would be interleaved into output it owns.
+/// Internal command and execution overrides.
 pub type Options {
   Options(
     root: Option(String),
@@ -80,7 +69,6 @@ pub type Options {
     log_format: String,
     help_requested: Bool,
     version_requested: Bool,
-    suggest: Bool,
   )
 }
 
@@ -270,11 +258,11 @@ pub fn default_options() -> Options {
     log_format: "text",
     help_requested: False,
     version_requested: False,
-    suggest: False,
   )
 }
 
 pub fn run(workspace: String, options: Options) -> Result(RunOutput, String) {
+  use _ <- result.try(validate_options(options))
   use lock <- result.try(workspace_lock.acquire(workspace))
   let run_result = run_locked(workspace, options, workspace_lock.run_id(lock))
   case run_result, workspace_lock.release(lock) {
@@ -479,6 +467,7 @@ pub fn list_mutants(
   options: Options,
   validate: Bool,
 ) -> Result(ListOutput, String) {
+  use _ <- result.try(validate_options(options))
   with_catalog_session(workspace, options, fn(session) {
     list_session(session, validate)
   })
@@ -628,10 +617,6 @@ fn execute(
     True -> report.save(run_report, session.workspace)
     False -> Ok("")
   })
-  case session.options.annotations, session.options.json {
-    True, False -> report.emit_github(run_report)
-    _, _ -> Nil
-  }
   let phase = pipeline.completed(prepared.phase)
   let _ = pipeline.state(phase)
   Ok(
@@ -937,9 +922,6 @@ fn validate_effective_config(config: Config) -> Result(Nil, String) {
 /// unstaged and untracked changes on top of it, so that a working tree is
 /// judged as it stands rather than as it was committed.
 ///
-/// Private: `--changed` reaches every caller through `run` and `list_mutants`,
-/// which own the selection this narrows, and `suggest` asks them for it rather
-/// than resolving a git reference of its own.
 fn resolve_changed(
   workspace: String,
   reference: Option(String),
@@ -958,6 +940,7 @@ fn resolve_changed(
               [],
               30_000,
             )
+          use _ <- result.try(check_process(merge_base))
           use base <- result.try(case merge_base.status {
             0 -> Ok(string.trim(merge_base.stdout))
             _ ->
@@ -1015,6 +998,7 @@ fn git_changed_paths(
   arguments: List(String),
 ) -> Result(List(String), String) {
   let process = platform.run_process("git", arguments, workspace, [], 30_000)
+  use _ <- result.try(check_process(process))
   case process.status {
     0 -> Ok(string.split(process.stdout, "\u{0}"))
     _ ->
@@ -1071,50 +1055,7 @@ pub fn discover_catalogs(
   |> Ok
 }
 
-/// Grants a snapshot the permissions a probe run on Deno needs.
-///
-/// Deno refuses what it was not asked to allow, and the snapshot carries the
-/// reader's own `gleam.toml`, which has no reason to mention a probe. A probe
-/// reads the sources it was generated beside and appends its verdicts to a
-/// file inside the same copy; the switch it turns is a global rather than an
-/// environment variable, so nothing is asked of the environment.
-pub fn grant_deno_probe_permissions(root: String) -> Result(Nil, String) {
-  let target = path.join(root, "gleam.toml")
-  use source <- result.try(
-    simplifile.read(target) |> result.map_error(simplifile.describe_error),
-  )
-  use document <- result.try(
-    tomlet.parse(source)
-    |> result.map_error(fn(error) {
-      "could not parse snapshot gleam.toml for Deno permissions: "
-      <> string.inspect(error)
-    }),
-  )
-  use document <- result.try(
-    tomlet.set_bool(document, ["javascript", "deno", "allow_read"], True)
-    |> result.map_error(fn(_) { "could not set Deno read permission" }),
-  )
-  use document <- result.try(
-    tomlet.set_bool(document, ["javascript", "deno", "allow_write"], True)
-    |> result.map_error(fn(_) { "could not set Deno write permission" }),
-  )
-  // The switch a probe turns is a global, but the module that reads it falls
-  // back to the environment for the sake of a `run`, and Deno raises rather
-  // than answering where it was not asked.
-  use document <- result.try(
-    tomlet.set_array(document, ["javascript", "deno", "allow_env"], [
-      tomlet.StringValue("GLEAM_MUTANTS_ACTIVE"),
-      tomlet.StringValue("GLEAM_MUTANTS_RUNTIME"),
-      tomlet.StringValue("GLEAM_MUTANTS_TEST_IMPACT_FILE"),
-      tomlet.StringValue("GLEAM_MUTANTS_TEST_SELECTION_FILE"),
-      tomlet.StringValue("GLEAM_MUTANTS_OBSERVED_DIR"),
-    ])
-    |> result.map_error(fn(_) { "could not set Deno env permission" }),
-  )
-  simplifile.write(target, tomlet.to_string(document))
-  |> result.map_error(simplifile.describe_error)
-}
-
+/// Allows mutation runtime observation only inside the disposable snapshot.
 fn configure_deno_permissions(
   root: String,
   runtimes: List(Runtime),
@@ -1147,12 +1088,12 @@ fn configure_deno_permissions(
         |> result.map_error(fn(_) { "could not set Deno write permission" }),
       )
       let environment_names = case test_selection {
-        config.TestSelectionFull -> [
+        types.TestSelectionFull -> [
           tomlet.StringValue("GLEAM_MUTANTS_ACTIVE"),
           tomlet.StringValue("GLEAM_MUTANTS_RUNTIME"),
           tomlet.StringValue("GLEAM_MUTANTS_OBSERVED_DIR"),
         ]
-        config.TestSelectionAuto -> [
+        types.TestSelectionAuto -> [
           tomlet.StringValue("GLEAM_MUTANTS_ACTIVE"),
           tomlet.StringValue("GLEAM_MUTANTS_RUNTIME"),
           tomlet.StringValue("GLEAM_MUTANTS_TEST_IMPACT_FILE"),
@@ -1201,6 +1142,7 @@ fn run_baseline(
           baseline_timeout,
         )
       let duration = platform.monotonic_milliseconds() - started
+      use _ <- result.try(check_process(process_result))
       case process_result.timed_out, process_result.status {
         True, _ ->
           Error("baseline timed out on " <> outcome.runtime_name(runtime))
@@ -1263,14 +1205,14 @@ fn run_instrumented_baseline(
           <> ".json",
       )
     use environment <- result.try(case config.test_selection {
-      config.TestSelectionFull ->
+      types.TestSelectionFull ->
         Ok([
           #("GLEAM_MUTANTS_ACTIVE", ""),
           #("GLEAM_MUTANTS_TEST_IMPACT_FILE", ""),
           #("GLEAM_MUTANTS_TEST_SELECTION_FILE", ""),
           #("GLEAM_MUTANTS_OBSERVED_DIR", observed),
         ])
-      config.TestSelectionAuto -> {
+      types.TestSelectionAuto -> {
         use _ <- result.try(
           simplifile.create_directory_all(path.parent(impact_path))
           |> result.map_error(simplifile.describe_error),
@@ -1289,6 +1231,7 @@ fn run_instrumented_baseline(
     })
     let process =
       run_test(root, runtime, config.test_command, environment, timeout_ms)
+    use _ <- result.try(check_process(process))
     use _ <- result.try(case process.timed_out, process.status {
       True, _ -> Error("instrumented baseline timed out on " <> runtime_name)
       False, 0 -> Ok(Nil)
@@ -1303,9 +1246,9 @@ fn run_instrumented_baseline(
     })
     let never_differed = read_observations(observed, compared)
     case config.test_selection {
-      config.TestSelectionFull ->
+      types.TestSelectionFull ->
         Ok(RuntimeImpact(runtime, ImpactDisabled, never_differed))
-      config.TestSelectionAuto ->
+      types.TestSelectionAuto ->
         Ok(RuntimeImpact(
           runtime,
           read_impact_manifest(impact_path, runtime_name, mutants),
@@ -1360,31 +1303,6 @@ fn read_impact_manifest(
           }
       }
   }
-}
-
-/// Compile-checks `mutants` against `base`, splitting them into the ones that
-/// build and the ones that do not.
-///
-/// This is the check `run` and `list --validate` already make, exposed so that
-/// the differential probe can make it too: a probe instruments a whole file's
-/// mutants at once, and a single type-invalid one — a pipeline stage deletion,
-/// almost always — otherwise takes the entire file down with it. The cost is
-/// one extra build when everything is valid; only a failure pays for the
-/// bisect that isolates which mutants are to blame.
-///
-/// Unlike `run` and `list --validate`, the caller here has not built `base`
-/// yet, so `base_compiles` is `False`: a workspace that does not compile makes
-/// every batch of it invalid, and a bisect told only that a batch failed would
-/// blame each mutant of that workspace in turn — one full copy and one cold
-/// build each — for a fault none of them has.
-pub fn validate_mutants(
-  base: Snapshot,
-  catalogs: List(SourceCatalog),
-  mutants: List(Mutant),
-  runtimes: List(Runtime),
-  runtime_module: RuntimeModule,
-) -> Result(#(List(Mutant), List(RejectedMutant)), String) {
-  delta_validate(base, catalogs, mutants, runtimes, runtime_module, False)
 }
 
 /// Splits `mutants` into the ones that build and the ones that do not.
@@ -1499,7 +1417,12 @@ fn validate_batch(
       |> result.map_error(CandidateInvalid),
     )
     build_targets(snapshot.root(worker), runtimes)
-    |> result.map_error(CandidateInvalid)
+    |> result.map_error(fn(message) {
+      case error.interruption_code(message) {
+        Some(_) -> ValidationInfrastructure(message)
+        None -> CandidateInvalid(message)
+      }
+    })
   }
   let normalize = fn(error) {
     normalize_validation_diagnostic(error, snapshot.root(worker))
@@ -1661,22 +1584,6 @@ fn is_leading_comment_or_blank(line: String) -> Bool {
   trimmed == "" || string.starts_with(trimmed, "//")
 }
 
-/// Writes generated source files (path relative to root, content) into a
-/// snapshot, creating parent directories.
-pub fn write_generated_files(
-  root: String,
-  files: List(#(String, String)),
-) -> Result(Nil, String) {
-  use #(relative, contents) <- list.try_each(files)
-  let target = path.join(root, relative)
-  use _ <- result.try(
-    simplifile.create_directory_all(path.parent(target))
-    |> result.map_error(simplifile.describe_error),
-  )
-  simplifile.write(target, contents)
-  |> result.map_error(simplifile.describe_error)
-}
-
 /// Compiles the project at `root` once per distinct target of `runtimes`.
 pub fn build_targets(
   root: String,
@@ -1692,6 +1599,7 @@ pub fn build_targets(
       [],
       300_000,
     )
+  use _ <- result.try(check_process(process_result))
   case process_result.timed_out, process_result.status {
     True, _ -> Error("candidate validation timed out for " <> target)
     False, 0 -> Ok(Nil)
@@ -2027,35 +1935,45 @@ fn prepare_runtime_selections(
       ..adaptive.details
     ]
   }
-  let #(modes, details) =
+  use #(modes, details) <- result.try(
     order
     |> list.reverse
-    |> list.fold(#(modes, details), fn(state, key) {
+    |> list.try_fold(#(modes, details), fn(state, key) {
       let assert Ok(group) = dict.get(groups, key)
       let decision = partial_baseline(prepared, runtime, group)
       case decision {
-        Ok(Nil) -> #(
-          list.fold(group.mutants, state.0, fn(modes, mutant_id) {
-            dict.insert(
-              modes,
-              mode_key_id(mutant_id, runtime),
-              NarrowedSuite(group.runner, group.selectors),
-            )
-          }),
-          state.1,
-        )
-        Error(reason) -> #(
-          list.fold(group.mutants, state.0, fn(modes, mutant_id) {
-            dict.insert(
-              modes,
-              mode_key_id(mutant_id, runtime),
-              FallbackSuite(reason),
-            )
-          }),
-          [runtime_name <> ": fallback: " <> reason, ..state.1],
-        )
+        Ok(Nil) ->
+          Ok(#(
+            list.fold(group.mutants, state.0, fn(modes, mutant_id) {
+              dict.insert(
+                modes,
+                mode_key_id(mutant_id, runtime),
+                NarrowedSuite(group.runner, group.selectors),
+              )
+            }),
+            state.1,
+          ))
+        Error(reason) -> {
+          case error.interruption_code(reason) {
+            Some(_) -> Error(reason)
+            None ->
+              Ok(
+                #(
+                  list.fold(group.mutants, state.0, fn(modes, mutant_id) {
+                    dict.insert(
+                      modes,
+                      mode_key_id(mutant_id, runtime),
+                      FallbackSuite(reason),
+                    )
+                  }),
+                  [runtime_name <> ": fallback: " <> reason, ..state.1],
+                ),
+              )
+          }
+        }
       }
-    })
+    }),
+  )
   Ok(AdaptivePlan(modes, details))
 }
 
@@ -2091,6 +2009,7 @@ fn partial_baseline(
       ],
       prepared.timeout_ms,
     )
+  use _ <- result.try(check_process(process))
   case process.timed_out, process.status {
     True, _ -> Error("partial-suite baseline timed out")
     False, 0 -> Ok(Nil)
@@ -2165,23 +2084,10 @@ fn cache_context(prepared: Prepared) -> Result(String, String) {
     list.map(prepared.config.cache_env, fn(name) {
       name <> "\u{0}" <> platform.env(name)
     })
-  let runtime_identities =
-    list.map(prepared.runtimes, fn(runtime) {
-      let executable = outcome.runtime_name(runtime)
-      let version =
-        platform.run_process(
-          executable,
-          ["--version"],
-          snapshot.root(prepared.snapshot),
-          [],
-          10_000,
-        )
-      executable
-      <> "\u{0}"
-      <> version.stdout
-      <> version.stderr
-      <> int.to_string(version.status)
-    })
+  use runtime_identities <- result.try(toolchain_versions(
+    snapshot.root(prepared.snapshot),
+    prepared.runtimes,
+  ))
   Ok(
     [
       "gleam-mutants-cache-context-v1",
@@ -2197,6 +2103,44 @@ fn cache_context(prepared: Prepared) -> Result(String, String) {
     |> string.concat
     |> bytes.sha256,
   )
+}
+
+pub fn toolchain_versions(
+  root: String,
+  runtimes: List(Runtime),
+) -> Result(List(String), String) {
+  let commands = [
+    #("gleam", ["--version"]),
+    ..list.map(runtimes, fn(runtime) {
+      case runtime {
+        Erlang -> #("erl", [
+          "-noshell",
+          "-eval",
+          "io:put_chars(erlang:system_info(system_version)), halt().",
+        ])
+        _ -> #(outcome.runtime_name(runtime), ["--version"])
+      }
+    })
+  ]
+  list.try_map(commands, fn(command) {
+    let version = platform.run_process(command.0, command.1, root, [], 10_000)
+    use _ <- result.try(check_process(version))
+    case
+      version.status == 0
+      && !version.timed_out
+      && string.trim(version.stdout) != ""
+    {
+      True -> Ok(command.0 <> "\u{0}" <> string.trim(version.stdout))
+      False ->
+        Error(
+          "could not identify toolchain executable "
+          <> command.0
+          <> ": "
+          <> version.stdout
+          <> version.stderr,
+        )
+    }
+  })
 }
 
 fn run_mutant_waves(
@@ -2334,6 +2278,7 @@ fn run_runtime_phases(
         pending
         |> list.map(fn(run) { run.request })
         |> platform.run_process_batch(config.jobs)
+      use _ <- result.try(check_batch(preliminary_results))
       use preliminary <- result.try(
         zip_completed(pending, preliminary_results, []),
       )
@@ -2351,6 +2296,7 @@ fn run_runtime_phases(
         confirmations
         |> list.map(fn(run) { run.request })
         |> platform.run_process_batch(config.jobs)
+      use _ <- result.try(check_batch(confirmation_results))
       use confirmed <- result.try(
         zip_completed(confirmations, confirmation_results, []),
       )
@@ -2793,4 +2739,46 @@ fn diagnostic_output(
     DiagnosticsErrors, TimedOut | DiagnosticsErrors, TestError(_) -> output
     DiagnosticsErrors, Killed | DiagnosticsErrors, Survived -> ""
   }
+}
+
+pub fn validate_options(options: Options) -> Result(Nil, String) {
+  use _ <- result.try(case options.jobs {
+    None -> Ok(Nil)
+    Some(jobs) ->
+      case limits.valid_jobs(jobs) {
+        True -> Ok(Nil)
+        False -> Error("jobs must be between 1 and 32")
+      }
+  })
+  use _ <- result.try(case options.timeout_ms {
+    None -> Ok(Nil)
+    Some(timeout) ->
+      case limits.valid_timeout(timeout) {
+        True -> Ok(Nil)
+        False -> Error("timeout_ms must be between 100 and 86400000")
+      }
+  })
+  case options.test_command {
+    Some([]) -> Error("test command cannot be empty")
+    Some(["", ..]) -> Error("test executable cannot be empty")
+    _ -> Ok(Nil)
+  }
+}
+
+fn check_process(process: platform.ProcessResult) -> Result(Nil, String) {
+  case limits.interrupted(process.status) {
+    True ->
+      Error(
+        error.interruption_message(process.status)
+        <> "; output:\n"
+        <> truncate(process.stdout <> process.stderr),
+      )
+    False -> Ok(Nil)
+  }
+}
+
+fn check_batch(
+  results: List(platform.TimedProcessResult),
+) -> Result(Nil, String) {
+  list.try_each(results, fn(result) { check_process(result.process) })
 }

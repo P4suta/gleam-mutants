@@ -6,11 +6,10 @@ import gleam/option.{Some}
 import gleam/result
 import gleam/string
 import gleam_mutants/cache
-import gleam_mutants/config
-import gleam_mutants/core/outcome
 import gleam_mutants/core/path
 import gleam_mutants/engine
 import gleam_mutants/platform
+import gleam_mutants/types
 import simplifile
 
 const fixture = "fixtures/adaptive_project"
@@ -33,13 +32,13 @@ pub fn main() {
   let assert Ok(automatic) =
     engine.run(
       fixture,
-      engine.Options(..common, test_selection: Some(config.TestSelectionAuto)),
+      engine.Options(..common, test_selection: Some(types.TestSelectionAuto)),
     )
   let invocations_before_cache = invocation_count(counter)
   let assert Ok(cached) =
     engine.run(
       fixture,
-      engine.Options(..common, test_selection: Some(config.TestSelectionAuto)),
+      engine.Options(..common, test_selection: Some(types.TestSelectionAuto)),
     )
   let cache_run_invocations =
     invocation_count(counter) - invocations_before_cache
@@ -48,7 +47,7 @@ pub fn main() {
       fixture,
       engine.Options(
         ..common,
-        test_selection: Some(config.TestSelectionFull),
+        test_selection: Some(types.TestSelectionFull),
         test_command: Some(["node", "adaptive-runner.mjs", "full"]),
       ),
     )
@@ -58,7 +57,7 @@ pub fn main() {
       engine.Options(
         ..common,
         matrix: True,
-        test_selection: Some(config.TestSelectionAuto),
+        test_selection: Some(types.TestSelectionAuto),
         test_command: Some(["node", "adaptive-runner.mjs", "matrix-auto"]),
       ),
     )
@@ -68,7 +67,7 @@ pub fn main() {
       engine.Options(
         ..common,
         matrix: True,
-        test_selection: Some(config.TestSelectionFull),
+        test_selection: Some(types.TestSelectionFull),
         test_command: Some(["node", "adaptive-runner.mjs", "full", "matrix"]),
       ),
     )
@@ -86,7 +85,7 @@ pub fn main() {
   assert list.length(auto_results) == 5
   assert auto_results == full_results
   assert list.all(automatic.report.results, fn(item) {
-    item.aggregate == outcome.Killed
+    item.aggregate == types.Killed
   })
   assert automatic.report.score == complete_suite.report.score
   assert automatic.exit_code == complete_suite.exit_code

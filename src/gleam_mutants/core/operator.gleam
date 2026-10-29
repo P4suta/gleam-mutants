@@ -3,24 +3,15 @@
 
 import gleam/list
 import gleam/result
-
-pub type Operator {
-  BooleanLiteral
-  BooleanNegation
-  BooleanConnective
-  Equality
-  ComparisonBoundary
-  IntegerArithmetic
-  FloatArithmetic
-  IntegerNeutral
-  FloatNeutral
-  StringNeutral
-  ListNeutral
-  OptionNeutral
-  PipelineStageDeletion
-  ConcatenationOperand
-  IntegerNegation
+import gleam_mutants/types.{
+  BooleanConnective, BooleanLiteral, BooleanNegation, ComparisonBoundary,
+  ConcatenationOperand, Equality, FloatArithmetic, FloatNeutral,
+  IntegerArithmetic, IntegerNegation, IntegerNeutral, ListNeutral, OptionNeutral,
+  PipelineStageDeletion, StringNeutral,
 }
+
+pub type Operator =
+  types.Operator
 
 pub fn all() -> List(Operator) {
   [

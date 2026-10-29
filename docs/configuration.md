@@ -5,8 +5,8 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 # Configuration
 
-Configuration belongs in `gleam.toml` and is decoded strictly. Unknown keys and
-invalid values produce positioned errors.
+Configuration belongs in `gleam.toml` and is decoded strictly.
+Unknown keys and invalid values produce positioned errors.
 
 ```toml
 [tools.gleam_mutants]
@@ -18,8 +18,8 @@ exclude = ["test/**", "dev/**", "build/**"]
 operators = ["boolean-literal", "integer-arithmetic"]
 
 [tools.gleam_mutants.test]
-target = "auto"            # auto, erlang, javascript
-runtime = "auto"           # auto, erlang, node, deno, bun
+target = "auto"  # auto, erlang, javascript
+runtime = "auto"  # auto, erlang, node, deno, bun
 timeout_ms = 15000
 baseline_runs = 1
 command = ["gleam", "test"]
@@ -29,11 +29,9 @@ jobs = 4
 test_selection = "auto"  # auto, full
 
 [tools.gleam_mutants.cache]
-mode = "auto"              # auto, off, read-only, write-only, read-write
-keep_snapshots = 4         # workspaces whose copy survives between runs; 0 declines
-# key = "custom-suite-v1"  # required for persistent custom-command caching
-# files = ["test/support.json"]
-# env = ["FEATURE_MODE"]
+mode = "auto"  # auto, off, read-only, write-only, read-write
+keep_snapshots = 4
+# key = "custom-suite-v1" files = ["test/support.json"] env = ["FEATURE_MODE"]
 
 [tools.gleam_mutants.policy]
 strict = false
@@ -47,99 +45,40 @@ history = true
 diagnostics = "errors"
 high = 80
 low = 60
-
-# Read by the `suggest` and `explain` commands.
-[tools.gleam_mutants.suggest]
-seed = 1
-max_cases = 200
-max_shrinks = 500
-call_timeout_ms = 1000
-probe_timeout_ms = 120000
-assert_style = "assert"      # assert, should
-# exclude_functions = ["main"]
 ```
 
-Precedence is built-in defaults, then `gleam.toml`, then CLI flags. `init` edits
-the existing TOML through Tomlet, preserving comments and ordering, and is
-idempotent. `--test-command` consumes the remaining argv verbatim.
+Precedence is built-in defaults, then `gleam.toml`, then CLI or API overrides.
+`init` preserves TOML comments and ordering and is idempotent.
+`--test-command` consumes the remaining arguments verbatim.
 
-`jobs` defaults to `min(logical CPU, 8)` and explicit values must be 1–32.
-`test_selection = "auto"` lets a compatible test runner execute impacted tests
-first while conservatively confirming non-kills with the full suite. `full`
-disables the impact protocol and always runs the complete suite.
-Explicit timeouts must be 100ms–24h. CLI durations accept `30000ms`, `30s`,
-`1.5s`, `1m`, `1h`, and unitless integer seconds; unknown units, unitless
-decimals, NaN, and Infinity are rejected. The derived timeout is five times the
-baseline clamped to 10 seconds–30 minutes. Cache `auto` is read-write only for
-the exact `gleam test` command and is off for custom commands.
+Jobs default to `min(logical CPU, 8)`; explicit values must be 1–32.
+Explicit timeouts must be 100ms–24h.
+CLI durations accept `30000ms`, `30s`, `1.5s`, `1m`, `1h`, and unitless integer seconds.
+Unknown units, unitless decimals, NaN, and Infinity are rejected.
+Derived timeouts are five times the baseline, clamped to ten seconds–30 minutes.
 
-`list` applies mutation selection configuration but deliberately does not build,
-instrument, run a baseline, invoke the configured test command, read/write the
-outcome cache, or create reports/history. Its List JSON v1 output has required
-`validated: false`. `list --validate` additionally builds the unmutated snapshot
-once and compiler-validates all candidates, returning `validated: true` plus
-compiler rejections; it still never invokes the test command. `run` alone uses
-the complete execution configuration and all safety gates.
+`test_selection = "auto"` permits a compatible provider to execute impacted tests first.
+Unsupported, invalid, incomplete, or missing evidence falls back to the full suite.
+Each narrowed selector set must pass an unmutated baseline.
+A narrowed survive, timeout, or test error is confirmed with the full suite.
+`full` disables the impact protocol.
+The protocol does not require a particular test runner.
 
-`report.directory` must be a safe relative subdirectory of the workspace. It
-cannot overlap mutation target sources and no existing component may be a
-symlink, junction, special file, or non-directory. Thresholds are integers and
-must satisfy `0 <= low <= high <= 100`; they only control Mutation Testing
-Elements colours and are independent of `policy.minimum_score`.
+Cache `auto` is read-write only for the exact `gleam test` command.
+Custom commands default to no outcome cache.
+Explicit persistent caching for a custom command requires `cache.key`.
+Declare external file and environment inputs through `cache.files` and `cache.env`.
+The cache context includes the Gleam compiler and selected runtime versions.
+`keep_snapshots` controls retained workspace copies; zero disables retention.
 
-`suggest` configures the differential probe that the `suggest` and `explain`
-commands run; `run`, `list`, and reporting ignore it. `seed` fixes the input
-search, so that a rerun proposes the same tests. `max_cases` (1–100000) bounds
-the inputs tried per mutant and `max_shrinks` (0–100000) the shrinking steps
-taken once an input separates one. `call_timeout_ms` (10ms–10m) bounds a
-single call into the module under test and `probe_timeout_ms` (100ms–24h, the
-range `--budget` takes) one probe process, of which there is one per module
-under test. `assert_style` picks the form of
-the generated tests: `assert` writes `assert f(x) == y`, `should` writes
-`f(x) |> should.equal(y)`. `exclude_functions` names functions the probe
-leaves alone: they are never compiled into a probe, never called and never
-timed, so a function that is unsafe or slow to call costs the run nothing. Each
-one is reported as skipped and each of its mutants as unsupported, so nothing
-the run selected goes unaccounted for. `--seed`,
-`--max-cases`, `--max-shrinks`, `--budget` and `--style` override the matching
-keys for one run. `init` never writes this section; the defaults above apply
-until you add it yourself. See [suggesting tests](suggest.md) for what the
-probe does with these values, which statuses it reports, and what `apply`
-writes.
+`list` does not build, invoke tests, access the outcome cache, or write reports.
+`list --validate` adds compilation but never invokes the test command.
+`run` uses the complete execution pipeline.
 
-`exclude_functions` is the setting that bounds what a probe does to the machine
-it runs on, and it is worth filling in before the first `suggest`. The probe
-calls every public function of the selected modules for real, with generated
-arguments, in the environment the command was run in — the snapshot isolates
-source, not effects — so name here anything that writes or deletes files,
-spawns a subprocess, opens a socket, reads the clock or the environment, or is
-simply expensive to call. Matching is by bare function name across every
-selected module, so `exclude_functions = ["main", "clean"]` excludes every
-`main` and every `clean` the run selected, and a name no selected module
-defines is not an error. What it costs is coverage: those mutants are reported
-as unsupported rather than as tests you could write. `--function` narrows the
-opposite way, to one name, for one run. Neither is enforcement — an excluded
-function's effects still happen when a probed function calls it — so see [side
-effects](suggest.md#side-effects) before probing code you do not know.
+The report directory must be a safe relative subdirectory and cannot overlap mutation sources.
+Existing path components must be ordinary directories without symlinks or junctions.
+Thresholds must satisfy `0 <= low <= high <= 100`.
+They control the existing report renderer and are independent of `policy.minimum_score`.
+The library disables report persistence unless `write_reports` is explicitly enabled.
 
-`run` also keeps its copy of the workspace between runs, beside the outcome
-cache and under the same workspace key. Gleam decides what to recompile by
-content rather than by timestamp, so a copy written over rather than made anew
-leaves the compiler exactly the work the edit caused: a run that changes one
-module compiles that module, where every run used to compile the package and
-every dependency from cold. The copy is held to the workspace byte for byte
-every time it is written -- anything the workspace no longer has is removed, and
-a copy that does not come back matching is thrown away and made fresh -- so it
-cannot change a verdict, only what a verdict costs. `cache = off` declines it,
-`cache status` names it and says how many bytes it holds, and `cache clean`
-removes it along with the outcomes. One copy is a whole workspace and its build
-directory, so `keep_snapshots` bounds how many workspaces keep one: every run
-removes the copies of all but that many most recently used, and
-`keep_snapshots = 0` declines the copy entirely.
-
-Enabled project formats atomically replace fixed `mutation.json` and
-`mutation.html` targets in that directory. `formats = []` or `--report none`
-disables project reports without deleting existing files; `history = false`
-also disables native history. Reports may contain original source and error
-diagnostics. The report directory is excluded from snapshot manifests and
-cache fingerprints. `.gitignore` changes only with explicit `init --gitignore`.
+Remove obsolete generation settings according to the [migration guide](migration.md).

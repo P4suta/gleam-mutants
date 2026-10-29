@@ -7,6 +7,7 @@ import gleam/string
 import gleam_mutants/core/bytes
 import gleam_mutants/core/operator.{type Operator}
 import gleam_mutants/core/span.{type Span}
+import gleam_mutants/types.{Mutant}
 
 pub type Candidate {
   Candidate(
@@ -18,23 +19,8 @@ pub type Candidate {
   )
 }
 
-pub type Mutant {
-  Mutant(
-    id: String,
-    display_id: String,
-    path: String,
-    operator: Operator,
-    operator_version: Int,
-    source_digest: String,
-    span: Span,
-    original_digest: String,
-    replacement_digest: String,
-    original: String,
-    replacement: String,
-    line: Int,
-    column: Int,
-  )
-}
+pub type Mutant =
+  types.Mutant
 
 /// File-wide data shared by every candidate discovered from one source.
 ///

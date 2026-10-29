@@ -12,7 +12,6 @@
   "homepage": "https://github.com/P4suta/gleam-mutants#readme",
   "scripts": {
     "vendor:mte": "node scripts/vendor-mte.mjs",
-    "embed:pbt": "node scripts/embed-pbt.mjs",
     "test:report-schema": "node scripts/check-schema.mjs",
     "test:report-html": "playwright test"
   },

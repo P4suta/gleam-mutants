@@ -4,18 +4,15 @@
 import gleam/json
 import gleam/option.{None}
 import gleam/string
-import gleam_mutants/core/catalog.{RejectedMutant}
 import gleam_mutants/core/mutant.{Candidate}
-import gleam_mutants/core/operator
-import gleam_mutants/core/outcome.{
-  Erlang, Killed, Node, RuntimeOutcome, Survived, TestError, TimedOut,
-}
 import gleam_mutants/core/score
 import gleam_mutants/core/span
-import gleam_mutants/report.{
-  MutantResult, PolicySummary, RunReport, SelectionSummary,
-}
+import gleam_mutants/report
 import gleam_mutants/stryker_report.{SourceFile}
+import gleam_mutants/types.{
+  Erlang, Killed, MutantResult, Node, PolicySummary, RejectedMutant, RunReport,
+  RuntimeOutcome, SelectionSummary, Survived, TestError, TimedOut,
+}
 
 pub fn projection_maps_sorts_and_uses_utf16_locations_test() {
   let source = "// first\r\npub const 😀x = 10\r\n"
@@ -25,7 +22,7 @@ pub fn projection_maps_sorts_and_uses_utf16_locations_test() {
       source,
       Candidate(
         "src\\unicode.gleam",
-        operator.IntegerNeutral,
+        types.IntegerNeutral,
         span.unsafe_new(ten_start, ten_start + 2),
         "10",
         "0",
@@ -37,7 +34,7 @@ pub fn projection_maps_sorts_and_uses_utf16_locations_test() {
       source,
       Candidate(
         "src/unicode.gleam",
-        operator.StringNeutral,
+        types.StringNeutral,
         span.unsafe_new(emoji_start, emoji_start + 4),
         "😀",
         "\"\"",
@@ -48,7 +45,7 @@ pub fn projection_maps_sorts_and_uses_utf16_locations_test() {
       source,
       Candidate(
         "src/unicode.gleam",
-        operator.IntegerArithmetic,
+        types.IntegerArithmetic,
         span.unsafe_new(ten_start, ten_start + 2),
         "10",
         "-1",
@@ -127,7 +124,7 @@ pub fn projection_maps_runtime_error_without_changing_native_wire_test() {
       source,
       Candidate(
         "src/error.gleam",
-        operator.IntegerNeutral,
+        types.IntegerNeutral,
         span.unsafe_new(start, start + 1),
         "1",
         "0",
@@ -146,7 +143,7 @@ pub fn projection_maps_runtime_error_without_changing_native_wire_test() {
       source,
       Candidate(
         "src/error.gleam",
-        operator.IntegerNeutral,
+        types.IntegerNeutral,
         span.unsafe_new(timeout_start, timeout_start + 1),
         "2",
         "0",

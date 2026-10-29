@@ -19,55 +19,67 @@ const firstSmokeDelayMs = 2000;
 const longestSmokeDelayMs = 60_000;
 const version = fs.readFileSync(path.join(root, "VERSION"), "utf8").trim();
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
-  throw new Error(`VERSION is not a valid semantic version: ${version}`);
+	throw new Error(`VERSION is not a valid semantic version: ${version}`);
 }
 const gleamToml = fs.readFileSync(path.join(root, "gleam.toml"), "utf8");
 const versionMatch = gleamToml.match(/^version\s*=\s*"([^"]+)"/m);
 if (!versionMatch) throw new Error("gleam.toml package version is missing");
-if (versionMatch[1] !== version) throw new Error("VERSION and gleam.toml package version differ");
-const strykerSchema = JSON.parse(fs.readFileSync(path.join(root, "schema", "mutation-testing-report-schema-3.9.0.json"), "utf8"));
-const validateStryker = new Ajv({ allErrors: true, strict: false, validateFormats: false }).compile(strykerSchema);
+if (versionMatch[1] !== version)
+	throw new Error("VERSION and gleam.toml package version differ");
+const strykerSchema = JSON.parse(
+	fs.readFileSync(
+		path.join(root, "schema", "mutation-testing-report-schema-3.9.0.json"),
+		"utf8",
+	),
+);
+const validateStryker = new Ajv({
+	allErrors: true,
+	strict: false,
+	validateFormats: false,
+}).compile(strykerSchema);
 const fixedEnvironment = {
-  ...process.env,
-  SOURCE_DATE_EPOCH: process.env.SOURCE_DATE_EPOCH || "0",
-  npm_config_audit: "false",
-  npm_config_fund: "false",
-  npm_config_provenance: "false",
+	...process.env,
+	SOURCE_DATE_EPOCH: process.env.SOURCE_DATE_EPOCH || "0",
+	npm_config_audit: "false",
+	npm_config_fund: "false",
+	npm_config_provenance: "false",
 };
 
 function command(name, args) {
-  if (name !== "npm") return [name, args];
-  const bundledNpm = path.join(
-    path.dirname(process.execPath),
-    "node_modules",
-    "npm",
-    "bin",
-    "npm-cli.js",
-  );
-  if (fs.existsSync(bundledNpm)) return [process.execPath, [bundledNpm, ...args]];
+	if (name !== "npm") return [name, args];
+	const bundledNpm = path.join(
+		path.dirname(process.execPath),
+		"node_modules",
+		"npm",
+		"bin",
+		"npm-cli.js",
+	);
+	if (fs.existsSync(bundledNpm))
+		return [process.execPath, [bundledNpm, ...args]];
 
-  // Some hermetic Node distributions (including mise's Linux builds) do not
-  // bundle npm. In those environments npm is still available on PATH because
-  // the workflow uses it for `npm ci`; use that installation instead of
-  // assuming a Node-local npm tree.
-  return [process.platform === "win32" ? "npm.cmd" : "npm", args];
+	// Some hermetic Node distributions (including mise's Linux builds) do not bundle npm.
+	// In those environments npm is still available on PATH because the workflow uses it for `npm ci`; use that installation instead of assuming a Node-local npm tree.
+	return [process.platform === "win32" ? "npm.cmd" : "npm", args];
 }
 
 function run(name, args, cwd = root, options = {}) {
-  const [program, programArguments] = command(name, args);
-  const result = childProcess.spawnSync(program, programArguments, {
-    cwd,
-    env: fixedEnvironment,
-    encoding: "utf8",
-    stdio: options.capture ? "pipe" : "inherit",
-    shell: false,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    if (options.capture) process.stderr.write((result.stdout || "") + (result.stderr || ""));
-    throw new Error(`${name} ${args.join(" ")} failed with exit ${result.status}`);
-  }
-  return (result.stdout || "").trim();
+	const [program, programArguments] = command(name, args);
+	const result = childProcess.spawnSync(program, programArguments, {
+		cwd,
+		env: fixedEnvironment,
+		encoding: "utf8",
+		stdio: options.capture ? "pipe" : "inherit",
+		shell: false,
+	});
+	if (result.error) throw result.error;
+	if (result.status !== 0) {
+		if (options.capture)
+			process.stderr.write((result.stdout || "") + (result.stderr || ""));
+		throw new Error(
+			`${name} ${args.join(" ")} failed with exit ${result.status}`,
+		);
+	}
+	return (result.stdout || "").trim();
 }
 
 /// Whether a smoke failed because Hex would not answer, and nothing else.
@@ -77,8 +89,11 @@ function run(name, args, cwd = root, options = {}) {
 /// prints `timed out 0` in its own summary, so any failing smoke would look
 /// retryable. These two phrases are Gleam's, and a mutant cannot produce them.
 function hexRefused(output) {
-  const text = output.toLowerCase();
-  return text.includes("hex api failure") || text.includes("rate limit for the hex api");
+	const text = output.toLowerCase();
+	return (
+		text.includes("hex api failure") ||
+		text.includes("rate limit for the hex api")
+	);
 }
 
 /// A smoke's own mutation run, repeated past a Hex API that is refusing.
@@ -90,187 +105,221 @@ function hexRefused(output) {
 /// hosted runner shares the refusal with everyone else on that host. Waiting
 /// answers it. A smoke that fails for any other reason fails here and now.
 function smokeRun(name, args, cwd) {
-  for (let attempt = 1; attempt <= smokeAttempts; attempt += 1) {
-    const [program, programArguments] = command(name, args);
-    const result = childProcess.spawnSync(program, programArguments, {
-      cwd,
-      env: fixedEnvironment,
-      encoding: "utf8",
-      stdio: "pipe",
-      shell: false,
-      maxBuffer: 32 * 1024 * 1024,
-    });
-    if (result.error) throw result.error;
-    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-    process.stdout.write(output);
-    if (result.status === 0) return;
-    if (attempt === smokeAttempts || !hexRefused(output)) {
-      throw new Error(`${name} ${args.join(" ")} failed with exit ${result.status}`);
-    }
-    const delay = Math.min(firstSmokeDelayMs * 2 ** (attempt - 1), longestSmokeDelayMs);
-    process.stdout.write(`${name}: Hex would not answer the snapshot; retrying in ${delay}ms\n`);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
-  }
+	for (let attempt = 1; attempt <= smokeAttempts; attempt += 1) {
+		const [program, programArguments] = command(name, args);
+		const result = childProcess.spawnSync(program, programArguments, {
+			cwd,
+			env: fixedEnvironment,
+			encoding: "utf8",
+			stdio: "pipe",
+			shell: false,
+			maxBuffer: 32 * 1024 * 1024,
+		});
+		if (result.error) throw result.error;
+		const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+		process.stdout.write(output);
+		if (result.status === 0) return;
+		if (attempt === smokeAttempts || !hexRefused(output)) {
+			throw new Error(
+				`${name} ${args.join(" ")} failed with exit ${result.status}`,
+			);
+		}
+		const delay = Math.min(
+			firstSmokeDelayMs * 2 ** (attempt - 1),
+			longestSmokeDelayMs,
+		);
+		process.stdout.write(
+			`${name}: Hex would not answer the snapshot; retrying in ${delay}ms\n`,
+		);
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
+	}
 }
 
 function write(file, text, mode) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, text, { encoding: "utf8", mode });
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, text, { encoding: "utf8", mode });
 }
 
 function copyProject(destination) {
-  const ignored = new Set([
-    ".git",
-    "build",
-    "dist",
-    ".gleam_mutants",
-    "node_modules",
-    "gleam_mutants",
-    "reports",
-    "test-results",
-    "playwright-report",
-  ]);
-  fs.cpSync(root, destination, {
-    recursive: true,
-    preserveTimestamps: true,
-    filter(source) {
-      const relative = path.relative(root, source);
-      if (!relative) return true;
-      const segments = relative.split(path.sep);
-      // `build` is excluded wherever it sits, not only at the root: a fixture
-      // whose dependencies were fetched in place has one of its own, and no
-      // build output belongs in an artifact under any name.
-      return !ignored.has(segments[0]) && !segments.includes("build");
-    },
-  });
+	const ignored = new Set([
+		".git",
+		"build",
+		"dist",
+		".gleam_mutants",
+		"node_modules",
+		"gleam_mutants",
+		"reports",
+		"test-results",
+		"playwright-report",
+	]);
+	fs.cpSync(root, destination, {
+		recursive: true,
+		preserveTimestamps: true,
+		filter(source) {
+			const relative = path.relative(root, source);
+			if (!relative) return true;
+			const segments = relative.split(path.sep);
+			// `build` is excluded wherever it sits, not only at the root: a fixture whose dependencies were fetched in place has one of its own, and no build output belongs in an artifact under any name.
+			return !ignored.has(segments[0]) && !segments.includes("build");
+		},
+	});
 }
 
 function findFile(directory, predicate) {
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    const candidate = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      const nested = findFile(candidate, predicate);
-      if (nested) return nested;
-    } else if (predicate(candidate)) return candidate;
-  }
-  return undefined;
+	for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+		const candidate = path.join(directory, entry.name);
+		if (entry.isDirectory()) {
+			const nested = findFile(candidate, predicate);
+			if (nested) return nested;
+		} else if (predicate(candidate)) return candidate;
+	}
+	return undefined;
 }
 
 function tarEntries(archive) {
-  const entries = [];
-  let offset = 0;
-  while (offset + 512 <= archive.length) {
-    const header = Buffer.from(archive.subarray(offset, offset + 512));
-    if (header.every(byte => byte === 0)) break;
-    const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/, "");
-    const sizeText = header.subarray(124, 136).toString("ascii").replace(/\0.*$/, "").trim();
-    const size = Number.parseInt(sizeText || "0", 8);
-    const dataStart = offset + 512;
-    entries.push({ name, header, data: Buffer.from(archive.subarray(dataStart, dataStart + size)) });
-    offset = dataStart + Math.ceil(size / 512) * 512;
-  }
-  return entries;
+	const entries = [];
+	let offset = 0;
+	while (offset + 512 <= archive.length) {
+		const header = Buffer.from(archive.subarray(offset, offset + 512));
+		if (header.every((byte) => byte === 0)) break;
+		const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/, "");
+		const sizeText = header
+			.subarray(124, 136)
+			.toString("ascii")
+			.replace(/\0.*$/, "")
+			.trim();
+		const size = Number.parseInt(sizeText || "0", 8);
+		const dataStart = offset + 512;
+		entries.push({
+			name,
+			header,
+			data: Buffer.from(archive.subarray(dataStart, dataStart + size)),
+		});
+		offset = dataStart + Math.ceil(size / 512) * 512;
+	}
+	return entries;
 }
 
 function writeTarNumber(header, offset, length, value, checksum = false) {
-  header.fill(0, offset, offset + length);
-  const digits = value.toString(8).padStart(length - (checksum ? 2 : 1), "0");
-  header.write(digits, offset, "ascii");
-  if (checksum) header[offset + length - 1] = 0x20;
+	header.fill(0, offset, offset + length);
+	const digits = value.toString(8).padStart(length - (checksum ? 2 : 1), "0");
+	header.write(digits, offset, "ascii");
+	if (checksum) header[offset + length - 1] = 0x20;
 }
 
 function canonicalHeader(header, size) {
-const result = Buffer.alloc(512);
-  header.copy(result, 0, 0, 100);
-  header.copy(result, 156, 156, 257);
-  Buffer.from("ustar\0", "ascii").copy(result, 257);
-  Buffer.from("00", "ascii").copy(result, 263);
-  header.copy(result, 345, 345, 500);
-  writeTarNumber(result, 100, 8, 0o644);
-  writeTarNumber(result, 108, 8, 0);
-  writeTarNumber(result, 116, 8, 0);
-  writeTarNumber(result, 124, 12, size);
-  writeTarNumber(result, 136, 12, 0);
-  result.fill(0x20, 148, 156);
-  result.fill(0, 265, 329);
-  const checksum = result.reduce((sum, byte) => sum + byte, 0);
-  writeTarNumber(result, 148, 8, checksum, true);
-  return result;
+	const result = Buffer.alloc(512);
+	header.copy(result, 0, 0, 100);
+	header.copy(result, 156, 156, 257);
+	Buffer.from("ustar\0", "ascii").copy(result, 257);
+	Buffer.from("00", "ascii").copy(result, 263);
+	header.copy(result, 345, 345, 500);
+	writeTarNumber(result, 100, 8, 0o644);
+	writeTarNumber(result, 108, 8, 0);
+	writeTarNumber(result, 116, 8, 0);
+	writeTarNumber(result, 124, 12, size);
+	writeTarNumber(result, 136, 12, 0);
+	result.fill(0x20, 148, 156);
+	result.fill(0, 265, 329);
+	const checksum = result.reduce((sum, byte) => sum + byte, 0);
+	writeTarNumber(result, 148, 8, checksum, true);
+	return result;
 }
 
 function renderTar(entries) {
-  const blocks = [];
-  for (const entry of entries) {
-    blocks.push(canonicalHeader(entry.header, entry.data.length), entry.data);
-    const padding = (512 - (entry.data.length % 512)) % 512;
-    if (padding) blocks.push(Buffer.alloc(padding));
-  }
-  blocks.push(Buffer.alloc(1024));
-  return Buffer.concat(blocks);
+	const blocks = [];
+	for (const entry of entries) {
+		blocks.push(canonicalHeader(entry.header, entry.data.length), entry.data);
+		const padding = (512 - (entry.data.length % 512)) % 512;
+		if (padding) blocks.push(Buffer.alloc(padding));
+	}
+	blocks.push(Buffer.alloc(1024));
+	return Buffer.concat(blocks);
 }
 
 function canonicalizeHexMetadata(data) {
-  const text = data.toString("utf8");
-  const requirement = /  \{<<"([^"]+)"\/utf8>>, \[\n[\s\S]*?\n  \]\}/g;
-  const matches = [...text.matchAll(requirement)];
-  if (matches.length === 0) return data;
-  const first = matches[0];
-  const last = matches[matches.length - 1];
-  const sorted = matches
-    .map(match => ({ name: match[1], text: match[0] }))
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map(item => item.text)
-    .join(",\n");
-  return Buffer.from(
-    text.slice(0, first.index) + sorted + text.slice(last.index + last[0].length),
-    "utf8",
-  );
+	const text = data.toString("utf8");
+	const requirement = / {2}\{<<"([^"]+)"\/utf8>>, \[\n[\s\S]*?\n {2}\]\}/g;
+	const matches = [...text.matchAll(requirement)];
+	if (matches.length === 0) return data;
+	const first = matches[0];
+	const last = matches[matches.length - 1];
+	const sorted = matches
+		.map((match) => ({ name: match[1], text: match[0] }))
+		.sort((a, b) => a.name.localeCompare(b.name))
+		.map((item) => item.text)
+		.join(",\n");
+	return Buffer.from(
+		text.slice(0, first.index) +
+			sorted +
+			text.slice(last.index + last[0].length),
+		"utf8",
+	);
 }
 function canonicalizeHexTarball(file) {
-  const outer = tarEntries(fs.readFileSync(file));
-  const versionEntry = outer.find(entry => entry.name === "VERSION");
-  const metadata = outer.find(entry => entry.name === "metadata.config");
-  const contents = outer.find(entry => entry.name === "contents.tar.gz");
-  const checksum = outer.find(entry => entry.name === "CHECKSUM");
-  if (!versionEntry || !metadata || !contents || !checksum) throw new Error("Invalid Hex v3 tarball");
-  metadata.data = canonicalizeHexMetadata(metadata.data);
-  const inner = tarEntries(zlib.gunzipSync(contents.data)).sort((a, b) => a.name.localeCompare(b.name));
-  contents.data = zlib.gzipSync(renderTar(inner), { level: 9, mtime: 0 });
-  checksum.data = Buffer.from(
-    crypto.createHash("sha256").update(versionEntry.data).update(metadata.data).update(contents.data).digest("hex").toUpperCase(),
-    "ascii",
-  );
-  fs.writeFileSync(file, renderTar(outer));
+	const outer = tarEntries(fs.readFileSync(file));
+	const versionEntry = outer.find((entry) => entry.name === "VERSION");
+	const metadata = outer.find((entry) => entry.name === "metadata.config");
+	const contents = outer.find((entry) => entry.name === "contents.tar.gz");
+	const checksum = outer.find((entry) => entry.name === "CHECKSUM");
+	if (!versionEntry || !metadata || !contents || !checksum)
+		throw new Error("Invalid Hex v3 tarball");
+	metadata.data = canonicalizeHexMetadata(metadata.data);
+	const inner = tarEntries(zlib.gunzipSync(contents.data)).sort((a, b) =>
+		a.name.localeCompare(b.name),
+	);
+	contents.data = zlib.gzipSync(renderTar(inner), { level: 9, mtime: 0 });
+	checksum.data = Buffer.from(
+		crypto
+			.createHash("sha256")
+			.update(versionEntry.data)
+			.update(metadata.data)
+			.update(contents.data)
+			.digest("hex")
+			.toUpperCase(),
+		"ascii",
+	);
+	fs.writeFileSync(file, renderTar(outer));
 }
 
 function assertNoReportArtifactsInHexTarball(file) {
-  const listing = run("tar", ["-tf", file], root, { capture: true });
-  const forbidden = /(^|\/)(reports|test-results|playwright-report)(\/|$)/i;
-  const entries = listing.split(/\r?\n/).map(entry => entry.trim()).filter(Boolean);
-  const leaked = entries.filter(entry => forbidden.test(entry));
-  if (leaked.length > 0) {
-    throw new Error(`Hex tarball contains report/test artifacts: ${leaked.join(", ")}`);
-  }
-  if (entries.some(entry => entry.startsWith("/") || /^[A-Za-z]:[\\/]/.test(entry))) {
-    throw new Error("Hex tarball contains an absolute local path");
-  }
+	const listing = run("tar", ["-tf", file], root, { capture: true });
+	const forbidden = /(^|\/)(reports|test-results|playwright-report)(\/|$)/i;
+	const entries = listing
+		.split(/\r?\n/)
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+	const leaked = entries.filter((entry) => forbidden.test(entry));
+	if (leaked.length > 0) {
+		throw new Error(
+			`Hex tarball contains report/test artifacts: ${leaked.join(", ")}`,
+		);
+	}
+	if (
+		entries.some(
+			(entry) => entry.startsWith("/") || /^[A-Za-z]:[\\/]/.test(entry),
+		)
+	) {
+		throw new Error("Hex tarball contains an absolute local path");
+	}
 }
 
 function extractHexSource(artifact, destination) {
-  const outer = tarEntries(fs.readFileSync(artifact));
-  const contents = outer.find(entry => entry.name === "contents.tar.gz");
-  if (!contents) throw new Error("Hex artifact has no contents.tar.gz");
-  const destinationRoot = path.resolve(destination) + path.sep;
-  for (const entry of tarEntries(zlib.gunzipSync(contents.data))) {
-    const target = path.resolve(destination, entry.name);
-    if (!target.startsWith(destinationRoot)) throw new Error(`Unsafe Hex archive path: ${entry.name}`);
-    if (entry.name.endsWith("/") || entry.header[156] === 0x35) {
-      fs.mkdirSync(target, { recursive: true });
-    } else {
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, entry.data);
-    }
-  }
+	const outer = tarEntries(fs.readFileSync(artifact));
+	const contents = outer.find((entry) => entry.name === "contents.tar.gz");
+	if (!contents) throw new Error("Hex artifact has no contents.tar.gz");
+	const destinationRoot = path.resolve(destination) + path.sep;
+	for (const entry of tarEntries(zlib.gunzipSync(contents.data))) {
+		const target = path.resolve(destination, entry.name);
+		if (!target.startsWith(destinationRoot))
+			throw new Error(`Unsafe Hex archive path: ${entry.name}`);
+		if (entry.name.endsWith("/") || entry.header[156] === 0x35) {
+			fs.mkdirSync(target, { recursive: true });
+		} else {
+			fs.mkdirSync(path.dirname(target), { recursive: true });
+			fs.writeFileSync(target, entry.data);
+		}
+	}
 }
 
 /// Locks `names` to the versions this repository's own manifest resolved.
@@ -280,23 +329,32 @@ function extractHexSource(artifact, destination) {
 /// manifest whose requirements no longer match its project is re-resolved, and
 /// one whose checksums are wrong is an error.
 function writeLockfile(directory, required) {
-  const manifest = fs.readFileSync(path.join(root, "manifest.toml"), "utf8").split("\n");
-  const packages = required.map(([name]) => {
-    const line = manifest.find(entry => entry.includes(`{ name = "${name}",`));
-    if (!line) throw new Error(`This repository's manifest does not lock ${name}`);
-    return line.trimEnd();
-  });
-  const requirements = required.map(([name, range]) => `${name} = { version = "${range}" }`);
-  write(
-    path.join(directory, "manifest.toml"),
-    `packages = [\n${packages.join("\n")}\n]\n\n[requirements]\n${requirements.join("\n")}\n`,
-  );
+	const manifest = fs
+		.readFileSync(path.join(root, "manifest.toml"), "utf8")
+		.split("\n");
+	const packages = required.map(([name]) => {
+		const line = manifest.find((entry) =>
+			entry.includes(`{ name = "${name}",`),
+		);
+		if (!line)
+			throw new Error(`This repository's manifest does not lock ${name}`);
+		return line.trimEnd();
+	});
+	const requirements = required.map(
+		([name, range]) => `${name} = { version = "${range}" }`,
+	);
+	write(
+		path.join(directory, "manifest.toml"),
+		`packages = [\n${packages.join("\n")}\n]\n\n[requirements]\n${requirements.join("\n")}\n`,
+	);
 }
 
 function makeMutationProject(directory, dependency = "") {
-  fs.mkdirSync(path.join(directory, "src"), { recursive: true });
-  fs.mkdirSync(path.join(directory, "test"), { recursive: true });
-  write(path.join(directory, "gleam.toml"), `name = "artifact_smoke"
+	fs.mkdirSync(path.join(directory, "src"), { recursive: true });
+	fs.mkdirSync(path.join(directory, "test"), { recursive: true });
+	write(
+		path.join(directory, "gleam.toml"),
+		`name = "artifact_smoke"
 version = "0.0.0"
 
 [dependencies]
@@ -318,374 +376,567 @@ mode = "off"
 directory = "reports/mutation"
 high = 80
 low = 60
-`);
-  // A project with no path dependency needs exactly what the fixtures need,
-  // so it can be locked the same way and reach Hex for nothing. One with a
-  // path dependency pulls in the artifact's own closure, which is not ours to
-  // write down; that one still resolves, and `download` retries it.
-  // These have to be the ranges written above, to the character: a manifest
-  // whose requirements disagree with its project is resolved again.
-  if (!dependency) {
-    writeLockfile(directory, [
-      ["gleam_stdlib", ">= 0.44.0 and < 2.0.0"],
-      ["gleeunit", ">= 1.9.0 and < 2.0.0"],
-    ]);
-  }
-  write(path.join(directory, "src", "calculator.gleam"), "pub fn add_one(value: Int) -> Int { value + 1 }\n");
-  write(path.join(directory, "test", "calculator_test.gleam"), `import calculator
+`,
+	);
+	// A project with no path dependency needs exactly what the fixtures need, so it can be locked the same way and reach Hex for nothing.
+	// One with a path dependency pulls in the artifact's own closure, which is not ours to write down; that one still resolves, and `download` retries it.
+	// These have to be the ranges written above, to the character: a manifest whose requirements disagree with its project is resolved again.
+	if (!dependency) {
+		writeLockfile(directory, [
+			["gleam_stdlib", ">= 0.44.0 and < 2.0.0"],
+			["gleeunit", ">= 1.9.0 and < 2.0.0"],
+		]);
+	}
+	write(
+		path.join(directory, "src", "calculator.gleam"),
+		"pub fn add_one(value: Int) -> Int { value + 1 }\n",
+	);
+	write(
+		path.join(directory, "test", "calculator_test.gleam"),
+		`import calculator
 import gleeunit/should
 
 pub fn add_one_test() { calculator.add_one(1) |> should.equal(2) }
-`);
-  write(path.join(directory, "test", "artifact_smoke_test.gleam"), "import gleeunit\npub fn main() { gleeunit.main() }\n");
+`,
+	);
+	write(
+		path.join(directory, "test", "artifact_smoke_test.gleam"),
+		"import gleeunit\npub fn main() { gleeunit.main() }\n",
+	);
 }
 
-function addSmartestConsumerContract(directory) {
-  write(path.join(directory, "test", "artifact_smoke_test.gleam"), `import smartest
+function addMutationConsumerContract(directory) {
+	write(
+		path.join(directory, "test", "mutation_api_test.gleam"),
+		`import gleam/list
+import gleam_mutants/api
+import gleam_mutants/types
 
-pub fn main() -> Nil { smartest.main() }
-`);
-  write(path.join(directory, "test", "smartest_api_test.gleam"), `import gleam/list
-import smartest.{type Test}
-import smartest/gen
-import smartest/property
-import smartest/testing
-
-pub fn packaged_example_test() -> Test {
-  testing.example(fn() { assert 1 + 1 == 2 })
-}
-
-pub fn packaged_property_test() -> Test {
-  property.for_all(gen.list(gen.int()), fn(items) {
-    assert list.reverse(list.reverse(items)) == items
+pub fn packaged_api_test() {
+  let options = api.default_options()
+  let assert Ok(catalog) = api.list_mutants(".", options)
+  assert catalog.validation == types.Unvalidated
+  assert !options.write_reports
+  assert list.any(catalog.mutants, fn(mutant) {
+    api.operator_name(mutant.operator) == "integer-arithmetic"
+      && types.start_byte(mutant) < types.end_byte(mutant)
   })
 }
-`);
+`,
+	);
 }
 
 function verifyReports(project, label) {
-  const jsonPath = path.join(project, "reports", "mutation", "mutation.json");
-  const htmlPath = path.join(project, "reports", "mutation", "mutation.html");
-  const report = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
-  if (!validateStryker(report)) {
-    throw new Error(`${label} report failed official schema validation: ${JSON.stringify(validateStryker.errors)}`);
-  }
-  const html = fs.readFileSync(htmlPath, "utf8");
-  if (!html.includes("<mutation-test-report-app>") || !html.includes("Content-Security-Policy")) {
-    throw new Error(`${label} did not generate a self-contained HTML report`);
-  }
-  return htmlPath;
+	const jsonPath = path.join(project, "reports", "mutation", "mutation.json");
+	const htmlPath = path.join(project, "reports", "mutation", "mutation.html");
+	const report = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+	if (!validateStryker(report)) {
+		throw new Error(
+			`${label} report failed official schema validation: ${JSON.stringify(validateStryker.errors)}`,
+		);
+	}
+	const html = fs.readFileSync(htmlPath, "utf8");
+	if (
+		!html.includes("<mutation-test-report-app>") ||
+		!html.includes("Content-Security-Policy")
+	) {
+		throw new Error(`${label} did not generate a self-contained HTML report`);
+	}
+	return htmlPath;
 }
 
 function smokeHexArtifact(artifact, temporaryRoot) {
-  const consumer = path.join(temporaryRoot, "hex-smoke");
-  const dependency = path.join(consumer, "vendor", "gleam_mutants");
-  extractHexSource(artifact, dependency);
-  for (const required of [
-    "priv/gleam_mutants/LICENSE-MIT",
-    "priv/gleam_mutants/LICENSE-APACHE",
-    "priv/gleam_mutants/THIRD_PARTY_NOTICES.md",
-    "priv/gleam_mutants/schema/run-report-v1.schema.json",
-    "priv/gleam_mutants/schema/list-v1.schema.json",
-    "priv/gleam_mutants/schema/doctor-v1.schema.json",
-    "priv/gleam_mutants/schema/suggest-v1.schema.json",
-    "priv/gleam_mutants/schema/explain-v1.schema.json",
-    "priv/gleam_mutants/schema/apply-v1.schema.json",
-    "priv/gleam_mutants/schema/mutation-testing-report-schema-3.9.0.json",
-    "priv/gleam_mutants/vendor/mutation-testing-elements/3.9.0/LICENSE",
-    "priv/gleam_mutants/vendor/mutation-testing-elements/3.9.0/PROVENANCE.json",
-  ]) {
-    if (!fs.existsSync(path.join(dependency, required))) {
-      throw new Error(`Hex artifact omitted required third-party file: ${required}`);
-    }
-  }
-  makeMutationProject(consumer, "gleam_mutants = { path = \"vendor/gleam_mutants\" }\n");
-  addSmartestConsumerContract(consumer);
-  download(consumer, fixedEnvironment);
-  const smartest = run("gleam", ["test", "--target", "erlang"], consumer, { capture: true });
-  if (!smartest.includes("3 passed, 0 failed")) {
-    throw new Error(`Packaged Smartest discovery did not run every consumer test: ${smartest}`);
-  }
-  const output = run("gleam", ["run", "-m", "gleam_mutants", "--", "--version"], consumer, { capture: true });
-  if (!output.includes(`gleam-mutants ${version}`)) throw new Error(`Unexpected direct dependency CLI version: ${output}`);
-  smokeRun("gleam", ["run", "-m", "gleam_mutants", "--", "run", "--no-strict", "--jobs", "2"], consumer);
-  return verifyReports(consumer, "Hex");
+	const consumer = path.join(temporaryRoot, "hex-smoke");
+	const dependency = path.join(consumer, "vendor", "gleam_mutants");
+	extractHexSource(artifact, dependency);
+	for (const required of [
+		"priv/gleam_mutants/LICENSE-MIT",
+		"priv/gleam_mutants/LICENSE-APACHE",
+		"priv/gleam_mutants/THIRD_PARTY_NOTICES.md",
+		"priv/gleam_mutants/schema/run-report-v1.schema.json",
+		"priv/gleam_mutants/schema/list-v1.schema.json",
+		"priv/gleam_mutants/schema/doctor-v1.schema.json",
+		"priv/gleam_mutants/schema/mutation-testing-report-schema-3.9.0.json",
+		"priv/gleam_mutants/vendor/mutation-testing-elements/3.9.0/LICENSE",
+		"priv/gleam_mutants/vendor/mutation-testing-elements/3.9.0/PROVENANCE.json",
+	]) {
+		if (!fs.existsSync(path.join(dependency, required))) {
+			throw new Error(
+				`Hex artifact omitted required third-party file: ${required}`,
+			);
+		}
+	}
+	makeMutationProject(
+		consumer,
+		'gleam_mutants = { path = "vendor/gleam_mutants" }\n',
+	);
+	addMutationConsumerContract(consumer);
+	download(consumer, fixedEnvironment);
+	for (const target of ["erlang", "javascript"]) {
+		run(
+			"gleam",
+			["build", "--target", target, "--warnings-as-errors"],
+			consumer,
+		);
+		const tests = run("gleam", ["test", "--target", target], consumer, {
+			capture: true,
+		});
+		if (
+			!tests.includes("2 tests passed") &&
+			!tests.includes("2 passed, no failures")
+		) {
+			throw new Error(
+				`Packaged API tests did not both run on ${target}: ${tests}`,
+			);
+		}
+	}
+	for (const removed of [
+		"src/smartest.gleam",
+		"src/gleam_mutants/pbt.gleam",
+		"src/gleam_mutants/suggest",
+		"editors/vscode",
+	]) {
+		if (fs.existsSync(path.join(dependency, removed))) {
+			throw new Error(`Hex artifact retained an excluded product: ${removed}`);
+		}
+	}
+	const output = run(
+		"gleam",
+		["run", "-m", "gleam_mutants", "--", "--version"],
+		consumer,
+		{ capture: true },
+	);
+	if (!output.includes(`gleam-mutants ${version}`))
+		throw new Error(`Unexpected direct dependency CLI version: ${output}`);
+	smokeRun(
+		"gleam",
+		["run", "-m", "gleam_mutants", "--", "run", "--no-strict", "--jobs", "2"],
+		consumer,
+	);
+	return verifyReports(consumer, "Hex");
 }
 
 function buildHex(temporaryRoot) {
-  const project = path.join(temporaryRoot, "hex");
-  copyProject(project);
-  download(project, fixedEnvironment);
-  const exportDirectory = process.platform === "win32" ? `\\\\?\\${project}` : project;
-  run("gleam", ["export", "hex-tarball"], exportDirectory);
-  const artifact = findFile(project, file => file.endsWith(`gleam_mutants-${version}.tar`));
-  if (!artifact) throw new Error("Gleam did not produce the Hex tarball");
-  const target = path.join(dist, "hex", path.basename(artifact));
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.copyFileSync(artifact, target);
-  canonicalizeHexTarball(target);
-  assertNoReportArtifactsInHexTarball(target);
-  return { artifact: target, report: smokeHexArtifact(target, temporaryRoot) };
+	const project = path.join(temporaryRoot, "hex");
+	copyProject(project);
+	download(project, fixedEnvironment);
+	const exportDirectory =
+		process.platform === "win32" ? `\\\\?\\${project}` : project;
+	run("gleam", ["export", "hex-tarball"], exportDirectory);
+	const artifact = findFile(project, (file) =>
+		file.endsWith(`gleam_mutants-${version}.tar`),
+	);
+	if (!artifact) throw new Error("Gleam did not produce the Hex tarball");
+	const target = path.join(dist, "hex", path.basename(artifact));
+	fs.mkdirSync(path.dirname(target), { recursive: true });
+	fs.copyFileSync(artifact, target);
+	canonicalizeHexTarball(target);
+	assertNoReportArtifactsInHexTarball(target);
+	return { artifact: target, report: smokeHexArtifact(target, temporaryRoot) };
 }
 
 function buildEscript(temporaryRoot) {
-  run("gleam", ["export", "escript"]);
-  const generated = path.join(root, "gleam_mutants");
-  const target = path.join(dist, "escript", "gleam-mutants.escript");
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.copyFileSync(generated, target);
-  if (process.platform !== "win32") fs.chmodSync(target, 0o755);
-  const output = run("escript", [target, "--version"], root, { capture: true });
-  if (!output.includes(version)) throw new Error(`Unexpected escript version: ${output}`);
-  const smoke = path.join(temporaryRoot, "escript-smoke");
-  makeMutationProject(smoke);
-  download(smoke, fixedEnvironment);
-  smokeRun("escript", [target, "run", "--no-strict", "--jobs", "2"], smoke);
-  return { artifact: target, report: verifyReports(smoke, "Escript") };
+	run("gleam", ["export", "escript"]);
+	const generated = path.join(root, "gleam_mutants");
+	const target = path.join(dist, "escript", "gleam-mutants.escript");
+	fs.mkdirSync(path.dirname(target), { recursive: true });
+	fs.copyFileSync(generated, target);
+	if (process.platform !== "win32") fs.chmodSync(target, 0o755);
+	const output = run("escript", [target, "--version"], root, { capture: true });
+	if (!output.includes(version))
+		throw new Error(`Unexpected escript version: ${output}`);
+	const smoke = path.join(temporaryRoot, "escript-smoke");
+	makeMutationProject(smoke);
+	download(smoke, fixedEnvironment);
+	smokeRun("escript", [target, "run", "--no-strict", "--jobs", "2"], smoke);
+	return { artifact: target, report: verifyReports(smoke, "Escript") };
 }
 
 function buildNpm(temporaryRoot) {
-  run("gleam", ["build", "--target", "javascript", "--warnings-as-errors"]);
-  const stage = path.join(temporaryRoot, "npm");
-  fs.mkdirSync(stage, { recursive: true });
-const javascriptBuild = path.join(root, "build", "dev", "javascript");
-  fs.cpSync(javascriptBuild, path.join(stage, "runtime"), {
-    recursive: true,
-    preserveTimestamps: true,
-    filter(source) {
-      const relative = path.relative(javascriptBuild, source);
-      if (!relative) return true;
-      const parts = relative.split(path.sep);
-      if (parts.includes("_gleam_artefacts") || parts[0] === "gleeunit") return false;
-      if (fs.lstatSync(source).isDirectory()) return true;
-      // `gleam build` compiles this package's own `test/` modules into the
-      // same directory as its `src/` ones, so the published runtime is cut
-      // back to the modules that came from `src/` — the prelude re-export
-      // aside. Naming the test modules instead would publish every new one
-      // until somebody noticed it in the tarball.
-      if (parts[0] === "gleam_mutants" && parts.length === 2 && path.extname(source) === ".mjs") {
-        const stem = path.basename(source, ".mjs");
-        const published = stem === "gleam"
-          || fs.existsSync(path.join(root, "src", `${stem}.gleam`))
-          || fs.existsSync(path.join(root, "src", `${stem}.mjs`));
-        if (!published) return false;
-      }
-      return path.extname(source) === ".mjs";
-    },
-  });
-  fs.copyFileSync(path.join(root, "README.md"), path.join(stage, "README.md"));
-  fs.copyFileSync(path.join(root, "LICENSE-MIT"), path.join(stage, "LICENSE-MIT"));
-  fs.copyFileSync(path.join(root, "LICENSE-APACHE"), path.join(stage, "LICENSE-APACHE"));
-  fs.copyFileSync(path.join(root, "THIRD_PARTY_NOTICES.md"), path.join(stage, "THIRD_PARTY_NOTICES.md"));
-  fs.mkdirSync(path.join(stage, "schemas"), { recursive: true });
-  for (const name of ["run-report-v1.schema.json", "list-v1.schema.json", "doctor-v1.schema.json", "suggest-v1.schema.json", "explain-v1.schema.json", "apply-v1.schema.json"]) {
-    fs.copyFileSync(path.join(root, "schema", name), path.join(stage, "schemas", name));
-  }
-  fs.mkdirSync(path.join(stage, "third-party", "mutation-testing-elements"), { recursive: true });
-  fs.copyFileSync(path.join(root, "vendor", "mutation-testing-elements", "3.9.0", "LICENSE"), path.join(stage, "third-party", "mutation-testing-elements", "LICENSE"));
-  fs.copyFileSync(path.join(root, "vendor", "mutation-testing-elements", "3.9.0", "PROVENANCE.json"), path.join(stage, "third-party", "mutation-testing-elements", "PROVENANCE.json"));
-  fs.copyFileSync(path.join(root, "schema", "mutation-testing-report-schema-3.9.0.json"), path.join(stage, "third-party", "mutation-testing-elements", "mutation-testing-report-schema.json"));
-  write(path.join(stage, "bin", "gleam-mutants.mjs"), `#!/usr/bin/env node\nimport { main } from "../runtime/gleam_mutants/gleam_mutants.mjs";\nmain();\n`, 0o755);
-  write(path.join(stage, "package.json"), JSON.stringify({
-    name: "gleam-mutants",
-    version,
-    description: "Mutation testing for Gleam across Erlang, Node, Deno, and Bun",
-    type: "module",
-    bin: { "gleam-mutants": "bin/gleam-mutants.mjs" },
-    files: ["bin", "runtime", "schemas", "third-party", "README.md", "THIRD_PARTY_NOTICES.md", "LICENSE-MIT", "LICENSE-APACHE"],
-    engines: { node: "^22.0.0 || ^24.0.0" },
-    license: "MIT OR Apache-2.0",
-    repository: { type: "git", url: "git+https://github.com/P4suta/gleam-mutants.git" },
-    bugs: { url: "https://github.com/P4suta/gleam-mutants/issues" },
-    homepage: "https://github.com/P4suta/gleam-mutants#readme",
-    publishConfig: { access: "public" },
-  }, null, 2) + "\n");
-  write(path.join(stage, "package-lock.json"), JSON.stringify({
-    name: "gleam-mutants",
-    version,
-    lockfileVersion: 3,
-    requires: true,
-    packages: { "": { name: "gleam-mutants", version, license: "MIT OR Apache-2.0" } },
-  }, null, 2) + "\n");
-  const npmOut = path.join(dist, "npm");
-  fs.mkdirSync(npmOut, { recursive: true });
-  run("npm", ["pack", "--silent", "--pack-destination", npmOut], stage);
-  const artifact = findFile(npmOut, file => file.endsWith(".tgz"));
-  if (!artifact) throw new Error("npm did not produce a tarball");
+	run("gleam", ["build", "--target", "javascript", "--warnings-as-errors"]);
+	const stage = path.join(temporaryRoot, "npm");
+	fs.mkdirSync(stage, { recursive: true });
+	const javascriptBuild = path.join(root, "build", "dev", "javascript");
+	fs.cpSync(javascriptBuild, path.join(stage, "runtime"), {
+		recursive: true,
+		preserveTimestamps: true,
+		filter(source) {
+			const relative = path.relative(javascriptBuild, source);
+			if (!relative) return true;
+			const parts = relative.split(path.sep);
+			if (parts.includes("_gleam_artefacts") || parts[0] === "gleeunit")
+				return false;
+			if (fs.lstatSync(source).isDirectory()) return true;
+			// `gleam build` compiles this package's own `test/` modules into the same directory as its `src/` ones, so the published runtime is cut back to the modules that came from `src/` — the prelude re-export aside.
+			// Naming the test modules instead would publish every new one until somebody noticed it in the tarball.
+			if (
+				parts[0] === "gleam_mutants" &&
+				parts.length === 2 &&
+				path.extname(source) === ".mjs"
+			) {
+				const stem = path.basename(source, ".mjs");
+				const published =
+					stem === "gleam" ||
+					fs.existsSync(path.join(root, "src", `${stem}.gleam`)) ||
+					fs.existsSync(path.join(root, "src", `${stem}.mjs`));
+				if (!published) return false;
+			}
+			return path.extname(source) === ".mjs";
+		},
+	});
+	fs.copyFileSync(path.join(root, "README.md"), path.join(stage, "README.md"));
+	fs.copyFileSync(
+		path.join(root, "LICENSE-MIT"),
+		path.join(stage, "LICENSE-MIT"),
+	);
+	fs.copyFileSync(
+		path.join(root, "LICENSE-APACHE"),
+		path.join(stage, "LICENSE-APACHE"),
+	);
+	fs.copyFileSync(
+		path.join(root, "THIRD_PARTY_NOTICES.md"),
+		path.join(stage, "THIRD_PARTY_NOTICES.md"),
+	);
+	fs.mkdirSync(path.join(stage, "schemas"), { recursive: true });
+	for (const name of [
+		"run-report-v1.schema.json",
+		"list-v1.schema.json",
+		"doctor-v1.schema.json",
+	]) {
+		fs.copyFileSync(
+			path.join(root, "schema", name),
+			path.join(stage, "schemas", name),
+		);
+	}
+	fs.mkdirSync(path.join(stage, "third-party", "mutation-testing-elements"), {
+		recursive: true,
+	});
+	fs.copyFileSync(
+		path.join(root, "vendor", "mutation-testing-elements", "3.9.0", "LICENSE"),
+		path.join(stage, "third-party", "mutation-testing-elements", "LICENSE"),
+	);
+	fs.copyFileSync(
+		path.join(
+			root,
+			"vendor",
+			"mutation-testing-elements",
+			"3.9.0",
+			"PROVENANCE.json",
+		),
+		path.join(
+			stage,
+			"third-party",
+			"mutation-testing-elements",
+			"PROVENANCE.json",
+		),
+	);
+	fs.copyFileSync(
+		path.join(root, "schema", "mutation-testing-report-schema-3.9.0.json"),
+		path.join(
+			stage,
+			"third-party",
+			"mutation-testing-elements",
+			"mutation-testing-report-schema.json",
+		),
+	);
+	write(
+		path.join(stage, "bin", "gleam-mutants.mjs"),
+		`#!/usr/bin/env node\nimport { main } from "../runtime/gleam_mutants/gleam_mutants.mjs";\nmain();\n`,
+		0o755,
+	);
+	write(
+		path.join(stage, "package.json"),
+		`${JSON.stringify(
+			{
+				name: "gleam-mutants",
+				version,
+				description:
+					"Mutation testing for Gleam across Erlang, Node, Deno, and Bun",
+				type: "module",
+				bin: { "gleam-mutants": "bin/gleam-mutants.mjs" },
+				files: [
+					"bin",
+					"runtime",
+					"schemas",
+					"third-party",
+					"README.md",
+					"THIRD_PARTY_NOTICES.md",
+					"LICENSE-MIT",
+					"LICENSE-APACHE",
+				],
+				engines: { node: "^22.0.0 || ^24.0.0" },
+				license: "MIT OR Apache-2.0",
+				repository: {
+					type: "git",
+					url: "git+https://github.com/P4suta/gleam-mutants.git",
+				},
+				bugs: { url: "https://github.com/P4suta/gleam-mutants/issues" },
+				homepage: "https://github.com/P4suta/gleam-mutants#readme",
+				publishConfig: { access: "public" },
+			},
+			null,
+			2,
+		)}\n`,
+	);
+	write(
+		path.join(stage, "package-lock.json"),
+		`${JSON.stringify(
+			{
+				name: "gleam-mutants",
+				version,
+				lockfileVersion: 3,
+				requires: true,
+				packages: {
+					"": { name: "gleam-mutants", version, license: "MIT OR Apache-2.0" },
+				},
+			},
+			null,
+			2,
+		)}\n`,
+	);
+	const npmOut = path.join(dist, "npm");
+	fs.mkdirSync(npmOut, { recursive: true });
+	run("npm", ["pack", "--silent", "--pack-destination", npmOut], stage);
+	const artifact = findFile(npmOut, (file) => file.endsWith(".tgz"));
+	if (!artifact) throw new Error("npm did not produce a tarball");
 
-  const smoke = path.join(temporaryRoot, "npm-smoke");
-  makeMutationProject(smoke);
-  write(path.join(smoke, "package.json"), "{\"private\":true}\n");
-  run("npm", ["install", "--offline", "--ignore-scripts", artifact], smoke);
-  const installed = path.join(smoke, "node_modules", "gleam-mutants", "bin", "gleam-mutants.mjs");
-  const output = run(process.execPath, [installed, "--version"], smoke, { capture: true });
-  if (!output.includes(version)) throw new Error(`Unexpected npm CLI version: ${output}`);
-  smokeRun(process.execPath, [installed, "run", "--no-strict", "--jobs", "2"], smoke);
-  return { artifact, stage, report: verifyReports(smoke, "npm") };
+	const smoke = path.join(temporaryRoot, "npm-smoke");
+	makeMutationProject(smoke);
+	write(path.join(smoke, "package.json"), '{"private":true}\n');
+	run("npm", ["install", "--offline", "--ignore-scripts", artifact], smoke);
+	const installed = path.join(
+		smoke,
+		"node_modules",
+		"gleam-mutants",
+		"bin",
+		"gleam-mutants.mjs",
+	);
+	const output = run(process.execPath, [installed, "--version"], smoke, {
+		capture: true,
+	});
+	if (!output.includes(version))
+		throw new Error(`Unexpected npm CLI version: ${output}`);
+	smokeRun(
+		process.execPath,
+		[installed, "run", "--no-strict", "--jobs", "2"],
+		smoke,
+	);
+	return { artifact, stage, report: verifyReports(smoke, "npm") };
 }
 
 function sha256(file) {
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-}
-
-function relativeFiles(directory) {
-  const files = [];
-  function visit(current) {
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const candidate = path.join(current, entry.name);
-      if (entry.isDirectory()) visit(candidate);
-      else files.push(candidate);
-    }
-  }
-  visit(directory);
-  return files.sort((a, b) => a.localeCompare(b));
+	return crypto
+		.createHash("sha256")
+		.update(fs.readFileSync(file))
+		.digest("hex");
 }
 
 function generateSbom(source, distribution, applicationRef, temporaryRoot) {
-  const sbomTemporary = path.join(temporaryRoot, `${distribution}.cdx.json`);
-  run("syft", [
-    source,
-    "--source-name",
-    `gleam-mutants-${distribution}`,
-    "--source-version",
-    version,
-    "-o",
-    `cyclonedx-json=${sbomTemporary}`,
-  ]);
-  const sbomData = JSON.parse(fs.readFileSync(sbomTemporary, "utf8"));
-  sbomData.components ??= [];
-  sbomData.dependencies ??= [];
-  for (const component of sbomData.components) {
-    if (component.purl) component["bom-ref"] = component.purl;
-  }
-  if (!sbomData.components.some(component => component["bom-ref"] === applicationRef)) {
-    sbomData.components.push({
-      "bom-ref": applicationRef,
-      type: "application",
-      name: "gleam-mutants",
-      version,
-      licenses: [
-        { expression: "MIT OR Apache-2.0" },
-      ],
-      properties: [
-        { name: "gleam-mutants:distribution", value: distribution },
-      ],
-    });
-  }
-  sbomData.metadata.component = {
-    "bom-ref": applicationRef,
-    type: "application",
-    name: "gleam-mutants",
-    version,
-    properties: [
-      { name: "gleam-mutants:distribution", value: distribution },
-    ],
-  };
-  const mteRef = "pkg:npm/mutation-testing-elements@3.9.0";
-  if (!sbomData.components.some(component => component["bom-ref"] === mteRef)) {
-    sbomData.components.push({
-      "bom-ref": mteRef,
-      type: "library",
-      name: "mutation-testing-elements",
-      version: "3.9.0",
-      purl: mteRef,
-      hashes: [{ alg: "SHA-256", content: "751fb010242b0b44e32d84fe7fe0b9ff1da182823b94f59f5c52b001fcfc163b" }],
-      licenses: [{ license: { id: "Apache-2.0" } }],
-      properties: [{ name: "gleam-mutants:npm-integrity", value: "sha512-3G4GhBO8Wc/ZrqOJ5uT8AbM1h/ew9kfX0MIlpy59gWu/amMZyKH3TreKAOMwwXNibhZMOL7A3n5nFvhYWLdtYQ==" }],
-    });
-  }
-  let applicationDependency = sbomData.dependencies.find(dependency => dependency.ref === applicationRef);
-  if (!applicationDependency) {
-    applicationDependency = { ref: applicationRef, dependsOn: [] };
-    sbomData.dependencies.push(applicationDependency);
-  }
-  applicationDependency.dependsOn ??= [];
-  if (!applicationDependency.dependsOn.includes(mteRef)) applicationDependency.dependsOn.push(mteRef);
-  if (!sbomData.dependencies.some(dependency => dependency.ref === mteRef)) {
-    sbomData.dependencies.push({ ref: mteRef, dependsOn: [] });
-  }
-  delete sbomData.serialNumber;
-  sbomData.metadata.timestamp = "1970-01-01T00:00:00Z";
-  if (distribution === "npm") {
-    sbomData.components = [
-      {
-        "bom-ref": applicationRef,
-        type: "application",
-        name: "gleam-mutants",
-        version,
-        licenses: [{ expression: "MIT OR Apache-2.0" }],
-        properties: [{ name: "gleam-mutants:distribution", value: distribution }],
-      },
-      {
-        "bom-ref": mteRef,
-        type: "library",
-        name: "mutation-testing-elements",
-        version: "3.9.0",
-        purl: mteRef,
-        hashes: [{ alg: "SHA-256", content: "751fb010242b0b44e32d84fe7fe0b9ff1da182823b94f59f5c52b001fcfc163b" }],
-        licenses: [{ license: { id: "Apache-2.0" } }],
-        properties: [{ name: "gleam-mutants:npm-integrity", value: "sha512-3G4GhBO8Wc/ZrqOJ5uT8AbM1h/ew9kfX0MIlpy59gWu/amMZyKH3TreKAOMwwXNibhZMOL7A3n5nFvhYWLdtYQ==" }],
-      },
-    ];
-    sbomData.dependencies = [
-      { ref: applicationRef, dependsOn: [mteRef] },
-      { ref: mteRef, dependsOn: [] },
-    ];
-  }
-  const stable = value => {
-    if (Array.isArray(value)) {
-      return value.map(stable).sort((left, right) => {
-        const a = JSON.stringify(left);
-        const b = JSON.stringify(right);
-        return a < b ? -1 : a > b ? 1 : 0;
-      });
-    }
-    if (value && typeof value === "object") {
-      return Object.fromEntries(
-        Object.entries(value)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([key, item]) => [key, stable(item)]),
-      );
-    }
-    return value;
-  };
-  for (const component of sbomData.components) {
-    component.properties = (component.properties || []).filter(property => !property.name?.startsWith("syft:location:"));
-  }
-  const canonical = stable(sbomData);
-  const sbom = path.join(dist, `gleam-mutants-${version}-${distribution}.cdx.json`);
-  fs.writeFileSync(sbom, JSON.stringify(canonical) + "\n", "utf8");
-  return sbom;
+	const sbomTemporary = path.join(temporaryRoot, `${distribution}.cdx.json`);
+	run("syft", [
+		source,
+		"--source-name",
+		`gleam-mutants-${distribution}`,
+		"--source-version",
+		version,
+		"-o",
+		`cyclonedx-json=${sbomTemporary}`,
+	]);
+	const sbomData = JSON.parse(fs.readFileSync(sbomTemporary, "utf8"));
+	sbomData.components ??= [];
+	sbomData.dependencies ??= [];
+	for (const component of sbomData.components) {
+		if (component.purl) component["bom-ref"] = component.purl;
+	}
+	if (
+		!sbomData.components.some(
+			(component) => component["bom-ref"] === applicationRef,
+		)
+	) {
+		sbomData.components.push({
+			"bom-ref": applicationRef,
+			type: "application",
+			name: "gleam-mutants",
+			version,
+			licenses: [{ expression: "MIT OR Apache-2.0" }],
+			properties: [{ name: "gleam-mutants:distribution", value: distribution }],
+		});
+	}
+	sbomData.metadata.component = {
+		"bom-ref": applicationRef,
+		type: "application",
+		name: "gleam-mutants",
+		version,
+		properties: [{ name: "gleam-mutants:distribution", value: distribution }],
+	};
+	const mteRef = "pkg:npm/mutation-testing-elements@3.9.0";
+	if (
+		!sbomData.components.some((component) => component["bom-ref"] === mteRef)
+	) {
+		sbomData.components.push({
+			"bom-ref": mteRef,
+			type: "library",
+			name: "mutation-testing-elements",
+			version: "3.9.0",
+			purl: mteRef,
+			hashes: [
+				{
+					alg: "SHA-256",
+					content:
+						"751fb010242b0b44e32d84fe7fe0b9ff1da182823b94f59f5c52b001fcfc163b",
+				},
+			],
+			licenses: [{ license: { id: "Apache-2.0" } }],
+			properties: [
+				{
+					name: "gleam-mutants:npm-integrity",
+					value:
+						"sha512-3G4GhBO8Wc/ZrqOJ5uT8AbM1h/ew9kfX0MIlpy59gWu/amMZyKH3TreKAOMwwXNibhZMOL7A3n5nFvhYWLdtYQ==",
+				},
+			],
+		});
+	}
+	let applicationDependency = sbomData.dependencies.find(
+		(dependency) => dependency.ref === applicationRef,
+	);
+	if (!applicationDependency) {
+		applicationDependency = { ref: applicationRef, dependsOn: [] };
+		sbomData.dependencies.push(applicationDependency);
+	}
+	applicationDependency.dependsOn ??= [];
+	if (!applicationDependency.dependsOn.includes(mteRef))
+		applicationDependency.dependsOn.push(mteRef);
+	if (!sbomData.dependencies.some((dependency) => dependency.ref === mteRef)) {
+		sbomData.dependencies.push({ ref: mteRef, dependsOn: [] });
+	}
+	delete sbomData.serialNumber;
+	sbomData.metadata.timestamp = "1970-01-01T00:00:00Z";
+	if (distribution === "npm") {
+		sbomData.components = [
+			{
+				"bom-ref": applicationRef,
+				type: "application",
+				name: "gleam-mutants",
+				version,
+				licenses: [{ expression: "MIT OR Apache-2.0" }],
+				properties: [
+					{ name: "gleam-mutants:distribution", value: distribution },
+				],
+			},
+			{
+				"bom-ref": mteRef,
+				type: "library",
+				name: "mutation-testing-elements",
+				version: "3.9.0",
+				purl: mteRef,
+				hashes: [
+					{
+						alg: "SHA-256",
+						content:
+							"751fb010242b0b44e32d84fe7fe0b9ff1da182823b94f59f5c52b001fcfc163b",
+					},
+				],
+				licenses: [{ license: { id: "Apache-2.0" } }],
+				properties: [
+					{
+						name: "gleam-mutants:npm-integrity",
+						value:
+							"sha512-3G4GhBO8Wc/ZrqOJ5uT8AbM1h/ew9kfX0MIlpy59gWu/amMZyKH3TreKAOMwwXNibhZMOL7A3n5nFvhYWLdtYQ==",
+					},
+				],
+			},
+		];
+		sbomData.dependencies = [
+			{ ref: applicationRef, dependsOn: [mteRef] },
+			{ ref: mteRef, dependsOn: [] },
+		];
+	}
+	const stable = (value) => {
+		if (Array.isArray(value)) {
+			return value.map(stable).sort((left, right) => {
+				const a = JSON.stringify(left);
+				const b = JSON.stringify(right);
+				return a < b ? -1 : a > b ? 1 : 0;
+			});
+		}
+		if (value && typeof value === "object") {
+			return Object.fromEntries(
+				Object.entries(value)
+					.sort(([left], [right]) => left.localeCompare(right))
+					.map(([key, item]) => [key, stable(item)]),
+			);
+		}
+		return value;
+	};
+	for (const component of sbomData.components) {
+		component.properties = (component.properties || []).filter(
+			(property) => !property.name?.startsWith("syft:location:"),
+		);
+	}
+	const canonical = stable(sbomData);
+	const sbom = path.join(
+		dist,
+		`gleam-mutants-${version}-${distribution}.cdx.json`,
+	);
+	fs.writeFileSync(sbom, `${JSON.stringify(canonical)}\n`, "utf8");
+	return sbom;
 }
 
 fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(dist, { recursive: true });
-const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gleam-mutants-package-"));
+const temporaryRoot = fs.mkdtempSync(
+	path.join(os.tmpdir(), "gleam-mutants-package-"),
+);
 try {
-  run(process.execPath, ["scripts/check-vendor.mjs"]);
-  const hexBuild = buildHex(temporaryRoot);
-  const escriptBuild = buildEscript(temporaryRoot);
-  const npmBuild = buildNpm(temporaryRoot);
-  const hexArtifact = hexBuild.artifact;
-  const escriptArtifact = escriptBuild.artifact;
-  const npmArtifact = npmBuild.artifact;
-  const artifacts = [hexArtifact, escriptArtifact, npmArtifact];
-  run(process.execPath, ["scripts/browser-report-smoke.mjs", hexBuild.report, escriptBuild.report, npmBuild.report]);
-  const sboms = [
-    generateSbom(hexArtifact, "hex", `pkg:hex/gleam_mutants@${version}`, temporaryRoot),
-    generateSbom(escriptArtifact, "escript", `pkg:generic/gleam-mutants@${version}?distribution=escript`, temporaryRoot),
-    generateSbom(`dir:${npmBuild.stage}`, "npm", `pkg:npm/gleam-mutants@${version}`, temporaryRoot),
-  ];
+	run(process.execPath, ["scripts/check-vendor.mjs"]);
+	const hexBuild = buildHex(temporaryRoot);
+	const escriptBuild = buildEscript(temporaryRoot);
+	const npmBuild = buildNpm(temporaryRoot);
+	const hexArtifact = hexBuild.artifact;
+	const escriptArtifact = escriptBuild.artifact;
+	const npmArtifact = npmBuild.artifact;
+	const artifacts = [hexArtifact, escriptArtifact, npmArtifact];
+	run(process.execPath, [
+		"scripts/browser-report-smoke.mjs",
+		hexBuild.report,
+		escriptBuild.report,
+		npmBuild.report,
+	]);
+	const sboms = [
+		generateSbom(
+			hexArtifact,
+			"hex",
+			`pkg:hex/gleam_mutants@${version}`,
+			temporaryRoot,
+		),
+		generateSbom(
+			escriptArtifact,
+			"escript",
+			`pkg:generic/gleam-mutants@${version}?distribution=escript`,
+			temporaryRoot,
+		),
+		generateSbom(
+			`dir:${npmBuild.stage}`,
+			"npm",
+			`pkg:npm/gleam-mutants@${version}`,
+			temporaryRoot,
+		),
+	];
 
-  const checksums = [...artifacts, ...sboms]
-    .sort((a, b) => a.localeCompare(b))
-    .map(file => `${sha256(file)}  ${path.relative(dist, file).replaceAll(path.sep, "/")}`)
-    .join("\n") + "\n";
-  fs.writeFileSync(path.join(dist, "SHA256SUMS"), checksums, "utf8");
-  console.log(`Verified ${artifacts.length} development snapshot artifacts, checksums, and ${sboms.length} CycloneDX SBOMs in ${dist}`);
+	const checksums = `${[...artifacts, ...sboms]
+		.sort((a, b) => a.localeCompare(b))
+		.map(
+			(file) =>
+				`${sha256(file)}  ${path.relative(dist, file).replaceAll(path.sep, "/")}`,
+		)
+		.join("\n")}\n`;
+	fs.writeFileSync(path.join(dist, "SHA256SUMS"), checksums, "utf8");
+	console.log(
+		`Verified ${artifacts.length} development snapshot artifacts, checksums, and ${sboms.length} CycloneDX SBOMs in ${dist}`,
+	);
 } finally {
-fs.rmSync(temporaryRoot, { recursive: true, force: true });
-  for (const generated of ["gleam_mutants", "gleam_mutants.cmd"]) {
-    fs.rmSync(path.join(root, generated), { force: true });
-  }
+	fs.rmSync(temporaryRoot, { recursive: true, force: true });
+	for (const generated of ["gleam_mutants", "gleam_mutants.cmd"]) {
+		fs.rmSync(path.join(root, generated), { force: true });
+	}
 }

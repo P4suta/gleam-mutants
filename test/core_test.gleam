@@ -3,6 +3,7 @@
 
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/set
 import gleam/string
 import gleam_mutants/cache
@@ -17,6 +18,7 @@ import gleam_mutants/core/operator
 import gleam_mutants/core/outcome
 import gleam_mutants/core/score
 import gleam_mutants/core/span
+import gleam_mutants/types
 
 pub fn span_boundaries_test() {
   assert span.new(0, 0) == Ok(span.unsafe_new(0, 0))
@@ -40,7 +42,7 @@ pub fn stable_id_is_path_separator_portable_and_content_sensitive_test() {
   let candidate =
     mutant.Candidate(
       "src\\math.gleam",
-      operator.IntegerNeutral,
+      types.IntegerNeutral,
       span.unsafe_new(10, 11),
       "1",
       "0",
@@ -48,7 +50,7 @@ pub fn stable_id_is_path_separator_portable_and_content_sensitive_test() {
   let same =
     mutant.Candidate(
       "src/math.gleam",
-      operator.IntegerNeutral,
+      types.IntegerNeutral,
       span.unsafe_new(10, 11),
       "1",
       "0",
@@ -68,7 +70,7 @@ pub fn display_ids_are_unique_across_the_selected_catalogue_test() {
       "True",
       mutant.Candidate(
         "src/first.gleam",
-        operator.BooleanLiteral,
+        types.BooleanLiteral,
         span.unsafe_new(0, 4),
         "True",
         "False",
@@ -79,23 +81,23 @@ pub fn display_ids_are_unique_across_the_selected_catalogue_test() {
       "True",
       mutant.Candidate(
         "src/second.gleam",
-        operator.BooleanLiteral,
+        types.BooleanLiteral,
         span.unsafe_new(0, 4),
         "True",
         "False",
       ),
     )
   let first =
-    mutant.Mutant(
+    types.Mutant(
       ..first,
       id: "aaaaaaaaaaaaaaaaaaaa0bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     )
   let second =
-    mutant.Mutant(
+    types.Mutant(
       ..second,
       id: "aaaaaaaaaaaaaaaaaaaa1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     )
-  let duplicate = mutant.Mutant(..first, path: "src/duplicate.gleam")
+  let duplicate = types.Mutant(..first, path: "src/duplicate.gleam")
   let assert [first, second, duplicate] =
     catalog.assign_display_ids([first, second, duplicate])
   assert first.display_id == "aaaaaaaaaaaaaaaaaaaa0"
@@ -122,7 +124,7 @@ pub fn catalog_mutates_a_constructed_option_to_none_test() {
     catalog.discover("src/opt.gleam", source, operator.all())
   let options =
     list.filter(discovered.mutants, fn(item) {
-      item.operator == operator.OptionNeutral
+      item.operator == types.OptionNeutral
     })
 
   assert list.sort(
@@ -166,7 +168,7 @@ pub fn catalog_leaves_a_constructed_result_alone_test() {
     catalog.discover("src/parse.gleam", source, operator.all())
 
   assert list.all(discovered.mutants, fn(item) {
-    item.operator != operator.OptionNeutral
+    item.operator != types.OptionNeutral
   })
 }
 
@@ -216,7 +218,7 @@ fn option_replacements(source: String) -> List(String) {
   let assert Ok(discovered) =
     catalog.discover("src/opt.gleam", source, operator.all())
   discovered.mutants
-  |> list.filter(fn(item) { item.operator == operator.OptionNeutral })
+  |> list.filter(fn(item) { item.operator == types.OptionNeutral })
   |> list.map(fn(item) { item.replacement })
   |> list.sort(string.compare)
 }
@@ -235,7 +237,7 @@ pub fn catalog_drops_either_half_of_a_concatenation_test() {
     catalog.discover("src/greet.gleam", source, operator.all())
   let halves =
     list.filter(discovered.mutants, fn(item) {
-      item.operator == operator.ConcatenationOperand
+      item.operator == types.ConcatenationOperand
     })
 
   assert list.sort(
@@ -254,9 +256,7 @@ pub fn catalog_drops_either_half_of_a_concatenation_test() {
     catalog.discover("src/join.gleam", chained, operator.all())
   assert list.sort(
       discovered.mutants
-        |> list.filter(fn(item) {
-          item.operator == operator.ConcatenationOperand
-        })
+        |> list.filter(fn(item) { item.operator == types.ConcatenationOperand })
         |> list.map(fn(item) { item.replacement }),
       string.compare,
     )
@@ -279,7 +279,7 @@ pub fn catalog_drops_an_integer_sign_test() {
     catalog.discover("src/shift.gleam", source, operator.all())
   let signs =
     list.filter(discovered.mutants, fn(item) {
-      item.operator == operator.IntegerNegation
+      item.operator == types.IntegerNegation
     })
 
   assert list.map(signs, fn(item) { #(item.original, item.replacement) })
@@ -368,12 +368,10 @@ pub fn catalog_preserves_unicode_comments_and_crlf_test() {
     catalog.discover("src/example.gleam", source, operator.all())
   let mutants = discovered.mutants
   assert list.any(mutants, fn(item) {
-    item.operator == operator.ComparisonBoundary
+    item.operator == types.ComparisonBoundary
   })
-  assert list.any(mutants, fn(item) {
-    item.operator == operator.BooleanConnective
-  })
-  assert list.any(mutants, fn(item) { item.operator == operator.BooleanLiteral })
+  assert list.any(mutants, fn(item) { item.operator == types.BooleanConnective })
+  assert list.any(mutants, fn(item) { item.operator == types.BooleanLiteral })
   let assert Ok(forest) = interval_tree.build(source, mutants)
   let instrumented =
     interval_tree.render(source, forest, "internal/runtime", set.new())
@@ -390,7 +388,7 @@ pub fn nested_instrumentation_selects_each_mutant_once_test() {
   let outer_candidate =
     mutant.Candidate(
       "src/a.gleam",
-      operator.IntegerArithmetic,
+      types.IntegerArithmetic,
       span.unsafe_new(0, 5),
       source,
       "1 - 2",
@@ -398,7 +396,7 @@ pub fn nested_instrumentation_selects_each_mutant_once_test() {
   let inner_candidate =
     mutant.Candidate(
       "src/a.gleam",
-      operator.IntegerNeutral,
+      types.IntegerNeutral,
       span.unsafe_new(0, 1),
       "1",
       "0",
@@ -419,7 +417,7 @@ pub fn partial_overlap_is_rejected_after_stack_validation_test() {
       source,
       mutant.Candidate(
         "src/a.gleam",
-        operator.StringNeutral,
+        types.StringNeutral,
         span.unsafe_new(0, 4),
         "1234",
         "\"\"",
@@ -430,7 +428,7 @@ pub fn partial_overlap_is_rejected_after_stack_validation_test() {
       source,
       mutant.Candidate(
         "src/a.gleam",
-        operator.StringNeutral,
+        types.StringNeutral,
         span.unsafe_new(3, 7),
         "4567",
         "\"\"",
@@ -447,7 +445,7 @@ pub fn config_defaults_and_toml_precedence_test() {
     "# keep me\n[tools.gleam_mutants]\nversion = 1\n[tools.gleam_mutants.execution]\njobs = 3\n[tools.gleam_mutants.policy]\nstrict = false\nminimum_score = 80\n[tools.gleam_mutants.report]\ndirectory = \"artifacts/mutation\"\nhigh = 90\nlow = 70\n"
   let assert Ok(decoded) = config.decode(source, 32)
   assert decoded.jobs == 3
-  assert decoded.test_selection == config.TestSelectionAuto
+  assert decoded.test_selection == types.TestSelectionAuto
   assert decoded.strict == Some(False)
   assert decoded.minimum_score == 80.0
   assert decoded.report.directory == "artifacts/mutation"
@@ -457,7 +455,7 @@ pub fn config_defaults_and_toml_precedence_test() {
   assert defaults.report.directory == "reports/mutation"
   assert defaults.report.high == 80
   assert defaults.report.low == 60
-  assert defaults.test_selection == config.TestSelectionAuto
+  assert defaults.test_selection == types.TestSelectionAuto
   let assert Ok(#(initialised, changed)) =
     config.initialise("name = \"demo\" # comment\n")
   assert changed
@@ -476,14 +474,14 @@ pub fn test_selection_config_and_cli_override_test() {
   let source =
     "[tools.gleam_mutants]\nversion = 1\n[tools.gleam_mutants.execution]\ntest_selection = \"full\"\n"
   let assert Ok(decoded) = config.decode(source, 4)
-  assert decoded.test_selection == config.TestSelectionFull
+  assert decoded.test_selection == types.TestSelectionFull
 
   let assert Ok(cli.RunCommand(auto_options)) =
     cli.parse(["run", "--test-selection", "auto"])
-  assert auto_options.test_selection == Some(config.TestSelectionAuto)
+  assert auto_options.test_selection == Some(types.TestSelectionAuto)
   let assert Ok(cli.RunCommand(full_options)) =
     cli.parse(["run", "--test-selection=full"])
-  assert full_options.test_selection == Some(config.TestSelectionFull)
+  assert full_options.test_selection == Some(types.TestSelectionFull)
   assert cli.parse(["run", "--test-selection", "sometimes"])
     == Error("GMU1002: --test-selection must be auto or full")
   assert cli.parse(["run", "--test-selection"])
@@ -546,15 +544,11 @@ pub fn report_config_rejects_unsafe_paths_and_thresholds_test() {
 }
 
 pub fn a_mutant_the_suite_noticed_is_detected_test() {
-  // A mutant that hangs the suite is one the suite noticed, and the score has
-  // always counted it with the kills. Everything that decides whether a mutant
-  // is dead — `apply --verify` included — has to agree with the number the
-  // same workspace reports, so the two answer from one predicate.
   let outcomes = [
-    outcome.Killed,
-    outcome.TimedOut,
-    outcome.Survived,
-    outcome.TestError("boom"),
+    types.Killed,
+    types.TimedOut,
+    types.Survived,
+    types.TestError("boom"),
   ]
   assert list.map(outcomes, outcome.detected) == [True, True, False, False]
 
@@ -563,12 +557,48 @@ pub fn a_mutant_the_suite_noticed_is_detected_test() {
     == counted.killed + counted.timed_out
 }
 
+pub fn aggregation_requires_runtime_evidence_test() {
+  assert outcome.aggregate([]) == types.TestError("no runtime results")
+}
+
+pub fn aggregation_matches_priority_for_all_runtime_category_lists_test() {
+  let categories = [
+    types.Killed,
+    types.TimedOut,
+    types.Survived,
+    types.TestError("error"),
+  ]
+  let lists =
+    list.fold([1, 2, 3, 4], [[]], fn(previous, _) {
+      list.append(
+        previous,
+        list.flat_map(previous, fn(items) {
+          list.map(categories, fn(category) { [category, ..items] })
+        }),
+      )
+      |> list.unique
+    })
+  assert list.length(lists) == 341
+  list.each(lists, fn(items) {
+    let expected =
+      [types.TestError("error"), types.Survived, types.TimedOut, types.Killed]
+      |> list.find(fn(category) { list.contains(items, category) })
+      |> result.unwrap(types.TestError("no runtime results"))
+    let actual =
+      list.map(items, fn(value) {
+        types.RuntimeOutcome(types.Erlang, value, 0, "", False)
+      })
+      |> outcome.aggregate
+    assert actual == expected
+  })
+}
+
 pub fn score_timeout_and_exit_policy_test() {
   let mutation_score =
     score.calculate([
-      outcome.Killed,
-      outcome.TimedOut,
-      outcome.Survived,
+      types.Killed,
+      types.TimedOut,
+      types.Survived,
     ])
   assert mutation_score.total == 3
   assert mutation_score.killed == 1
@@ -578,12 +608,12 @@ pub fn score_timeout_and_exit_policy_test() {
   let empty_score = score.calculate([])
   assert empty_score.percent == 0.0
   assert score.display(empty_score) == "N/A (0 valid mutants)"
-  assert score.display(score.Score(4, 1, 2, 1, 0, 75.0)) == "75% (3/4)"
-  assert score.display(score.Score(2, 1, 0, 1, 0, 75.5)) == "75.5% (1/2)"
-  assert score.display(score.Score(2, 1, 0, 1, 0, 75.05)) == "75.05% (1/2)"
-  assert score.display(score.Score(3, 1, 0, 2, 0, 33.33333333333333))
+  assert score.display(types.Score(4, 1, 2, 1, 0, 75.0)) == "75% (3/4)"
+  assert score.display(types.Score(2, 1, 0, 1, 0, 75.5)) == "75.5% (1/2)"
+  assert score.display(types.Score(2, 1, 0, 1, 0, 75.05)) == "75.05% (1/2)"
+  assert score.display(types.Score(3, 1, 0, 2, 0, 33.33333333333333))
     == "33.33% (1/3)"
-  assert score.display(score.Score(29, 26, 0, 3, 0, 89.65517241379311))
+  assert score.display(types.Score(29, 26, 0, 3, 0, 89.65517241379311))
     == "89.66% (26/29)"
   assert exit_policy.code(
       mutation_score,
@@ -602,7 +632,7 @@ pub fn score_timeout_and_exit_policy_test() {
     == 0
 
   let with_runtime_error =
-    score.calculate([outcome.Killed, outcome.TestError("boom")])
+    score.calculate([types.Killed, types.TestError("boom")])
   assert with_runtime_error.total == 1
   assert with_runtime_error.errors == 1
   assert with_runtime_error.percent == 100.0
@@ -674,28 +704,28 @@ pub fn cache_fingerprint_is_order_and_input_sensitive_test() {
   let first =
     cache.fingerprint(
       "abc",
-      [outcome.Erlang, outcome.Node],
+      [types.Erlang, types.Node],
       ["gleam", "test"],
       10_000,
     )
   assert first
     == cache.fingerprint(
       "abc",
-      [outcome.Erlang, outcome.Node],
+      [types.Erlang, types.Node],
       ["gleam", "test"],
       10_000,
     )
   assert first
     != cache.fingerprint(
       "abcd",
-      [outcome.Erlang, outcome.Node],
+      [types.Erlang, types.Node],
       ["gleam", "test"],
       10_000,
     )
   assert first
     != cache.fingerprint(
       "abc",
-      [outcome.Node, outcome.Erlang],
+      [types.Node, types.Erlang],
       ["gleam", "test"],
       10_000,
     )

@@ -7,66 +7,33 @@ import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option
 import gleam/result
 import gleam/string
 import gleam_mutants/cache
 import gleam_mutants/core/catalog.{type RejectedMutant}
 import gleam_mutants/core/mutant.{type Mutant}
 import gleam_mutants/core/operator
-import gleam_mutants/core/outcome.{
-  type Outcome, type RuntimeOutcome, Killed, Survived, TestError, TimedOut,
-}
+import gleam_mutants/core/outcome.{type Outcome, type RuntimeOutcome}
 import gleam_mutants/core/path
 import gleam_mutants/core/score.{type Score}
 import gleam_mutants/core/span
 import gleam_mutants/platform
+import gleam_mutants/types.{Killed, Survived, TestError, TimedOut}
 import gleam_mutants/version
 import simplifile
 
-pub type MutantResult {
-  MutantResult(
-    mutant: Mutant,
-    outcomes: List(RuntimeOutcome),
-    aggregate: Outcome,
-  )
-}
+pub type MutantResult =
+  types.MutantResult
 
-pub type RunReport {
-  RunReport(
-    run_id: String,
-    started_ms: Int,
-    duration_ms: Int,
-    workspace_digest: String,
-    matrix: Bool,
-    selection: SelectionSummary,
-    policy: PolicySummary,
-    results: List(MutantResult),
-    rejected: List(RejectedMutant),
-    score: Score,
-  )
-}
+pub type RunReport =
+  types.RunReport
 
-pub type SelectionSummary {
-  SelectionSummary(
-    mode: String,
-    files_selected: Int,
-    candidates: Int,
-    executed: Int,
-    compile_errors: Int,
-    skipped: Bool,
-    reason: Option(String),
-  )
-}
+pub type SelectionSummary =
+  types.SelectionSummary
 
-pub type PolicySummary {
-  PolicySummary(
-    strict: Bool,
-    minimum_score: Float,
-    require_mutants: Bool,
-    failure: Option(String),
-  )
-}
+pub type PolicySummary =
+  types.PolicySummary
 
 pub fn to_json(report: RunReport) -> String {
   json.object([
@@ -330,90 +297,6 @@ pub fn latest(workspace: String) -> Result(String, String) {
   |> path.join("latest.json")
   |> simplifile.read
   |> result.map_error(simplifile.describe_error)
-}
-
-/// The ids of every mutant a stored Run Report v1 document saw survive.
-///
-/// `json` is the text of a native report, as `latest` answers with. Only the
-/// mutants whose aggregate outcome is `survived` are named, in the order the
-/// report lists them, so a caller can narrow a fresh selection down to what
-/// the last run failed to kill. A document that is not a native report, or
-/// that holds no `mutants` array, is refused rather than read as empty: a
-/// silent `[]` would look exactly like a run that killed everything.
-pub fn survivor_ids(json: String) -> Result(List(String), String) {
-  use graded <- result.map(graded_mutants(json))
-  graded
-  |> list.filter(fn(entry) { entry.1 == "survived" })
-  |> list.map(fn(entry) { entry.0 })
-}
-
-/// The paths of every mutant a stored Run Report v1 document graded.
-///
-/// A file named here was covered by the last run, whatever it found there; a
-/// selected file missing from this list was never run at all, which is the
-/// difference `suggest --survivors` reports rather than silently drops.
-pub fn covered_paths(json: String) -> Result(List(String), String) {
-  use graded <- result.map(graded_mutants(json))
-  graded
-  |> list.map(fn(entry) { entry.2 })
-  |> list.unique
-}
-
-/// Every mutant a stored Run Report v1 document graded, and whether it died.
-///
-/// `json` is the text of a native report, as `latest` answers with. A mutant
-/// is keyed by the id it ran under, which carries the digest of the source it
-/// was cut from, so a caller can tell a verdict about this source from one
-/// about an older copy of it. Dead means what the mutation score means by it:
-/// a mutant that hung the suite counts as detected, exactly as `--verify`
-/// counts one.
-pub fn graded_outcomes(json: String) -> Result(List(#(String, Bool)), String) {
-  use graded <- result.map(graded_mutants(json))
-  list.map(graded, fn(entry) {
-    #(entry.0, entry.1 == "killed" || entry.1 == "timed-out")
-  })
-}
-
-/// When the run a stored Run Report v1 document describes began.
-///
-/// `--verify` reuses a stored run as its baseline only where that run is
-/// still a verdict on the workspace in front of it, and the moment it started
-/// is what that is judged against: a source file or a test module written
-/// since is a file the run never saw. A document that names no start is
-/// refused rather than read as the epoch, which would make every stored run
-/// look older than everything.
-pub fn run_started_ms(json: String) -> Result(Int, String) {
-  json.parse(json, {
-    use started <- decode.field("started_ms", decode.int)
-    decode.success(started)
-  })
-  |> result.map_error(fn(error) {
-    "not a native Run Report v1 document: " <> string.inspect(error)
-  })
-}
-
-/// Every graded mutant of a stored report as `#(id, aggregate, path)`.
-fn graded_mutants(
-  json: String,
-) -> Result(List(#(String, String, String)), String) {
-  json.parse(json, graded_decoder())
-  |> result.map_error(fn(error) {
-    "not a native Run Report v1 document: " <> string.inspect(error)
-  })
-}
-
-fn graded_decoder() -> decode.Decoder(List(#(String, String, String))) {
-  use _ <- decode.field("schema_version", decode.int)
-  use graded <- decode.field(
-    "mutants",
-    decode.list({
-      use id <- decode.subfield(["mutant", "id"], decode.string)
-      use path <- decode.subfield(["mutant", "path"], decode.string)
-      use aggregate <- decode.field("aggregate", decode.string)
-      decode.success(#(id, aggregate, path))
-    }),
-  )
-  decode.success(graded)
 }
 
 fn write_atomic(target: String, text: String) -> Result(Nil, String) {

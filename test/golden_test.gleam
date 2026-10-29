@@ -4,10 +4,11 @@
 import gleam/list
 import gleam_mutants/core/catalog
 import gleam_mutants/core/operator
-import gleam_mutants/core/outcome.{
+import gleam_mutants/core/outcome
+import gleam_mutants/platform
+import gleam_mutants/types.{
   Bun, Erlang, Killed, Node, RuntimeOutcome, Survived, TestError, TimedOut,
 }
-import gleam_mutants/platform
 
 pub fn every_v1_operator_has_a_golden_candidate_test() {
   let source =

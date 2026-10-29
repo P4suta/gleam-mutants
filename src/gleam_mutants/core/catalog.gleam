@@ -13,6 +13,7 @@ import gleam_mutants/core/bytes
 import gleam_mutants/core/mutant.{type Candidate, type Mutant, Candidate}
 import gleam_mutants/core/operator.{type Operator}
 import gleam_mutants/core/span
+import gleam_mutants/types
 
 pub type Catalog {
   Catalog(
@@ -54,9 +55,8 @@ pub type RejectedCandidate {
   RejectedCandidate(path: String, span: glance.Span, reason: String)
 }
 
-pub type RejectedMutant {
-  RejectedMutant(mutant: Mutant, reason: String, diagnostic: String)
-}
+pub type RejectedMutant =
+  types.RejectedMutant
 
 pub fn discover(
   path: String,
@@ -339,11 +339,11 @@ fn rejected_candidates(
 
 fn needs_type_evidence(enabled: List(Operator)) -> Bool {
   list.any(enabled, fn(kind) {
-    kind == operator.IntegerNeutral
-    || kind == operator.FloatNeutral
-    || kind == operator.StringNeutral
-    || kind == operator.ListNeutral
-    || kind == operator.OptionNeutral
+    kind == types.IntegerNeutral
+    || kind == types.FloatNeutral
+    || kind == types.StringNeutral
+    || kind == types.ListNeutral
+    || kind == types.OptionNeutral
   })
 }
 
@@ -451,7 +451,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        semantic_rule(operator.BooleanLiteral, BooleanLiteralEvidence),
+        semantic_rule(types.BooleanLiteral, BooleanLiteralEvidence),
         location,
         "False",
       ),
@@ -460,7 +460,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        semantic_rule(operator.BooleanLiteral, BooleanLiteralEvidence),
+        semantic_rule(types.BooleanLiteral, BooleanLiteralEvidence),
         location,
         "True",
       ),
@@ -469,7 +469,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        semantic_rule(operator.BooleanNegation, BooleanNegationEvidence),
+        semantic_rule(types.BooleanNegation, BooleanNegationEvidence),
         location,
         source_for(source, value.location),
       ),
@@ -483,7 +483,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        semantic_rule(operator.IntegerNegation, IntegerNegationEvidence),
+        semantic_rule(types.IntegerNegation, IntegerNegationEvidence),
         location,
         source_for(source, value.location),
       ),
@@ -492,7 +492,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        semantic_rule(operator.IntegerNeutral, IntegerLiteralEvidence),
+        semantic_rule(types.IntegerNeutral, IntegerLiteralEvidence),
         location,
         case value == "0" {
           True -> "1"
@@ -504,7 +504,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        semantic_rule(operator.FloatNeutral, FloatLiteralEvidence),
+        semantic_rule(types.FloatNeutral, FloatLiteralEvidence),
         location,
         case value == "0.0" {
           True -> "1.0"
@@ -516,7 +516,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        semantic_rule(operator.StringNeutral, StringLiteralEvidence),
+        semantic_rule(types.StringNeutral, StringLiteralEvidence),
         location,
         case value == "" {
           True -> "\"mutant\""
@@ -528,7 +528,7 @@ fn expression_candidates(
       make_candidate(
         source,
         path,
-        semantic_rule(operator.ListNeutral, ListLiteralEvidence),
+        semantic_rule(types.ListNeutral, ListLiteralEvidence),
         location,
         "[]",
       ),
@@ -548,7 +548,7 @@ fn expression_candidates(
           make_candidate(
             source,
             path,
-            semantic_rule(operator.OptionNeutral, OptionConstructorEvidence),
+            semantic_rule(types.OptionNeutral, OptionConstructorEvidence),
             location,
             none,
           ),
@@ -567,7 +567,7 @@ fn expression_candidates(
           make_candidate(
             source,
             path,
-            semantic_rule(operator.OptionNeutral, OptionConstructorEvidence),
+            semantic_rule(types.OptionNeutral, OptionConstructorEvidence),
             location,
             qualifier <> ".None",
           ),
@@ -623,7 +623,7 @@ fn binary_candidates(
           make_candidate(
             source,
             path,
-            syntax_rule(operator.PipelineStageDeletion, PipelineEvidence),
+            syntax_rule(types.PipelineStageDeletion, PipelineEvidence),
             location,
             source_for(source, left.location),
           ),
@@ -639,7 +639,7 @@ fn binary_candidates(
               source,
               path,
               semantic_rule(
-                operator.ConcatenationOperand,
+                types.ConcatenationOperand,
                 BinaryOperatorEvidence(binary_operator),
               ),
               location,
@@ -655,27 +655,27 @@ fn binary_replacement(
   binary_operator: glance.BinaryOperator,
 ) -> Option(#(Operator, String, String)) {
   case binary_operator {
-    glance.And -> Some(#(operator.BooleanConnective, "&&", "||"))
-    glance.Or -> Some(#(operator.BooleanConnective, "||", "&&"))
-    glance.Eq -> Some(#(operator.Equality, "==", "!="))
-    glance.NotEq -> Some(#(operator.Equality, "!=", "=="))
-    glance.LtInt -> Some(#(operator.ComparisonBoundary, "<", "<="))
-    glance.LtEqInt -> Some(#(operator.ComparisonBoundary, "<=", "<"))
-    glance.GtInt -> Some(#(operator.ComparisonBoundary, ">", ">="))
-    glance.GtEqInt -> Some(#(operator.ComparisonBoundary, ">=", ">"))
-    glance.LtFloat -> Some(#(operator.ComparisonBoundary, "<.", "<=."))
-    glance.LtEqFloat -> Some(#(operator.ComparisonBoundary, "<=.", "<."))
-    glance.GtFloat -> Some(#(operator.ComparisonBoundary, ">.", ">=."))
-    glance.GtEqFloat -> Some(#(operator.ComparisonBoundary, ">=.", ">."))
-    glance.AddInt -> Some(#(operator.IntegerArithmetic, "+", "-"))
-    glance.SubInt -> Some(#(operator.IntegerArithmetic, "-", "+"))
-    glance.MultInt -> Some(#(operator.IntegerArithmetic, "*", "/"))
-    glance.DivInt -> Some(#(operator.IntegerArithmetic, "/", "*"))
-    glance.RemainderInt -> Some(#(operator.IntegerArithmetic, "%", "*"))
-    glance.AddFloat -> Some(#(operator.FloatArithmetic, "+.", "-."))
-    glance.SubFloat -> Some(#(operator.FloatArithmetic, "-.", "+."))
-    glance.MultFloat -> Some(#(operator.FloatArithmetic, "*.", "/."))
-    glance.DivFloat -> Some(#(operator.FloatArithmetic, "/.", "*."))
+    glance.And -> Some(#(types.BooleanConnective, "&&", "||"))
+    glance.Or -> Some(#(types.BooleanConnective, "||", "&&"))
+    glance.Eq -> Some(#(types.Equality, "==", "!="))
+    glance.NotEq -> Some(#(types.Equality, "!=", "=="))
+    glance.LtInt -> Some(#(types.ComparisonBoundary, "<", "<="))
+    glance.LtEqInt -> Some(#(types.ComparisonBoundary, "<=", "<"))
+    glance.GtInt -> Some(#(types.ComparisonBoundary, ">", ">="))
+    glance.GtEqInt -> Some(#(types.ComparisonBoundary, ">=", ">"))
+    glance.LtFloat -> Some(#(types.ComparisonBoundary, "<.", "<=."))
+    glance.LtEqFloat -> Some(#(types.ComparisonBoundary, "<=.", "<."))
+    glance.GtFloat -> Some(#(types.ComparisonBoundary, ">.", ">=."))
+    glance.GtEqFloat -> Some(#(types.ComparisonBoundary, ">=.", ">."))
+    glance.AddInt -> Some(#(types.IntegerArithmetic, "+", "-"))
+    glance.SubInt -> Some(#(types.IntegerArithmetic, "-", "+"))
+    glance.MultInt -> Some(#(types.IntegerArithmetic, "*", "/"))
+    glance.DivInt -> Some(#(types.IntegerArithmetic, "/", "*"))
+    glance.RemainderInt -> Some(#(types.IntegerArithmetic, "%", "*"))
+    glance.AddFloat -> Some(#(types.FloatArithmetic, "+.", "-."))
+    glance.SubFloat -> Some(#(types.FloatArithmetic, "-.", "+."))
+    glance.MultFloat -> Some(#(types.FloatArithmetic, "*.", "/."))
+    glance.DivFloat -> Some(#(types.FloatArithmetic, "/.", "*."))
     glance.Pipe | glance.Concatenate -> None
   }
 }
