@@ -5,18 +5,23 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 # Architecture
 
-The pure core owns byte spans, operators, stable IDs, catalogue construction,
-nested interval instrumentation, outcomes, scores, and exit policy. Effects are
-provided through concrete filesystem, compiler/process, clock, cache, and
-reporting capabilities.
+The package measures existing test suites through controlled source mutations.
+The [package boundary decision](adr/mutation-testing-package-boundary.md) defines its scope.
+The public modules are the CLI entry point, `gleam_mutants/api`, and `gleam_mutants/types`.
+Canonical options and result types support typed embedding.
+The CLI owns terminal rendering, GitHub annotations, and exit status.
+The API returns failures and captures child output.
 
-Catalogue discovery has a small internal rule layer. `MutationRule` records the
-operator, `AnalysisMode`, and `TypeEvidence`. The default discovery path remains
-syntax-based for compatibility, while semantic rules are created only from
-definite Glance evidence (literals and typed binary operators). Expressions
-without evidence are not guessed into a typed mutation; the internal Catalog
-retains a `type-evidence-unavailable` reason. Compiler-invalid candidates are
-retained as rejected entries for diagnostics.
+The pure core owns byte spans, operators, stable identities, catalogue construction, interval instrumentation, outcomes, scores, and exit policy.
+Filesystem, compiler, process, clock, cache, and reporting operations sit behind concrete capabilities and the platform FFI.
+
+## Discovery and execution
+
+`MutationRule` records an operator, analysis mode, and type evidence.
+Syntax-based discovery remains the default.
+Semantic rules require definite Glance evidence.
+Unavailable type evidence is retained as a reason rather than guessed.
+Compiler-invalid candidates remain explicit rejected entries.
 
 The opaque phase pipeline is:
 
@@ -24,162 +29,82 @@ The opaque phase pipeline is:
 Discovered -> Snapshotted -> BaselinePassed -> Validated -> Instrumented -> Completed
 ```
 
-A transition requires the preceding phase type, so a mutant cannot be executed
-before the baseline passes. Discovery uses Glance AST locations, but output is
-assembled from byte slices of the original source rather than pretty-printing.
-This preserves comments, whitespace, Unicode, and CRLF. An interval forest
-allows nested mutations to coexist in one instrumented source.
+Transitions require the preceding phase.
+Discovery uses Glance AST locations, while instrumentation assembles original byte slices.
+Comments, whitespace, Unicode, and CRLF are preserved.
+An interval forest supports nested mutations in one instrumented source.
 
-The fast `list` path stops after configuration, snapshotting, selection, and
-catalogue discovery. `list --validate` builds the unmutated snapshot once, then
-compiler-checks candidates without entering either baseline or test execution.
-The full phase pipeline remains mandatory for `run`. A failing validation
-batch is split recursively until the invalid candidate and a deterministic,
-workspace-independent compiler diagnostic are isolated. Rejected candidates
-are available through validated `--explain` and JSON output.
+`list` stops after selection and catalogue discovery.
+`list --validate` builds the unmutated snapshot and compiler-checks candidates without tests.
+Validation splits failing batches to isolate invalid candidates and normalize compiler diagnostics.
+Interrupted builds abort validation instead of being misclassified as compiler rejections.
+`run` requires pristine and instrumented baselines before mutation testing.
+A failed baseline aborts without a quality score.
 
-The snapshot manifest is sorted and excludes `.git`, `build`, `.gleam_mutants`,
-`.smartest`, and other generated data. Reviewed Smartest corpus under
-`test/smartest/corpus/` remains a normal input. Links and special files are
-rejected. Catalogue consumers borrow one callback-scoped session containing
-the configuration, changed paths, snapshot, sources, and discovered mutants;
-the session disposes its one snapshot on every return path. A private runtime
-module generated in the snapshot asks its own FFI which mutant is active, and
-that FFI answers from the first source that has one: on Erlang the process
-dictionary key `gleam_mutants_active`, then the persistent term
-`{gleam_mutants, active}`, then the `GLEAM_MUTANTS_ACTIVE` environment
-variable; on JavaScript it reads `GLEAM_MUTANTS_ACTIVE` from the runtime's
-environment. `run` sets the environment variable per worker process; the
-in-process Erlang sources are what let one VM switch mutants between calls,
-which the differential probe below depends on. No permanent runtime API is
-required in the target package.
+The sorted snapshot manifest excludes generated build, dependency, cache, and report data.
+Build directories beside a package's `gleam.toml` are excluded; source directories named `build` remain inputs.
+Physical path joins preserve whitespace and native spelling.
+Directory entries containing unsupported separators or NUL are refused before filesystem use.
+POSIX snapshot roots are private before source is copied, and retained roots with unsafe permissions are refused.
+Shared cache directory creation accepts concurrent participants and never removes their contents on a creation error.
+Input links and special files are rejected.
+A callback-scoped session owns configuration, selection, snapshot, sources, and catalogue.
+Every returned result passes through snapshot disposal and lock release.
+Generated runtime modules exist only inside snapshots.
+Each worker selects its mutant through `GLEAM_MUTANTS_ACTIVE`.
 
-Adaptive test selection is provider-independent. With `test_selection =
-"auto"`, each instrumented baseline receives
-`GLEAM_MUTANTS_TEST_IMPACT_FILE`. A compatible runner atomically writes a
-versioned manifest of ordered opaque test descriptors and mutation sites each
-test reached. Mutant workers receive those selectors in an atomic JSON file
-below their snapshot's `.gleam_mutants/` directory through
-`GLEAM_MUTANTS_TEST_SELECTION_FILE`; selectors are never packed into an
-environment variable. Smartest supplies the first provider: native plans use
-exact leaf ids and legacy tests use their public `*_test` export id. Erlang
-propagates the current leaf through the runner's child-process context and a
-runtime-local ETS table; JavaScript runtimes use runtime-local global symbols.
+## Optional selection evidence
 
-Evidence is only an optimisation. An unsupported runner, invalid or incomplete
-manifest, unknown identity, or unreached site falls back to the configured full
-suite. Every distinct narrowed selector set first passes an unmutated baseline.
-A narrowed kill is final; every survive, timeout, or test error is rerun with
-the full suite, and only that final verdict is cached. `test_selection =
-"full"` does not start the impact protocol and follows the full-suite path
-directly.
+With automatic test selection, the instrumented baseline receives `GLEAM_MUTANTS_TEST_IMPACT_FILE`.
+A compatible provider writes a versioned manifest with ordered opaque test descriptors and reached mutation sites.
+Workers receive an atomic selector file through `GLEAM_MUTANTS_TEST_SELECTION_FILE`.
+Selectors are not packed into an environment variable.
 
-The same walk answers a second question for free. Where the catalogue can
-vouch that a replacement may be evaluated beside what it replaces, the guard
-evaluates both and records whether they ever parted, into
-`GLEAM_MUTANTS_OBSERVED_DIR` below the snapshot's `.gleam_mutants/`. Gleam
-makes that a question about syntax alone: there are no effects outside external
-functions, and the arithmetic is total on both targets -- `7 / 0` is `0`, not a
-crash -- so an expression of literals, variables and operators answers the same
-however often it is asked. A call is where that stops, and a call is where the
-vouching stops.
+Evidence is an optimization.
+An unsupported runner, invalid or incomplete manifest, unknown identity, or unreached site falls back to the full suite.
+Each distinct narrowed selector set first passes an unmutated baseline.
+A narrowed kill is final.
+Other outcomes are rerun against the full suite, and only the final verdict is cached.
+Full selection bypasses the protocol.
 
-A mutant that was compared and never parted answered exactly what it replaces
-wherever the suite went, so no test in that suite can tell it from the original
-and it is settled as survived without a worker, a process, or a test. Both
-answers are recorded and a mutant is settled only on the strength of the one
-saying they agreed: silence -- a guard that never ran, a directory that could
-not be written, a runtime with no such guard -- is read as no evidence, never
-as agreement. Only what the instrumenter actually wrote a comparing guard into
-is considered, because an absence means nothing where nothing was recording.
-This evidence is written by the instrumented program rather than by the runner,
-so it is available to a project whose runner supplies no test impact at all and
-therefore narrows nothing.
+For a syntactically safe expression, an instrumented baseline may compare the original and replacement values.
+Calls are excluded because evaluating them twice can change behavior.
+Only explicit successful observations can settle a mutant as survived without execution.
+Missing observations, unwritable evidence, unreached guards, and unsupported runtimes remain missing evidence.
+The project's own [fault and boundary checks](verification.md) cover those cases.
 
-A bounded worker pool receives independent copies of the instrumented snapshot.
-The cache is read for every mutant/runtime pair before that pool is allocated,
-so only mutants with misses receive workers and an all-hit run creates none.
-Workers are reused between mutant waves so their local build cache remains
-warm; no workspace is shared by concurrently running tests. Timeout cleanup
-terminates the entire descendant process tree (TERM then KILL on POSIX,
-`taskkill /T` on Windows), and interruption is preserved as exit 130.
+## Workers, caching, and outcomes
 
-Matrix aggregation is intentionally conservative: any surviving runtime makes
-the mutant survived; only mutants killed in every runtime are killed. Timeouts
-remain a distinct detected outcome. A failed baseline in any selected runtime
-aborts without producing a quality score.
+The cache is queried before allocating workers.
+An all-hit run creates no worker pool.
+Misses use independent snapshots, reused between waves to retain local build caches.
+Cache identity includes source, command, configuration, environment, declared inputs, compiler version, and real runtime versions.
+Erlang is identified through `erl`, not the runtime's display name.
 
-The native `RunReport` remains the lossless source of truth, including runtime
-matrix and cache details. A pure deterministic projection emits report schema
-3.9.0 data with `schemaVersion: "1.0"`. Files and mutants are sorted, original
-source is preserved byte-for-byte, and byte spans are recalculated as 1-based,
-start-inclusive/end-exclusive UTF-16 locations. The projection deliberately
-omits coverage fields, project root, full configuration, and extensions.
+Timeout cleanup terminates descendant process trees with TERM then KILL on POSIX and `taskkill /T` on Windows.
+A child status of 130/143 stops subsequent work and propagates an interruption error.
+Library callers retain control of their host.
+The CLI maps the error to the same exit code.
 
-The offline renderer decodes a generated pure-Gleam Base64 module containing
-the official Mutation Testing Elements 3.9.0 IIFE. JSON is stored in a
-non-executable `application/json` script element with HTML-significant and line
-separator characters escaped. The official bundle and a fixed bootstrap are
-the only executable scripts and are authorized by CSP hashes.
+Aggregation prioritizes a test error, then survival, then timeout, then a kill.
+An empty runtime result list is a test error.
+Timeouts remain distinct and count as detected under the scoring contract.
+A failed baseline produces no mutation score.
 
-## Differential suggestion
+## Reports
 
-`suggest`, `explain`, and `apply` do not run the test suite at all. The probe
-copies the workspace into a disposable snapshot and generates, per module, a
-probe module that calls each public function twice on the same input: once
-with no mutant active and once per mutant of that function, and both answers
-are compared directly rather than inferred from a red suite. On Erlang each
-call runs in a monitored process of the same VM whose process dictionary names
-the active mutant, so a panic and a timeout are contained without a new OS
-process. On Node, Deno and Bun — one implementation between them — the probe
-body runs in a worker and the calling thread watches a counter the worker bumps
-before every call. A call that stops bumping it has stopped answering, and the
-only thing that can be done to it from outside is to terminate the worker: the
-verdicts already written are on disk, the mutant the worker was inside is on
-disk too, and a restarted worker is told to skip everything already begun. So a
-mutant that never returns costs a restart rather than the module, and is
-reported as unsupported saying exactly that.
+The native `RunReport` is the lossless source of truth for runtime and cache details.
+Its deterministic Stryker projection uses report schema 3.9.0 and `schemaVersion: "1.0"`.
+Files and mutants are sorted.
+Original source stays byte-for-byte intact, while byte spans become one-based, start-inclusive, end-exclusive UTF-16 locations.
 
-Inputs are derived into a target-independent `GenSpec` from the package-wide
-signatures Girard infers, not from the annotations a module happens to carry,
-then generated from the deterministic property generator against a configured
-seed. A separating input is shrunk towards the
-smallest one that still separates, and the probe knows every mutant id of the
-function it probes, so one input reports a kill set rather than a single
-mutant. Kill sets are minimised per function by greedy set cover: a test for
-one function can never kill a mutant of another, so minimising across
-functions could only make the choice worse.
+The offline renderer embeds the official Mutation Testing Elements IIFE.
+Report JSON is stored in a non-executable script element with HTML-significant and line separator characters escaped.
+The bundle and fixed bootstrap are authorized by CSP hashes.
+The report makes no network requests.
 
-Every selected mutant is accounted for exactly once — distinguished,
-indistinguishable, nondeterministic, or unsupported — including mutants
-outside every function of their module, which no probe can call. The snapshot
-is deleted before a report is answered, on success and on failure alike.
-
-`apply` resolves each module under test to one test module — the nested
-`test/<module path>_test.gleam` where the project already has that file, and
-the flat `test/<module path with "/" replaced by "_">_test.gleam` otherwise, so
-that a project is written into the test tree it chose and never given a second
-one — reading the existing file's own parse tree for the tests it defines, the
-names it imports modules under, and the constructors it declares itself.
-Rendering is scoped to one test module: which names the generated file's own
-imports take is a property of the whole file, so the module under test,
-`gleam/option`, `gleam/string`, and `gleeunit/should` are named from one scope
-and a name the reader's file already bound wins. A module the file imported as
-`_` names nothing to reuse, so a plain import joins it rather than replacing
-it. `Some` and `None` are the only names written unqualified, and a file that
-already binds either gets `option.Some` and `option.None` through a qualified
-import instead. What is left — a module qualifier two modules would both answer
-to — is refused before anything is written, since `gleam format` accepts source
-the compiler does not. Plans and writes come from the same resolver, so a plan
-is never a guess at what a write would do. Files are staged beside their
-targets and atomically renamed, then `gleam format` is run over what changed.
-`apply --verify` re-runs the mutation engine over the source files the applied
-suggestions came from and reports each claimed mutant as killed or not;
-surviving mutants are a quality failure, not a tool failure. That run overrides
-both report formats and report history, so a narrowed verification never
-becomes the workspace's latest stored report.
-
-Project reports are staged beside their fixed targets and atomically renamed.
-The destination is validated before snapshotting and again before writing;
-existing targets must be regular files. The effective report directory is not
-copied or hashed, so a previous run cannot affect discovery or cache identity.
+Project reports are staged beside fixed targets and atomically renamed.
+Destinations are validated before snapshotting and before writing.
+The effective report directory is excluded from snapshot and cache identity.
+Native history is separate from project Stryker reports.
+The API only persists reports when explicitly requested.

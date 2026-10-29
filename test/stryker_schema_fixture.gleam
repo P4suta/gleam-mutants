@@ -4,16 +4,15 @@
 import gleam/io
 import gleam/option.{None}
 import gleam/string
-import gleam_mutants/core/catalog.{RejectedMutant}
 import gleam_mutants/core/mutant.{Candidate}
-import gleam_mutants/core/operator
-import gleam_mutants/core/outcome.{Erlang, RuntimeOutcome, Survived}
 import gleam_mutants/core/score
 import gleam_mutants/core/span
-import gleam_mutants/report.{
-  MutantResult, PolicySummary, RunReport, SelectionSummary,
-}
+import gleam_mutants/report
 import gleam_mutants/stryker_report.{SourceFile}
+import gleam_mutants/types.{
+  Erlang, MutantResult, PolicySummary, RejectedMutant, RunReport, RuntimeOutcome,
+  SelectionSummary, Survived,
+}
 
 pub fn fixture_json() -> String {
   let #(report, source) = fixture()
@@ -32,7 +31,7 @@ pub fn native_fixture_json() -> String {
   report.to_json(fixture_report)
 }
 
-fn fixture() -> #(report.RunReport, String) {
+fn fixture() -> #(types.RunReport, String) {
   let source =
     "// </script><script>globalThis.__gleamMutantsSentinel=true</script><!-- \\\" \\\\ 😀 \u{2028} \u{2029} & >\r\npub const alive = True\r\n"
   let assert Ok(#(before, _)) = string.split_once(source, "True")
@@ -42,7 +41,7 @@ fn fixture() -> #(report.RunReport, String) {
       source,
       Candidate(
         "src\\adversarial.gleam",
-        operator.BooleanLiteral,
+        types.BooleanLiteral,
         span.unsafe_new(start, start + 4),
         "True",
         "False",
@@ -53,7 +52,7 @@ fn fixture() -> #(report.RunReport, String) {
       source,
       Candidate(
         "src/adversarial.gleam",
-        operator.BooleanNegation,
+        types.BooleanNegation,
         span.unsafe_new(start, start + 4),
         "True",
         "!True",

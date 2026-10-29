@@ -30,6 +30,77 @@ fn workspace(label: String) -> String {
   root
 }
 
+pub fn retained_snapshot_links_never_overwrite_their_targets_test() {
+  list.each(["file", "directory", "root", "hard-link"], fn(kind) {
+    let source = workspace("destination-" <> kind)
+    let external = workspace("external-" <> kind)
+    let destination = external <> "-kept"
+    let original = path.join(external, "src/main.gleam")
+    let marker = "pub fn preserve() { Nil }\n"
+    let assert Ok(Nil) = simplifile.write(original, marker)
+    let assert Ok(_) = snapshot.keep(source, destination, [])
+    let link = case kind {
+      "root" -> destination
+      "directory" -> path.join(destination, "src")
+      _ -> path.join(destination, "src/main.gleam")
+    }
+    let target = case kind {
+      "root" -> external
+      "directory" -> path.join(external, "src")
+      _ -> original
+    }
+    let assert Ok(Nil) = platform.delete_tree(link)
+    case kind {
+      "hard-link" -> {
+        let linked =
+          platform.run_process(
+            "node",
+            [
+              "-e",
+              "require('node:fs').linkSync(process.argv[1], process.argv[2])",
+              target,
+              link,
+            ],
+            ".",
+            [],
+            10_000,
+          )
+        assert linked.status == 0
+      }
+      _ -> {
+        let assert Ok(Nil) = simplifile.create_symlink(target, link)
+        Nil
+      }
+    }
+    let attempted = snapshot.keep(source, destination, [])
+    let preserved = simplifile.read(original)
+    let assert Ok(Nil) = platform.delete_tree(destination)
+    let assert Ok(Nil) = platform.delete_tree(external)
+    let assert Ok(Nil) = platform.delete_tree(source)
+    assert preserved == Ok(marker)
+    let assert Error(error) = attempted
+    assert string.contains(error, "snapshot destination")
+  })
+}
+
+pub fn file_permissions_participate_in_snapshot_identity_test() {
+  let source = workspace("permissions")
+  let original = path.join(source, "src/main.gleam")
+  let #(before, after) = case platform.os_name() {
+    "windows" -> #(0o444, 0o644)
+    _ -> #(0o644, 0o755)
+  }
+  let assert Ok(Nil) = simplifile.set_permissions_octal(original, before)
+  let assert Ok(first) = snapshot.create(source)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(original, after)
+  let assert Ok(second) = snapshot.create(source)
+  let changed = snapshot.digest(first) != snapshot.digest(second)
+  let assert Ok(Nil) = snapshot.dispose(first)
+  let assert Ok(Nil) = snapshot.dispose(second)
+  let assert Ok(Nil) = platform.delete_tree(source)
+  assert changed
+}
+
 pub fn catalogue_session_disposes_its_single_snapshot_after_success_test() {
   let root = workspace("success")
   let assert Ok(#(captured, ids)) =
@@ -242,7 +313,7 @@ pub fn kept_copies_are_bounded_by_how_recently_they_were_used_test() {
   place("middle", "2000")
   place("newest", "3000")
 
-  cache.collect_snapshots(root, 2)
+  let assert Ok(Nil) = cache.collect_snapshots(root, 2)
   assert held("newest")
   assert held("middle")
   assert !held("oldest")
@@ -253,13 +324,13 @@ pub fn kept_copies_are_bounded_by_how_recently_they_were_used_test() {
 
   // A copy with no marker at all reads as never used, and goes first.
   place("unmarked", "")
-  cache.collect_snapshots(root, 2)
+  let assert Ok(Nil) = cache.collect_snapshots(root, 2)
   assert held("newest")
   assert held("middle")
   assert !held("unmarked")
 
   // Nothing kept means nothing kept.
-  cache.collect_snapshots(root, 0)
+  let assert Ok(Nil) = cache.collect_snapshots(root, 0)
   assert !held("newest")
   assert !held("middle")
 

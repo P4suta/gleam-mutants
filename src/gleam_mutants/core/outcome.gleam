@@ -2,30 +2,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import gleam/list
-
-pub type Runtime {
-  Erlang
-  Node
-  Deno
-  Bun
+import gleam_mutants/types.{
+  Bun, Deno, Erlang, Killed, Node, Survived, TestError, TimedOut,
 }
 
-pub type Outcome {
-  Killed
-  Survived
-  TimedOut
-  TestError(message: String)
-}
+pub type Runtime =
+  types.Runtime
 
-pub type RuntimeOutcome {
-  RuntimeOutcome(
-    runtime: Runtime,
-    outcome: Outcome,
-    duration_ms: Int,
-    output: String,
-    cached: Bool,
-  )
-}
+pub type Outcome =
+  types.Outcome
+
+pub type RuntimeOutcome =
+  types.RuntimeOutcome
 
 pub fn runtime_name(runtime: Runtime) -> String {
   case runtime {
@@ -51,6 +39,13 @@ pub fn detected(value: Outcome) -> Bool {
 }
 
 pub fn aggregate(outcomes: List(RuntimeOutcome)) -> Outcome {
+  case outcomes {
+    [] -> TestError("no runtime results")
+    _ -> aggregate_nonempty(outcomes)
+  }
+}
+
+fn aggregate_nonempty(outcomes: List(RuntimeOutcome)) -> Outcome {
   case
     list.find(outcomes, fn(item) {
       case item.outcome {

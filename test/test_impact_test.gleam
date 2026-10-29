@@ -12,13 +12,13 @@ import simplifile
 fn manifest() -> test_impact.Manifest {
   test_impact.Manifest(
     schema_version: 1,
-    runner: "smartest",
+    runner: "fixture-runner",
     runtime: "erlang",
     complete: True,
     tests: [
-      test_impact.TestDescriptor("leaf-a", "test-a", "smartest-leaf"),
+      test_impact.TestDescriptor("leaf-a", "test-a", "fixture-leaf"),
       test_impact.TestDescriptor("legacy-b", "test-b", "legacy-export"),
-      test_impact.TestDescriptor("leaf-c", "test-c", "smartest-leaf"),
+      test_impact.TestDescriptor("leaf-c", "test-c", "fixture-leaf"),
     ],
     reaches: [
       test_impact.Reach("test-c", ["m1"]),
@@ -37,7 +37,7 @@ pub fn manifest_round_trips_without_losing_order_test() {
 
 pub fn selection_round_trips_test() {
   let expected =
-    test_impact.SelectionFile(1, "smartest", "node", ["leaf-b", "leaf-a"])
+    test_impact.SelectionFile(1, "fixture-runner", "node", ["leaf-b", "leaf-a"])
   let assert Ok(decoded) =
     expected |> test_impact.encode_selection |> test_impact.decode_selection
   assert decoded == expected
@@ -91,11 +91,11 @@ pub fn manifest_validation_fails_closed_test() {
 pub fn malformed_and_unknown_schema_documents_are_rejected_test() {
   assert test_impact.decode_manifest("{\"schema_version\":") |> result.is_error
   assert test_impact.decode_manifest(
-      "{\"schema_version\":2,\"runner\":\"smartest\",\"runtime\":\"erlang\",\"complete\":true,\"tests\":[],\"reaches\":[]}",
+      "{\"schema_version\":2,\"runner\":\"fixture-runner\",\"runtime\":\"erlang\",\"complete\":true,\"tests\":[],\"reaches\":[]}",
     )
     == Error("unsupported test impact manifest schema")
   assert test_impact.decode_selection(
-      "{\"schema_version\":2,\"runner\":\"smartest\",\"runtime\":\"erlang\",\"selectors\":[]}",
+      "{\"schema_version\":2,\"runner\":\"fixture-runner\",\"runtime\":\"erlang\",\"selectors\":[]}",
     )
     == Error("unsupported test selection schema")
 }
@@ -108,7 +108,7 @@ pub fn selection_is_atomically_written_below_the_snapshot_test() {
     )
   let assert Ok(Nil) = simplifile.create_directory_all(root)
   let assert Ok(target) =
-    test_impact.write_selection(root, "erlang", "smartest", ["leaf-a"])
+    test_impact.write_selection(root, "erlang", "fixture-runner", ["leaf-a"])
   let assert Ok(source) = simplifile.read(target)
   let assert Ok(decoded) = test_impact.decode_selection(source)
   let assert Ok(entries) =
@@ -117,7 +117,7 @@ pub fn selection_is_atomically_written_below_the_snapshot_test() {
 
   assert string.starts_with(target, path.join(root, ".gleam_mutants"))
   assert decoded
-    == test_impact.SelectionFile(1, "smartest", "erlang", ["leaf-a"])
+    == test_impact.SelectionFile(1, "fixture-runner", "erlang", ["leaf-a"])
   assert list.length(entries) == 1
   assert list.all(entries, fn(entry) { !string.contains(entry, ".tmp-") })
 }

@@ -5,7 +5,6 @@
 extend-exclude = [
   "build",
   "dist",
-  "editors/vscode/fixtures",
   "manifest.toml",
   "LICENSE-*",
   "reports/mutation",

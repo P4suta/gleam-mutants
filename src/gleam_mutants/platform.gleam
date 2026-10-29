@@ -4,7 +4,10 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
+import gleam_mutants/core/path
+import simplifile
 
 pub type ProcessRequest {
   ProcessRequest(
@@ -65,7 +68,11 @@ pub fn monotonic_milliseconds() -> Int
 
 @external(erlang, "gleam_mutants_platform_ffi", "resolve_path")
 @external(javascript, "./gleam_mutants_platform_ffi.mjs", "resolve_path")
-pub fn resolve_path(path: String) -> String
+fn do_resolve_path(path: String) -> String
+
+pub fn resolve_path(value: String) -> String {
+  path.normalize_absolute(do_resolve_path(value), os_name() == "windows")
+}
 
 @external(erlang, "gleam_mutants_platform_ffi", "architecture")
 @external(javascript, "./gleam_mutants_platform_ffi.mjs", "architecture")
@@ -78,6 +85,61 @@ pub fn environment() -> String
 @external(erlang, "gleam_mutants_platform_ffi", "random_nonce")
 @external(javascript, "./gleam_mutants_platform_ffi.mjs", "random_nonce")
 pub fn random_nonce() -> String
+
+pub const private_directory_mode = 0o700
+
+pub fn ensure_private_directory(directory: String) -> Result(Nil, String) {
+  case simplifile.create_directory(directory) {
+    Ok(Nil) | Error(simplifile.Eexist) -> protect_directory(directory)
+    Error(error) -> Error(simplifile.describe_error(error))
+  }
+}
+
+pub fn protect_directory(directory: String) -> Result(Nil, String) {
+  use info <- result.try(
+    simplifile.link_info(directory)
+    |> result.map_error(simplifile.describe_error),
+  )
+  case simplifile.file_info_type(info), is_reparse_point(directory) {
+    simplifile.Directory, False ->
+      case os_name() {
+        "windows" -> Ok(Nil)
+        _ ->
+          simplifile.set_permissions_octal(directory, private_directory_mode)
+          |> result.map_error(simplifile.describe_error)
+      }
+    _, _ ->
+      Error("private directory is linked or not a directory: " <> directory)
+  }
+}
+
+pub fn create_private_directory(directory: String) -> Result(Nil, String) {
+  use _ <- result.try(
+    simplifile.create_directory(directory)
+    |> result.map_error(simplifile.describe_error),
+  )
+  let protected = {
+    use _ <- result.try(protect_directory(directory))
+    use names <- result.try(
+      simplifile.read_directory(directory)
+      |> result.map_error(simplifile.describe_error),
+    )
+    case names {
+      [] -> Ok(Nil)
+      _ ->
+        Error("private directory was populated during creation: " <> directory)
+    }
+  }
+  case protected {
+    Ok(Nil) -> Ok(Nil)
+    Error(error) ->
+      case delete_tree(directory) {
+        Ok(Nil) -> Error(error)
+        Error(cleanup) ->
+          Error(error <> "; directory cleanup failed: " <> cleanup)
+      }
+  }
+}
 
 @external(erlang, "gleam_mutants_platform_ffi", "delete_tree")
 @external(javascript, "./gleam_mutants_platform_ffi.mjs", "delete_tree")

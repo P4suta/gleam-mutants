@@ -6,8 +6,8 @@ import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import gleam_mutants/cache
-import gleam_mutants/core/outcome
 import gleam_mutants/engine
+import gleam_mutants/types
 
 const fixture = "fixtures/discharge_project"
 
@@ -50,8 +50,8 @@ pub fn main() {
     |> string.join("")
   }
 
-  assert verdict("n * 1") == outcome.Survived
-  assert verdict("a + b") == outcome.Killed
+  assert verdict("n * 1") == types.Survived
+  assert verdict("a + b") == types.Killed
   // One mutant, settled on evidence rather than by running anything.
   assert output.execution.discharged == 1
   // And nothing was narrowed, because this runner reports no impact.

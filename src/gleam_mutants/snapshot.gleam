@@ -8,14 +8,16 @@ import gleam/result
 import gleam/set
 import gleam/string
 import gleam_mutants/core/bytes
+import gleam_mutants/core/filesystem_entry
 import gleam_mutants/core/glob
+import gleam_mutants/core/limits
 import gleam_mutants/core/mutant
 import gleam_mutants/core/path
 import gleam_mutants/platform
 import simplifile
 
 pub type ManifestEntry {
-  ManifestEntry(path: String, digest: String, size: Int)
+  ManifestEntry(path: String, digest: String, size: Int, permissions: Int)
 }
 
 pub opaque type Snapshot {
@@ -63,10 +65,7 @@ pub fn duplicate(base: Snapshot) -> Result(Snapshot, String) {
       platform.temporary_directory(),
       "gleam-mutants-" <> platform.random_nonce(),
     )
-  use _ <- result.try(
-    simplifile.create_directory(destination)
-    |> result.map_error(simplifile.describe_error),
-  )
+  use _ <- result.try(platform.create_private_directory(destination))
   case copy_tree(base.root, destination, "") {
     Ok(Nil) -> Ok(Snapshot(destination, base.entries, base.digest, False))
     Error(error) -> cleanup_failed_snapshot(destination, error)
@@ -83,6 +82,7 @@ fn copy_tree(
     |> result.map_error(simplifile.describe_error),
   )
   use name <- list.try_each(list.sort(names, string.compare))
+  use _ <- result.try(admit_entry(name))
   let child = case relative {
     "" -> name
     _ -> path.join(relative, name)
@@ -141,10 +141,8 @@ pub fn keep(
   destination: String,
   excluded_directories: List(String),
 ) -> Result(Snapshot, String) {
-  use _ <- result.try(
-    simplifile.create_directory_all(destination)
-    |> result.map_error(simplifile.describe_error),
-  )
+  use _ <- result.try(check_destination(destination))
+  use _ <- result.try(private_destination(destination))
   let exclusions = list.map(excluded_directories, mutant.normalize_path)
   use entries <- result.try(copy_directory(
     source_root,
@@ -197,12 +195,13 @@ fn prune(
     |> result.map_error(simplifile.describe_error),
   )
   use inhabited, name <- list.try_fold(list.sort(names, string.compare), False)
+  use _ <- result.try(admit_entry(name))
   let child = case relative {
     "" -> name
     _ -> path.join(relative, name)
   }
   let target = path.join(root, child)
-  case excluded(child, exclusions) {
+  case excluded(root, child, exclusions) {
     True -> Ok(True)
     False -> {
       use info <- result.try(
@@ -255,10 +254,7 @@ fn create_attempt(
       platform.temporary_directory(),
       "gleam-mutants-" <> platform.random_nonce(),
     )
-  use _ <- result.try(
-    simplifile.create_directory(destination)
-    |> result.map_error(simplifile.describe_error),
-  )
+  use _ <- result.try(platform.create_private_directory(destination))
   let exclusions = list.map(excluded_directories, mutant.normalize_path)
   case copy_directory(source_root, destination, "", [], exclusions) {
     Ok(entries) -> {
@@ -320,11 +316,12 @@ fn scan_directory(
     names |> list.sort(string.compare),
     entries,
   )
+  use _ <- result.try(admit_entry(name))
   let child_relative = case relative {
     "" -> name
     _ -> path.join(relative, name)
   }
-  case excluded(child_relative, excluded_directories) {
+  case excluded(source_root, child_relative, excluded_directories) {
     True -> Ok(entries)
     False -> {
       let source = path.join(source_root, child_relative)
@@ -353,6 +350,7 @@ fn scan_directory(
               child_relative,
               bytes.sha256_bits(content),
               bit_array.byte_size(content),
+              simplifile.file_info_permissions_octal(info),
             ),
             ..entries
           ])
@@ -378,11 +376,12 @@ fn copy_directory(
     names |> list.sort(string.compare),
     entries,
   )
+  use _ <- result.try(admit_entry(name))
   let child_relative = case relative {
     "" -> name
     _ -> path.join(relative, name)
   }
-  case excluded(child_relative, excluded_directories) {
+  case excluded(source_root, child_relative, excluded_directories) {
     True -> Ok(entries)
     False ->
       copy_entry(
@@ -413,6 +412,7 @@ fn copy_entry(
       Error("refusing symlink or junction in workspace: " <> relative)
     simplifile.Other, _ -> Error(special_file_refusal(relative))
     simplifile.Directory, _ -> {
+      use _ <- result.try(check_destination(destination))
       use _ <- result.try(
         simplifile.create_directory_all(destination)
         |> result.map_error(simplifile.describe_error),
@@ -434,6 +434,7 @@ fn copy_entry(
       Ok(entries)
     }
     simplifile.File, _ -> {
+      use _ <- result.try(check_destination(destination))
       use content <- result.try(
         simplifile.read_bits(source)
         |> result.map_error(simplifile.describe_error),
@@ -454,10 +455,59 @@ fn copy_entry(
           relative,
           bytes.sha256_bits(content),
           bit_array.byte_size(content),
+          simplifile.file_info_permissions_octal(info),
         ),
         ..entries
       ])
     }
+  }
+}
+
+fn check_destination(destination: String) -> Result(Nil, String) {
+  case simplifile.link_info(destination) {
+    Error(simplifile.Enoent) -> Ok(Nil)
+    Error(error) -> Error(simplifile.describe_error(error))
+    Ok(info) ->
+      case
+        simplifile.file_info_type(info),
+        platform.is_reparse_point(destination),
+        limits.unshared_file(info.nlinks)
+      {
+        simplifile.Directory, False, _ | simplifile.File, False, True -> Ok(Nil)
+        _, _, _ ->
+          Error(
+            "refusing linked or special snapshot destination: " <> destination,
+          )
+      }
+  }
+}
+
+fn private_destination(destination: String) -> Result(Nil, String) {
+  case simplifile.link_info(destination) {
+    Error(simplifile.Enoent) -> {
+      use _ <- result.try(
+        simplifile.create_directory_all(path.parent(destination))
+        |> result.map_error(simplifile.describe_error),
+      )
+      platform.create_private_directory(destination)
+    }
+    Error(error) -> Error(simplifile.describe_error(error))
+    Ok(info) ->
+      case
+        platform.os_name() == "windows"
+        || simplifile.file_info_permissions_octal(info)
+        == platform.private_directory_mode
+      {
+        True -> Ok(Nil)
+        False -> Error("snapshot destination is not private: " <> destination)
+      }
+  }
+}
+
+pub fn admit_entry(name: String) -> Result(Nil, String) {
+  case filesystem_entry.valid(name) {
+    True -> Ok(Nil)
+    False -> Error("unsupported filesystem filename: " <> string.inspect(name))
   }
 }
 
@@ -481,17 +531,24 @@ fn special_file_refusal(relative: String) -> String {
   <> "the project"
 }
 
-fn excluded(relative: String, excluded_directories: List(String)) -> Bool {
-  let segments =
-    relative
-    |> mutant.normalize_path
-    |> string.split("/")
+fn excluded(
+  root: String,
+  relative: String,
+  excluded_directories: List(String),
+) -> Bool {
+  let segments = string.split(relative, "/")
   list.any(segments, fn(segment) {
     list.contains(
-      [".git", "build", tool_directory, ".smartest", ".mise", "node_modules"],
+      [".git", tool_directory, ".smartest", ".mise", "node_modules"],
       segment,
     )
   })
+  || path.base_name(relative) == "build"
+  && simplifile.is_file(path.join(
+    path.join(root, path.parent(relative)),
+    "gleam.toml",
+  ))
+  == Ok(True)
   || list.any(excluded_directories, fn(directory) {
     relative == directory || string.starts_with(relative, directory <> "/")
   })
@@ -507,6 +564,8 @@ fn manifest_digest(entries: List(ManifestEntry)) -> String {
     <> ":"
     <> entry.digest
     <> int.to_string(entry.size)
+    <> ":"
+    <> int.to_string(entry.permissions)
     <> ";"
   })
   |> string.concat
@@ -523,6 +582,40 @@ pub fn entries(snapshot: Snapshot) -> List(ManifestEntry) {
 
 pub fn digest(snapshot: Snapshot) -> String {
   snapshot.digest
+}
+
+pub fn with_dependencies(
+  snapshot: Snapshot,
+  dependencies: List(#(String, String)),
+) -> Snapshot {
+  let entries =
+    list.map(dependencies, fn(dependency) {
+      ManifestEntry(dependency.0, dependency.1, 0, 0)
+    })
+  Snapshot(
+    ..snapshot,
+    digest: bytes.sha256(snapshot.digest <> manifest_digest(entries)),
+  )
+}
+
+pub fn verify_source(
+  source: String,
+  snapshot: Snapshot,
+  excluded_directories: List(String),
+) -> Result(Nil, String) {
+  use current <- result.try(scan_directory(source, "", [], excluded_directories))
+  let current_digest =
+    current
+    |> list.sort(fn(a, b) { string.compare(a.path, b.path) })
+    |> manifest_digest
+  case current_digest == snapshot.digest {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        "workspace changed while local dependencies were being captured: "
+        <> source,
+      )
+  }
 }
 
 pub fn source_files(

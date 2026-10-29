@@ -9,6 +9,8 @@ pre-commit:
       run: mise run fmt
     typos:
       run: typos
+    verification:
+      run: mise run check-verification
 
 commit-msg:
   commands:

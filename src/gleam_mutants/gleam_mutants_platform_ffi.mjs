@@ -9,12 +9,12 @@ import path from "node:path";
 import { toList } from "../gleam.mjs";
 
 function listToArray(list) {
-  return Array.from(list);
+	return Array.from(list);
 }
 
 export function arguments$() {
-  if (globalThis.Deno?.args) return toList([...globalThis.Deno.args]);
-  return toList(process.argv.slice(2));
+	if (globalThis.Deno?.args) return toList([...globalThis.Deno.args]);
+	return toList(process.argv.slice(2));
 }
 
 // Gleam escapes the reserved JS identifier in generated calls by using the
@@ -22,161 +22,191 @@ export function arguments$() {
 export { arguments$ as arguments };
 
 export function env(name) {
-  try {
-    if (globalThis.Deno?.env) return globalThis.Deno.env.get(name) ?? "";
-  } catch (_) {
-    // Deno without env permission: fall through to the Node compatibility API.
-  }
-  return globalThis.process?.env?.[name] ?? "";
+	try {
+		if (globalThis.Deno?.env) return globalThis.Deno.env.get(name) ?? "";
+	} catch (_) {
+		// Deno without env permission: fall through to the Node compatibility API.
+	}
+	return globalThis.process?.env?.[name] ?? "";
 }
 
 export function current_directory() {
-  try { return globalThis.Deno?.cwd?.() ?? process.cwd(); }
-  catch (_) { return process.cwd(); }
+	try {
+		return globalThis.Deno?.cwd?.() ?? process.cwd();
+	} catch (_) {
+		return process.cwd();
+	}
 }
 
 export function temporary_directory() {
-  return os.tmpdir();
+	return os.tmpdir();
 }
 
 export function cache_directory() {
-  if (process.platform === "win32") {
-    return process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-  }
-  if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Caches");
-  }
-  return process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
+	const home = () =>
+		(process.platform === "win32"
+			? process.env.USERPROFILE
+			: process.env.HOME) || os.homedir();
+	if (process.platform === "win32") {
+		return process.env.LOCALAPPDATA || path.join(home(), "AppData", "Local");
+	}
+	if (process.platform === "darwin") {
+		return path.join(home(), "Library", "Caches");
+	}
+	return process.env.XDG_CACHE_HOME || path.join(home(), ".cache");
 }
 
 export function cpu_count() {
-  return Math.max(1, os.availableParallelism?.() ?? os.cpus().length ?? 1);
+	return Math.max(1, os.availableParallelism?.() ?? os.cpus().length ?? 1);
 }
 
-export function now_milliseconds() { return Date.now(); }
-export function monotonic_milliseconds() {
-  return Math.trunc(globalThis.performance?.now?.() ?? Number(process.hrtime.bigint() / 1_000_000n));
+export function now_milliseconds() {
+	return Date.now();
 }
-export function resolve_path(value) { return path.resolve(value); }
-export function architecture() { return globalThis.Deno?.build?.arch ?? process.arch; }
+export function monotonic_milliseconds() {
+	return Math.trunc(
+		globalThis.performance?.now?.() ??
+			Number(process.hrtime.bigint() / 1_000_000n),
+	);
+}
+export function resolve_path(value) {
+	return path.resolve(value);
+}
+export function architecture() {
+	return globalThis.Deno?.build?.arch ?? process.arch;
+}
 export function environment() {
-  try {
-    const entries = globalThis.Deno?.env ? [...globalThis.Deno.env.toObject ? Object.entries(globalThis.Deno.env.toObject()) : []] : Object.entries(process.env);
-    return entries.map(([key, value]) => `${key.length}:${key}${String(value ?? "").length}:${value ?? ""}`).sort().join("");
-  } catch (_) {
-    return Object.entries(globalThis.process?.env ?? {}).map(([key, value]) => `${key.length}:${key}${String(value ?? "").length}:${value ?? ""}`).sort().join("");
-  }
+	try {
+		const entries = globalThis.Deno?.env
+			? [
+					...(globalThis.Deno.env.toObject
+						? Object.entries(globalThis.Deno.env.toObject())
+						: []),
+				]
+			: Object.entries(process.env);
+		return entries
+			.map(
+				([key, value]) =>
+					`${key.length}:${key}${String(value ?? "").length}:${value ?? ""}`,
+			)
+			.sort()
+			.join("");
+	} catch (_) {
+		return Object.entries(globalThis.process?.env ?? {})
+			.map(
+				([key, value]) =>
+					`${key.length}:${key}${String(value ?? "").length}:${value ?? ""}`,
+			)
+			.sort()
+			.join("");
+	}
 }
 export function random_nonce() {
-  if (globalThis.crypto?.getRandomValues) {
-    const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
-    return [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
-  }
-  return crypto.randomBytes(16).toString("hex");
+	if (globalThis.crypto?.getRandomValues) {
+		const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+		return [...bytes]
+			.map((byte) => byte.toString(16).padStart(2, "0"))
+			.join("");
+	}
+	return crypto.randomBytes(16).toString("hex");
 }
 export function delete_tree(value) {
-  try {
-    fs.rmSync(path.normalize(value), {
-      recursive: true,
-      force: true,
-      maxRetries: 40,
-      retryDelay: 50,
-    });
-    return "";
-  } catch (error) {
-    return String(error?.message || error);
-  }
+	try {
+		fs.rmSync(path.normalize(value), {
+			recursive: true,
+			force: true,
+			maxRetries: 40,
+			retryDelay: 50,
+		});
+		return "";
+	} catch (error) {
+		return String(error?.message || error);
+	}
 }
 function synchronousDelay(milliseconds) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 function lockProcessAlive(pid) {
-  try { process.kill(Number(pid), 0); return true; }
-  catch (error) { return error?.code === "EPERM"; }
+	try {
+		process.kill(Number(pid), 0);
+		return true;
+	} catch (error) {
+		return error?.code === "EPERM";
+	}
 }
 function parseLock(value) {
-  const [token = "", pid = "", runId = "", started = ""] = String(value).split("\n");
-  return { token, pid, runId, started };
+	const [token = "", pid = "", runId = "", started = ""] =
+		String(value).split("\n");
+	return { token, pid, runId, started };
 }
 export function acquire_lock(target, runId, startedMs, waitMs) {
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const token = random_nonce();
-  const deadline = Date.now() + waitMs;
-  while (true) {
-    try {
-      const descriptor = fs.openSync(target, "wx", 0o600);
-      try {
-        fs.writeFileSync(descriptor, `${token}\n${process.pid}\n${runId}\n${startedMs}\n`, "utf8");
-        fs.fsyncSync(descriptor);
-      } finally { fs.closeSync(descriptor); }
-      return `ok:${token}`;
-    } catch (error) {
-      if (error?.code !== "EEXIST") return `error:could not create workspace lock: ${error?.message || error}`;
-      let existing = { pid: "unknown", runId: "unknown", started: "unknown" };
-      try {
-        existing = parseLock(fs.readFileSync(target, "utf8"));
-        if (existing.pid && !lockProcessAlive(existing.pid)) {
-          fs.unlinkSync(target);
-          continue;
-        }
-      } catch (_) {}
-      if (Date.now() >= deadline) {
-        return `error:workspace is locked by pid ${existing.pid}, run ${existing.runId}, started ${existing.started}`;
-      }
-      synchronousDelay(50);
-    }
-  }
+	fs.mkdirSync(path.dirname(target), { recursive: true });
+	const token = random_nonce();
+	const deadline = Date.now() + waitMs;
+	while (true) {
+		try {
+			const descriptor = fs.openSync(target, "wx", 0o600);
+			try {
+				fs.writeFileSync(
+					descriptor,
+					`${token}\n${process.pid}\n${runId}\n${startedMs}\n`,
+					"utf8",
+				);
+				fs.fsyncSync(descriptor);
+			} finally {
+				fs.closeSync(descriptor);
+			}
+			return `ok:${token}`;
+		} catch (error) {
+			if (error?.code !== "EEXIST")
+				return `error:could not create workspace lock: ${error?.message || error}`;
+			let existing = { pid: "unknown", runId: "unknown", started: "unknown" };
+			try {
+				existing = parseLock(fs.readFileSync(target, "utf8"));
+				if (existing.pid && !lockProcessAlive(existing.pid)) {
+					fs.unlinkSync(target);
+					continue;
+				}
+			} catch (_) {}
+			if (Date.now() >= deadline) {
+				return `error:workspace is locked by pid ${existing.pid}, run ${existing.runId}, started ${existing.started}`;
+			}
+			synchronousDelay(50);
+		}
+	}
 }
 export function release_lock(target, token) {
-  try {
-    const existing = parseLock(fs.readFileSync(target, "utf8"));
-    if (existing.token !== token) return "workspace lock ownership changed";
-    fs.unlinkSync(target);
-    return "";
-  } catch (error) {
-    return `could not release workspace lock: ${error?.message || error}`;
-  }
+	try {
+		const existing = parseLock(fs.readFileSync(target, "utf8"));
+		if (existing.token !== token) return "workspace lock ownership changed";
+		fs.unlinkSync(target);
+		return "";
+	} catch (error) {
+		return `could not release workspace lock: ${error?.message || error}`;
+	}
 }
-export function process_id() { return process.pid; }
-export function os_name() { return process.platform === "win32" ? "windows" : process.platform; }
-export function is_tty() { return Boolean(process.stdout?.isTTY && process.stdin?.isTTY); }
+export function process_id() {
+	return process.pid;
+}
+export function os_name() {
+	return process.platform === "win32" ? "windows" : process.platform;
+}
+export function is_tty() {
+	return Boolean(process.stdout?.isTTY && process.stdin?.isTTY);
+}
 
 export function is_reparse_point(target) {
-  if (process.platform !== "win32") return false;
-  try { return fs.lstatSync(target).isSymbolicLink(); }
-  catch (_) { return false; }
+	if (process.platform !== "win32") return false;
+	try {
+		return fs.lstatSync(target).isSymbolicLink();
+	} catch (_) {
+		return false;
+	}
 }
 
 export function exit(code) {
-  if (globalThis.Deno) Deno.exit(code);
-  process.exit(code);
-}
-
-function descendants(rootPid) {
-  if (process.platform === "win32") return [];
-  const result = childProcess.spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8" });
-  const rows = String(result.stdout || "").trim().split(/\r?\n/).map((line) => line.trim().split(/\s+/).map(Number));
-  const found = [];
-  const visit = (pid) => {
-    for (const [child, parent] of rows) {
-      if (parent === pid && !found.includes(child)) { found.push(child); visit(child); }
-    }
-  };
-  visit(rootPid);
-  return found.reverse();
-}
-
-function killTree(pid) {
-  if (!pid) return;
-  if (process.platform === "win32") {
-    childProcess.spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
-    return;
-  }
-  const pids = [...descendants(pid), pid];
-  for (const signal of ["SIGTERM", "SIGKILL"]) {
-    for (const item of pids) { try { process.kill(item, signal); } catch (_) {} }
-    if (signal === "SIGTERM") Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
-  }
+	if (globalThis.Deno) Deno.exit(code);
+	process.exit(code);
 }
 
 const denoProcessWorkerSource = String.raw`
@@ -202,7 +232,7 @@ async function readLimited(stream) {
   const result = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
-  const text = new TextDecoder().decode(result);
+  const text = new TextDecoder("utf-8", { ignoreBOM: true }).decode(result);
   return omitted > 0 ? text + "\n... " + omitted + " bytes omitted ...\n" : text;
 }
 
@@ -287,39 +317,61 @@ self.onmessage = async ({ data }) => {
 };
 `;
 
-function startDenoProcess(executable, arguments_, workingDirectory, environment, timeoutMs) {
-  const started = performance.now();
-  const shared = new SharedArrayBuffer(8 + 256 * 1024);
-  const control = new Int32Array(shared, 0, 2);
-  const workerUrl = URL.createObjectURL(new Blob([denoProcessWorkerSource], { type: "text/javascript" }));
-  const worker = new Worker(workerUrl, { type: "module" });
-  worker.postMessage({
-    executable,
-    arguments: arguments_,
-    workingDirectory,
-    environment,
-    timeoutMs,
-    shared,
-  });
-  return { shared, control, workerUrl, worker, timeoutMs, started };
+function startDenoProcess(
+	executable,
+	arguments_,
+	workingDirectory,
+	environment,
+	timeoutMs,
+) {
+	const started = performance.now();
+	const shared = new SharedArrayBuffer(8 + 256 * 1024);
+	const control = new Int32Array(shared, 0, 2);
+	const workerUrl = URL.createObjectURL(
+		new Blob([denoProcessWorkerSource], { type: "text/javascript" }),
+	);
+	const worker = new Worker(workerUrl, { type: "module" });
+	worker.postMessage({
+		executable,
+		arguments: arguments_,
+		workingDirectory,
+		environment,
+		timeoutMs,
+		shared,
+	});
+	return { shared, control, workerUrl, worker, timeoutMs, started };
 }
 
 function finishDenoProcess(handle) {
-  try {
-    const { shared, control, timeoutMs } = handle;
-    const wait = Atomics.wait(control, 0, 0, timeoutMs + 5000);
-    if (wait === "timed-out") return [-1, "", "process worker timed out", true];
-    const length = Atomics.load(control, 1);
-    const bytes = new Uint8Array(shared, 8, length);
-    return JSON.parse(new TextDecoder().decode(bytes));
-  } finally {
-    handle.worker.terminate();
-    URL.revokeObjectURL(handle.workerUrl);
-  }
+	try {
+		const { shared, control, timeoutMs } = handle;
+		const wait = Atomics.wait(control, 0, 0, timeoutMs + 5000);
+		if (wait === "timed-out") return [-1, "", "process worker timed out", true];
+		const length = Atomics.load(control, 1);
+		const bytes = new Uint8Array(shared, 8, length);
+		return JSON.parse(new TextDecoder().decode(bytes));
+	} finally {
+		handle.worker.terminate();
+		URL.revokeObjectURL(handle.workerUrl);
+	}
 }
 
-function runDenoProcess(executable, arguments_, workingDirectory, environment, timeoutMs) {
-  return finishDenoProcess(startDenoProcess(executable, arguments_, workingDirectory, environment, timeoutMs));
+function runDenoProcess(
+	executable,
+	arguments_,
+	workingDirectory,
+	environment,
+	timeoutMs,
+) {
+	return finishDenoProcess(
+		startDenoProcess(
+			executable,
+			arguments_,
+			workingDirectory,
+			environment,
+			timeoutMs,
+		),
+	);
 }
 
 const nodeBatchSource = String.raw`
@@ -424,87 +476,125 @@ function run(request) {
 (async () => {
   const results = new Array(requests.length);
   let cursor = 0;
+  let interrupted = false;
   async function worker() {
-    while (true) {
+    while (!interrupted) {
       const index = cursor++;
       if (index >= requests.length) return;
       results[index] = await run(requests[index]);
+      if (results[index][0] === 130 || results[index][0] === 143) {
+        interrupted = true;
+        for (const pid of activeChildren) killTree(pid);
+      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(jobs, requests.length) }, worker));
-  if (results.some(result => result[0] === 130)) process.exit(130);
-  process.stdout.write(JSON.stringify(results));
+  process.stdout.write(JSON.stringify(results.filter(result => result !== undefined)));
 })().catch(error => { process.stderr.write(String(error.stack || error)); process.exit(1); });
 `;
 
 export function run_process_batch(requestList, jobs) {
-  const requests = listToArray(requestList).map(([executable, args, cwd, environment, timeoutMs]) => [
-    executable,
-    listToArray(args),
-    cwd,
-    listToArray(environment),
-    timeoutMs,
-  ]);
-  if (requests.length === 0) return toList([]);
-  if (globalThis.Deno) {
-    const results = [];
-    for (let cursor = 0; cursor < requests.length; cursor += Math.max(1, jobs)) {
-      const wave = requests.slice(cursor, cursor + Math.max(1, jobs));
-      const handles = wave.map(([executable, args, cwd, environment, timeoutMs]) =>
-        startDenoProcess(executable, args, cwd, environment, timeoutMs));
-      for (const handle of handles) {
-        const result = finishDenoProcess(handle);
-        results.push([...result, Math.max(0, Math.trunc(performance.now() - handle.started))]);
-      }
-    }
-    if (results.some(result => result[0] === 130)) Deno.exit(130);
-    return toList(results);
-  }
-  const arguments_ = ["-e", nodeBatchSource];
-  let status;
-  let stdout;
-  let stderr;
-  const output = childProcess.spawnSync(process.execPath, arguments_, {
-    encoding: "utf8",
-    windowsHide: true,
-    maxBuffer: 8 * 1024 * 1024,
-    env: {
-      ...process.env,
-      GLEAM_MUTANTS_BATCH_REQUESTS: JSON.stringify(requests),
-      GLEAM_MUTANTS_BATCH_JOBS: String(jobs),
-    },
-  });
-  status = output.status ?? -2;
-  stdout = String(output.stdout || "");
-  stderr = String(output.stderr || output.error?.message || "");
-  if (output.error) {
-    return toList(requests.map(() => [
-      -2,
-      "",
-      `batch runner failed: ${stderr || String(output.error.message || output.error)}`,
-      false,
-      0,
-    ]));
-  }
-  if (status !== 0) {
-    if (status === 130) {
-      if (globalThis.Deno) Deno.exit(130);
-      process.exit(130);
-    }
-    return toList(requests.map(() => [-2, "", `batch runner failed: ${stderr}`, false, 0]));
-  }
-  return toList(JSON.parse(stdout));
+	const requests = listToArray(requestList).map(
+		([executable, args, cwd, environment, timeoutMs]) => [
+			executable,
+			listToArray(args),
+			cwd,
+			listToArray(environment),
+			timeoutMs,
+		],
+	);
+	if (requests.length === 0) return toList([]);
+	if (globalThis.Deno) {
+		const results = [];
+		for (
+			let cursor = 0;
+			cursor < requests.length;
+			cursor += Math.max(1, jobs)
+		) {
+			const wave = requests.slice(cursor, cursor + Math.max(1, jobs));
+			const handles = wave.map(
+				([executable, args, cwd, environment, timeoutMs]) =>
+					startDenoProcess(executable, args, cwd, environment, timeoutMs),
+			);
+			for (const handle of handles) {
+				const result = finishDenoProcess(handle);
+				results.push([
+					...result,
+					Math.max(0, Math.trunc(performance.now() - handle.started)),
+				]);
+			}
+			if (results.some((result) => result[0] === 130 || result[0] === 143))
+				break;
+		}
+		return toList(results);
+	}
+	const arguments_ = ["-e", nodeBatchSource];
+	const output = childProcess.spawnSync(process.execPath, arguments_, {
+		encoding: "utf8",
+		windowsHide: true,
+		maxBuffer: 8 * 1024 * 1024,
+		env: {
+			...process.env,
+			GLEAM_MUTANTS_BATCH_REQUESTS: JSON.stringify(requests),
+			GLEAM_MUTANTS_BATCH_JOBS: String(jobs),
+		},
+	});
+	const status = output.status ?? -2;
+	const stdout = String(output.stdout || "");
+	const stderr = String(output.stderr || output.error?.message || "");
+	if (output.error) {
+		return toList(
+			requests.map(() => [
+				-2,
+				"",
+				`batch runner failed: ${stderr || String(output.error.message || output.error)}`,
+				false,
+				0,
+			]),
+		);
+	}
+	if (status !== 0) {
+		if (status === 130 || status === 143) {
+			return toList(requests.map(() => [status, "", stderr, false, 0]));
+		}
+		return toList(
+			requests.map(() => [-2, "", `batch runner failed: ${stderr}`, false, 0]),
+		);
+	}
+	return toList(JSON.parse(stdout));
 }
-export function run_process(executable, argumentList, workingDirectory, environment, timeoutMs) {
-  const arguments_ = listToArray(argumentList);
-  const overrides = listToArray(environment);
-  if (globalThis.Deno) {
-    const result = runDenoProcess(executable, arguments_, workingDirectory, overrides, timeoutMs);
-    if (result[0] === 130) Deno.exit(130);
-    return result;
-  }
-  const result = Array.from(run_process_batch(toList([
-    [executable, toList(arguments_), workingDirectory, toList(overrides), timeoutMs],
-  ]), 1))[0];
-  return result.slice(0, 4);
+export function run_process(
+	executable,
+	argumentList,
+	workingDirectory,
+	environment,
+	timeoutMs,
+) {
+	const arguments_ = listToArray(argumentList);
+	const overrides = listToArray(environment);
+	if (globalThis.Deno) {
+		const result = runDenoProcess(
+			executable,
+			arguments_,
+			workingDirectory,
+			overrides,
+			timeoutMs,
+		);
+		return result;
+	}
+	const result = Array.from(
+		run_process_batch(
+			toList([
+				[
+					executable,
+					toList(arguments_),
+					workingDirectory,
+					toList(overrides),
+					timeoutMs,
+				],
+			]),
+			1,
+		),
+	)[0];
+	return result.slice(0, 4);
 }

@@ -25,50 +25,32 @@ Version 0.1 provides these versioned operators, each at version 1:
 | `pipeline-stage-deletion` | remove a Gleam pipeline stage |
 | `concatenation-operand` | `a <> b` to `a`, and to `b` |
 
-Syntactic duplicates and trivial equivalents are deduplicated. `run` and
-`list --validate` validate every remaining candidate with the Gleam compiler;
-plain `list` intentionally returns unvalidated discovery candidates. There is
-no lossy sampling by default. Stable IDs hash a length-prefixed encoding of
-normalized path, operator name/version, source digest, byte span, and
-original/replacement digests. The UI starts with a 20-character prefix extended
-as needed to avoid collisions across the complete selected catalogue, while
-JSON retains the full SHA-256 value.
+Syntactic duplicates and trivial equivalents are deduplicated.
+`run` and `list --validate` validate every remaining candidate with the Gleam compiler.
+Plain `list` intentionally returns unvalidated discovery candidates.
+There is no lossy sampling by default.
+Stable IDs hash a length-prefixed encoding of normalized path, operator name/version, source digest, byte span, and original/replacement digests.
+The UI starts with a 20-character prefix extended as needed to avoid collisions across the complete selected catalogue, while JSON retains the full SHA-256 value.
 
-Neutral operators are literal-focused, with one exception. Semantic rules are
-emitted only where Glance provides definite evidence: a literal, a typed binary
-operator, or a constructor that fixes the type by itself. `Some(x)` is the last
-of those -- it is definitely an `Option`, so `None` is definitely the same
-type, and the mutant asks whether anything tests the absence. `Ok` and `Error`
-have no such evidence, because their two type arguments need not agree, so a
-`Result` that is built is left alone rather than mutated on a hunch.
+Neutral operators are literal-focused, with one exception.
+Semantic rules are emitted only where Glance provides definite evidence: a literal, a typed binary operator, or a constructor that fixes the type by itself.
+`Some(x)` is the last of those -- it is definitely an `Option`, so `None` is definitely the same type, and the mutant asks whether anything tests the absence.
+`Ok` and `Error` have no such evidence, because their two type arguments need not agree, so a `Result` that is built is left alone rather than mutated on a hunch.
 
-The replacement is spelled the way the module being scanned can write it,
-which is read off its imports: `import gleam/option.{Some, None}` gets a bare
-`None`, `import gleam/option.{Some}` gets `option.None` because a bare one
-would not be in scope, and either name is taken from the alias where the
-import renamed it. A module declaring both variants itself -- `gleam/option`
-under its own test suite, or a module that writes its own option out longhand
--- gets its own `None`. A constructor that merely shares the name `Some` with
-no absence beside it yields no candidate at all, since there is nothing
-writable to swap in.
+The replacement is spelled the way the module being scanned can write it, which is read off its imports: `import gleam/option.{Some, None}` gets a bare `None`, `import gleam/option.{Some}` gets `option.None` because a bare one would not be in scope, and either name is taken from the alias where the import renamed it.
+A module declaring both variants itself -- `gleam/option` under its own test suite, or a module that writes its own option out longhand -- gets its own `None`.
+A constructor that merely shares the name `Some` with no absence beside it yields no candidate at all, since there is nothing writable to swap in.
 
-`<>` is evidence of the same kind: it joins two strings, so each half is
-definitely a string and definitely the same type as the whole, and either half
-can stand where the join stood. Dropping one asks whether anything checks that
-the other reaches the answer. Gleam's unary `-` is an integer one, so the same
-holds for the number under it. A written-out negative number never reaches that
-rule: `-1` is lexed as a single token and is `integer-neutral`'s business, so
-`integer-negation` is exactly the sign that neither that rule nor a swap of `+`
-for `-` can reach.
+`<>` is evidence of the same kind: it joins two strings, so each half is definitely a string and definitely the same type as the whole, and either half can stand where the join stood.
+Dropping one asks whether anything checks that the other reaches the answer.
+Gleam's unary `-` is an integer one, so the same holds for the number under it.
+A written-out negative number never reaches that rule: `-1` is lexed as a single token and is `integer-neutral`'s business, so `integer-negation` is exactly the sign that neither that rule nor a swap of `+` for `-` can reach.
 
-Whether an operator's mutants can be settled without running a test is a
-different question about the same syntax, and it is answered in
-[architecture](architecture.md): a replacement may be evaluated beside what it
-replaces wherever the expression is literals, variables and operators, and a
-mutant whose two answers never part cannot be told from the original.
+Whether an operator's mutants can be settled without running a test is a different question about the same syntax, and it is answered in [architecture](architecture.md): a replacement may be evaluated beside what it replaces wherever the expression is literals, variables and operators, and a mutant whose two answers never part cannot be told from the original.
 
-An arbitrary expression is not treated as an integer, float, string, list, or
-option by guesswork. Candidates that are emitted but fail compiler validation
-remain visible as rejected candidates with a normalized diagnostic in validated
-list and run output; this does not change native report v1 or stable mutant
-IDs.
+An arbitrary expression is not treated as an integer, float, string, list, or option by guesswork.
+Candidates that are emitted but fail compiler validation remain visible as rejected candidates with a normalized diagnostic in validated list and run output; this does not change native report v1 or stable mutant IDs.
+
+Runtime schemata add function calls that Gleam clause guards do not admit.
+Candidates within guards therefore remain compiler-rejected rather than executed.
+Their diagnostics describe the transformed source, so a rejection does not establish that applying only the replacement would be ill-typed.

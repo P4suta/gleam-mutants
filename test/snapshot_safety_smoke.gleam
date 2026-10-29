@@ -14,10 +14,10 @@ pub fn main() {
       let paths = list.map(snapshot.entries(copy), fn(entry) { entry.path })
       assert list.contains(paths, "gleam.toml")
       assert list.contains(paths, "src/main.gleam")
-      assert list.contains(paths, "test/smartest/corpus/case.json")
+      assert list.contains(paths, "test/corpus/case.json")
       assert !list.any(paths, fn(path) { string.starts_with(path, "build/") })
       assert !list.any(paths, fn(path) {
-        string.starts_with(path, ".smartest/")
+        string.starts_with(path, "node_modules/")
       })
       assert !list.any(paths, fn(path) {
         string.starts_with(path, ".gleam_mutants/")

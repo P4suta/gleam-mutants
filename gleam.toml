@@ -6,16 +6,37 @@ name = "gleam_mutants"
 version = "0.1.0"
 # x-release-please-end
 gleam = ">= 1.17.0 and < 2.0.0"
-internal_modules = ["gleam_mutants/*", "gleam_mutants/core/*", "gleam_mutants/suggest/*", "smartest/internal/*"]
+internal_modules = [
+  "gleam_mutants/cache",
+  "gleam_mutants/capability",
+  "gleam_mutants/cli",
+  "gleam_mutants/config",
+  "gleam_mutants/core/*",
+  "gleam_mutants/engine",
+  "gleam_mutants/error",
+  "gleam_mutants/local_dependencies",
+  "gleam_mutants/mte_asset",
+  "gleam_mutants/pipeline",
+  "gleam_mutants/platform",
+  "gleam_mutants/project_report",
+  "gleam_mutants/report",
+  "gleam_mutants/runtime",
+  "gleam_mutants/snapshot",
+  "gleam_mutants/stryker_html",
+  "gleam_mutants/stryker_report",
+  "gleam_mutants/test_impact",
+  "gleam_mutants/version",
+  "gleam_mutants/workspace_lock",
+]
 
 description = "Mutation testing for Gleam across Erlang, Node, Deno, and Bun"
 licences = ["MIT", "Apache-2.0"]
 repository = { type = "github", user = "P4suta", repo = "gleam-mutants" }
 
 [[documentation.pages]]
-title = "Smartest"
-path = "smartest.html"
-source = "docs/smartest.md"
+title = "Library API"
+path = "library.html"
+source = "docs/library.md"
 
 [[documentation.pages]]
 title = "Configuration"
@@ -28,14 +49,14 @@ path = "operators.html"
 source = "docs/operators.md"
 
 [[documentation.pages]]
-title = "Suggesting tests"
-path = "suggest.html"
-source = "docs/suggest.md"
-
-[[documentation.pages]]
 title = "Architecture"
 path = "architecture.html"
 source = "docs/architecture.md"
+
+[[documentation.pages]]
+title = "Migration"
+path = "migration.html"
+source = "docs/migration.md"
 
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"
@@ -46,7 +67,6 @@ simplifile = ">= 2.6.0 and < 2.7.0"
 child_process = ">= 2.1.0 and < 2.2.0"
 gleam_crypto = ">= 1.6.0 and < 1.7.0"
 gleam_json = ">= 3.1.0 and < 3.2.0"
-girard = ">= 2.0.0 and < 3.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.9.0 and < 1.12.0"

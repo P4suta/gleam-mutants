@@ -7,13 +7,6 @@ name: Development snapshot evidence
 
 "on":
   workflow_dispatch:
-    inputs:
-      approve_smartest_name:
-        description: >-
-          Product owner completed name/trademark review and approves Smartest
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -23,23 +16,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  name-review:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-      - run: node --test scripts/name-gate.test.mjs
-      - name: Verify the live Smartest name release gate
-        env:
-          SMARTEST_NAME_REVIEW_APPROVED: >-
-            ${{ inputs.approve_smartest_name }}
-        run: node scripts/check-smartest-name.mjs
-
   immutable-evidence:
-    needs: name-review
+    name: >-
+      immutable-evidence (${{ matrix.os }},
+      ${{ matrix.host }}, ${{ matrix.target }})
     if: github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
@@ -53,30 +33,37 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - run: git rev-parse HEAD
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c
         with:
           install: true
           cache: true
       - run: gleam deps download
-      - run: >-
-          node scripts/runtime-cell.mjs
-          ${{ matrix.host }} ${{ matrix.target }}
+      - name: Check the runtime cell
+        shell: bash
+        env:
+          MATRIX_HOST: ${{ matrix.host }}
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: node scripts/runtime-cell.mjs "$MATRIX_HOST" "$MATRIX_TARGET"
 
   candidate-artifacts:
+    name: candidate-artifacts
     needs: immutable-evidence
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # Candidate signing needs OIDC and attestation write access.
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-      artifact-metadata: write
+      id-token: write  # Obtain signing identities.
+      attestations: write  # Attach candidate provenance.
+      artifact-metadata: write  # Record artifact metadata.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c
         with:
           install: true
@@ -121,9 +108,9 @@ jobs:
           subject-checksums: dist/SHA256SUMS
       - name: Retain the GitHub attestation bundle
         shell: bash
-        run: >-
-          cp '${{ steps.attest.outputs.bundle-path }}'
-          dist/github-attestation.sigstore.json
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$ATTESTATION_BUNDLE" dist/github-attestation.sigstore.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: >-

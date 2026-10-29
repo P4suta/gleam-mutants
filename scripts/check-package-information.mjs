@@ -7,48 +7,69 @@ import os from "node:os";
 import path from "node:path";
 
 const root = process.cwd();
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "gleam-mutants-package-information-"));
+const temporary = fs.mkdtempSync(
+	path.join(os.tmpdir(), "gleam-mutants-package-information-"),
+);
 const output = path.join(temporary, "package-information.json");
 
 try {
-  const result = childProcess.spawnSync(
-    "gleam",
-    ["export", "package-information", "--out", output],
-    { cwd: root, encoding: "utf8", shell: false },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${result.stdout}${result.stderr}`);
+	const result = childProcess.spawnSync(
+		"gleam",
+		["export", "package-information", "--out", output],
+		{ cwd: root, encoding: "utf8", shell: false },
+	);
+	if (result.error) throw result.error;
+	if (result.status !== 0) throw new Error(`${result.stdout}${result.stderr}`);
 
-  const metadata = JSON.parse(fs.readFileSync(output, "utf8"))["gleam.toml"];
-  if (!metadata) throw new Error("package-information has no gleam.toml metadata");
-  const assertEqual = (actual, expected, label) => {
-    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-      throw new Error(`${label} drift: ${JSON.stringify(actual)}`);
-    }
-  };
-  assertEqual(metadata.gleam, ">= 1.17.0 and < 2.0.0", "minimum Gleam version");
-  assertEqual(
-    metadata.internal_modules,
-    [
-      "gleam_mutants/*",
-      "gleam_mutants/core/*",
-      "gleam_mutants/suggest/*",
-      "smartest/internal/*",
-    ],
-    "internal modules",
-  );
-  assertEqual(
-    (metadata.documentation?.pages || []).map(page => page.path),
-    [
-      "smartest.html",
-      "configuration.html",
-      "operators.html",
-      "suggest.html",
-      "architecture.html",
-    ],
-    "documentation pages",
-  );
-  console.log("package-information matches the compiler, internal-module, and documentation contracts");
+	const metadata = JSON.parse(fs.readFileSync(output, "utf8"))["gleam.toml"];
+	if (!metadata)
+		throw new Error("package-information has no gleam.toml metadata");
+	const assertEqual = (actual, expected, label) => {
+		if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+			throw new Error(`${label} drift: ${JSON.stringify(actual)}`);
+		}
+	};
+	assertEqual(metadata.gleam, ">= 1.17.0 and < 2.0.0", "minimum Gleam version");
+	assertEqual(
+		metadata.internal_modules,
+		[
+			"gleam_mutants/cache",
+			"gleam_mutants/capability",
+			"gleam_mutants/cli",
+			"gleam_mutants/config",
+			"gleam_mutants/core/*",
+			"gleam_mutants/engine",
+			"gleam_mutants/error",
+			"gleam_mutants/local_dependencies",
+			"gleam_mutants/mte_asset",
+			"gleam_mutants/pipeline",
+			"gleam_mutants/platform",
+			"gleam_mutants/project_report",
+			"gleam_mutants/report",
+			"gleam_mutants/runtime",
+			"gleam_mutants/snapshot",
+			"gleam_mutants/stryker_html",
+			"gleam_mutants/stryker_report",
+			"gleam_mutants/test_impact",
+			"gleam_mutants/version",
+			"gleam_mutants/workspace_lock",
+		],
+		"internal modules",
+	);
+	assertEqual(
+		(metadata.documentation?.pages || []).map((page) => page.path),
+		[
+			"library.html",
+			"configuration.html",
+			"operators.html",
+			"architecture.html",
+			"migration.html",
+		],
+		"documentation pages",
+	);
+	console.log(
+		"package-information matches the compiler, internal-module, and documentation contracts",
+	);
 } finally {
-  fs.rmSync(temporary, { recursive: true, force: true });
+	fs.rmSync(temporary, { recursive: true, force: true });
 }
