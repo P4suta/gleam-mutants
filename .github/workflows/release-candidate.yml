@@ -47,7 +47,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@a2d992e9704641e7d4bb367cc3d44366ca414657
+      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@a9d791ae40e6c8adaf154f6375d197e6ca521a93
       - run: npm ci --ignore-scripts
       - if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium firefox webkit
@@ -72,7 +72,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@a2d992e9704641e7d4bb367cc3d44366ca414657
+      - uses: P4suta/gleam-mutants/.github/actions/gleam-deps@a9d791ae40e6c8adaf154f6375d197e6ca521a93
       - run: npm ci --ignore-scripts
       - run: npx playwright install --with-deps chromium firefox webkit
       - run: mise run release gates-hosted build/release-gates
