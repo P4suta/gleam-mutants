@@ -147,6 +147,8 @@ Proposal CI regressions reject foreign metadata and human approval cases, preser
 The protected preparation workflow formats the generated changelog with pinned rumdl before checking CI.
 It creates a single-file commit from the inspected proposal source, updates only the fixed bot branch without force, and checks CI at the resulting source.
 A native formatter regression checks known entries, blank lines, list markers, empty-input refusal, and idempotence.
+Dispatch checks the actual Git branch reference, object type, and exact source after formatting, while the CI workflow checks that source again before checkout.
+The PR response still supplies proposal identity but no longer serves as the execution reference after a branch update.
 GitHub's event suppression and workflow execution remain external assumptions that require live verification.
 `mise run audit-tools` checks the release and fuzz dependency lockfiles against the exact RustSec commit in `tools/release/rustsec.commit`.
 Review upstream advisory changes and update that full commit explicitly to renew the shared audit snapshot.

@@ -29,6 +29,16 @@ enum ProposalRun {
     Present,
 }
 
+fn proposal_reference(reference: &Value, source: &Revision) -> Result<(), String> {
+    if reference["ref"] != format!("refs/heads/{PROPOSAL_BRANCH}")
+        || reference["object"]["type"] != "commit"
+        || reference["object"]["sha"] != source.as_str()
+    {
+        return Err("proposal branch differs from the requested CI source".into());
+    }
+    Ok(())
+}
+
 fn proposal_run(run: &Value, source: &Revision) -> Result<ProposalRun, String> {
     let id = run["id"]
         .as_u64()
@@ -584,9 +594,11 @@ pub fn proposal_checks() -> Result<(), String> {
         }
         let current = required(&format!("repos/{}/pulls/{number}", candidate::REPOSITORY))?;
         validate_proposal(&current)?;
-        if current["head"]["sha"] != source.as_str() {
-            return Err("proposal head changed while checking its CI".into());
-        }
+        let reference = required(&format!(
+            "repos/{}/git/ref/heads/{PROPOSAL_BRANCH}",
+            candidate::REPOSITORY
+        ))?;
+        proposal_reference(&reference, &source)?;
         if proposal_ci(record) == CiAction::Dispatch {
             runner::output(Command::new("gh").args([
                 "workflow",
@@ -607,6 +619,24 @@ pub fn proposal_checks() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proposal_ci_uses_the_exact_branch_reference() {
+        let source = Revision::try_from("a".repeat(40)).unwrap();
+        let reference = serde_json::json!({"ref":format!("refs/heads/{PROPOSAL_BRANCH}"),
+            "object":{"type":"commit","sha":source.as_str()}});
+        proposal_reference(&reference, &source).unwrap();
+        let mut foreign = reference.clone();
+        foreign["ref"] = serde_json::json!("refs/heads/main");
+        assert!(proposal_reference(&foreign, &source).is_err());
+        let mut tag = reference.clone();
+        tag["object"]["type"] = serde_json::json!("tag");
+        assert!(proposal_reference(&tag, &source).is_err());
+        let mut changed = reference;
+        changed["object"]["sha"] = serde_json::json!("b".repeat(40));
+        assert!(proposal_reference(&changed, &source).is_err());
+        assert!(proposal_reference(&Value::Null, &source).is_err());
+    }
 
     fn proposal_record() -> Value {
         serde_json::json!({"id":1,"head_sha":"a".repeat(40),"head_branch":PROPOSAL_BRANCH,

@@ -23,9 +23,4 @@ mise x -- gleam run -m gleam_mutants -- run --root path/to/project
 
 ## License
 
-Licensed under either license:
-
-- [Apache License, Version 2.0](LICENSE-APACHE)
-- [Massachusetts Institute of Technology (MIT) license](LICENSE-MIT)
-
-Contributions use both licenses unless you state other terms.
+Licensed under the [Apache License, Version 2.0](LICENSE-APACHE) or the [Massachusetts Institute of Technology (MIT) license](LICENSE-MIT), at your option.
