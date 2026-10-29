@@ -70,6 +70,7 @@ Explicit persistent caching for a custom command requires `cache.key`.
 Declare external file and environment inputs through `cache.files` and `cache.env`.
 The cache context includes the Gleam compiler and selected runtime versions.
 `keep_snapshots` controls retained workspace copies; zero disables retention.
+Collection skips locked workspaces, so active copies can temporarily exceed the retention count.
 
 `list` does not build, invoke tests, access the outcome cache, or write reports.
 `list --validate` adds compilation but never invokes the test command.

@@ -278,6 +278,28 @@ pub fn symlinked_dependency_contents_are_rejected_test() {
   let assert Ok(Nil) = platform.delete_tree(root)
 }
 
+pub fn posix_dependency_backslashes_are_refused_before_reinterpretation_test() {
+  case platform.os_name() {
+    "windows" -> Nil
+    _ -> {
+      let root = fixture()
+      let source =
+        package(
+          root,
+          "consumer",
+          "[dependencies]\nlibrary = { path = '..\\library' }\n",
+        )
+      let _dependency = package(root, "library", "")
+      let assert Ok(captured) = snapshot.create(source)
+      let attempted = local_dependencies.prepare(source, captured, [])
+      let assert Ok(Nil) = snapshot.dispose(captured)
+      let assert Ok(Nil) = platform.delete_tree(root)
+      let assert Error(message) = attempted
+      assert string.contains(message, "unsupported backslash")
+    }
+  }
+}
+
 pub fn all_three_package_graphs_match_an_independent_reachability_reference_test() {
   let root = fixture()
   check_graphs(root, 0)

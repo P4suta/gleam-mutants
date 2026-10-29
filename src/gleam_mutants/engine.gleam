@@ -381,10 +381,10 @@ fn with_session(
       {
         Ok(captured) -> {
           cache.mark_snapshot_used(workspace)
-          cache.collect_snapshots(
+          use _ <- result.try(cache.collect_snapshots(
             cache.workspaces_root(),
             configured.keep_snapshots,
-          )
+          ))
           Ok(captured)
         }
         Error(_) -> {
@@ -1063,7 +1063,7 @@ pub fn discover_catalogs(
   |> Ok
 }
 
-/// Allows mutation runtime observation only inside the disposable snapshot.
+/// Configures trusted Deno tests to record mutation observations.
 fn configure_deno_permissions(
   root: String,
   runtimes: List(Runtime),

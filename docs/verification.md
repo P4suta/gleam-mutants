@@ -38,11 +38,32 @@ Cleanup has a separate ten-second deadline and preserves the primary failure whe
 Native fixtures cover zero-deadline termination, completed statuses, cleanup failure, missing cleanup commands, and a blocked cleanup command.
 These checks depend on ordinary OS process termination and Docker daemon behavior.
 An inability to terminate a client or remove its container remains a reported failure, never a proof result.
-The gate requires all five named theorems to have no axioms and replays their compiled module through a fresh kernel.
+The gate requires all six named theorems to have no axioms and replays their compiled module through a fresh kernel.
 It changes one production constant for each predicate and requires the corresponding equality-proof failure against the unchanged contracts.
 A successful broken proof or another kind of tool failure fails the gate.
 The original production source and independent contracts must still match their copies at completion.
 Generated models and logs are evidence for that invocation; later invocations generate fresh evidence.
+
+## Source-derived filename decisions
+
+The gate also reads the complete [filesystem entry module](../src/gleam_mutants/core/filesystem_entry.gleam).
+A closed translator admits its typed string inequalities, conjunctions, and negated single-character containment checks.
+It refuses other declarations, calls, operators, and literals.
+The model represents a string as its sequence of Unicode scalar values.
+Empty text, dot, and parent components become empty, singleton, and two-element lists.
+Slash, backslash, and NUL containment become membership of their scalar values.
+The independent contract quantifies over every finite list of natural numbers, including all Unicode scalar sequences.
+This representation uses constructive list operations and needs no additional axioms.
+The reviewed translation and ordinary Gleam equality and containment semantics remain trusted.
+It does not prove an operating system's path resolution or verify Gleam executables directly.
+
+All directory traversal checks the production predicate before joining names or applying exclusions.
+An independent executable reference checks every ASCII component of length zero through two, plus Unicode and whitespace controls.
+Native regressions cover escaped writes, literal whitespace, source directories named `build`, duplicate and prune refusal, private roots, and active-copy collection.
+A Rust fixture runs those boundaries with umask zero on Erlang, Node, Deno, and Bun.
+POSIX permission assertions are conditional on the host platform; Windows ACL behavior remains an external assumption.
+A synchronized two-process fixture pauses directory creation while another participant populates shared state, then checks that both operations preserve that state.
+The [filesystem boundary decision](adr/preserve-filesystem-entry-boundaries.md) records the compatibility and ownership limits.
 
 See Lean's [proof validation documentation](https://lean-lang.org/doc/reference/latest/ValidatingProofs/) for the distinction between elaboration and kernel replay.
 
@@ -63,6 +84,7 @@ Reassess this boundary when a maintained verifier can import the relevant Gleam 
 | Host preservation | Process FFI, engine, CLI | Child exit 130/143 during compilation, baseline, and mutation batches on all four runtimes; API continuation and CLI exit |
 | Process text | Process FFI and report serialization | UTF-8 boundary vectors, BOM preservation, all 65,536 two-byte inputs against Node's replacement decoder, truncated multibyte output, and actual API report serialization on four runtimes |
 | Input preservation | Snapshot and instrumenter | Byte digests, spaces, Unicode/CRLF, link rejection, generated-link cleanup, 10,000 fixed-seed properties |
+| Filesystem names and privacy | Entry predicate, physical paths, snapshot roots, shared cache | Source-derived scalar-sequence contract; complete two-character ASCII domain; escaped-write controls; four-runtime permissive-umask fixture; synchronized shared-directory creation |
 | Local dependency closure | Local dependency capture and snapshot identity | All 512 directed three-package graphs against an independent transitive-closure reference; shared, absolute, development, Git, retained-copy, and link boundaries; real locked builds and cache invalidation on four runtimes |
 | Compiler classification | Validation batches | Source-derived rejection-status contract; mixed and all-rejected catalogues; invalid mutants remain rejected; persistent compiler failures with exit 1 and 75 abort validation on all four runtimes |
 | Baseline and aggregation | Execution and outcome core | Baseline failure returns an error; all 341 outcome-category lists of length zero through four match an independent priority reference |

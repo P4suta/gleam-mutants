@@ -110,6 +110,9 @@ The library requires an explicit option to enable either report destination.
 Original source files are read-only to the engine.
 Builds and tests run in disposable snapshots.
 Snapshots reject input symlinks, junctions, and special files and exclude the effective report directory from their manifests and fingerprints.
+Unsupported native names containing backslashes are refused before traversal.
+Whitespace and Unicode in supported names keep their original spelling.
+POSIX copies use owner-private roots before copying source; Windows access control depends on the host's inherited ACLs.
 Workers use independent snapshots and reuse their local build cache between mutation waves.
 Timeout cleanup terminates descendant process trees.
 A child exit of 130/143 aborts work, releases the lock, and disposes snapshots through the normal error path.

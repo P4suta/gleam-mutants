@@ -42,6 +42,11 @@ Interrupted builds abort validation instead of being misclassified as compiler r
 A failed baseline aborts without a quality score.
 
 The sorted snapshot manifest excludes generated build, dependency, cache, and report data.
+Build directories beside a package's `gleam.toml` are excluded; source directories named `build` remain inputs.
+Physical path joins preserve whitespace and native spelling.
+Directory entries containing unsupported separators or NUL are refused before filesystem use.
+POSIX snapshot roots are private before source is copied, and retained roots with unsafe permissions are refused.
+Shared cache directory creation accepts concurrent participants and never removes their contents on a creation error.
 Input links and special files are rejected.
 A callback-scoped session owns configuration, selection, snapshot, sources, and catalogue.
 Every returned result passes through snapshot disposal and lock release.

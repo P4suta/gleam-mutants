@@ -5,7 +5,6 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/result
 import gleam/string
-import gleam_mutants/core/mutant
 import gleam_mutants/core/path
 import gleam_mutants/platform
 import gleam_mutants/snapshot.{type Snapshot}
@@ -79,6 +78,7 @@ pub fn prepare(
       )
       use _ <- result.try(
         list.try_each(names, fn(name) {
+          use _ <- result.try(snapshot.admit_entry(name))
           case dict.has_key(dependencies, name) {
             True -> Ok(Nil)
             False ->
@@ -107,7 +107,8 @@ fn capture_references(
   captured: Dict(String, CapturedDependency),
 ) -> Result(Dict(String, CapturedDependency), String) {
   use captured, dependency <- list.try_fold(references, captured)
-  let location = mutant.normalize_path(dependency.location)
+  let location =
+    path.from_native(dependency.location, platform.os_name() == "windows")
   let absolute =
     string.starts_with(location, "/") || string.slice(location, 1, 1) == ":"
   use dependency_source <- result.try(
@@ -365,9 +366,18 @@ fn write_config(root: String, document: Document) -> Result(Nil, String) {
 }
 
 fn resolve(location: String) -> Result(String, String) {
+  use _ <- result.try(
+    case platform.os_name() != "windows" && string.contains(location, "\\") {
+      True ->
+        Error(
+          "unsupported backslash in local dependency filesystem path: "
+          <> location,
+        )
+      False -> Ok(Nil)
+    },
+  )
   location
   |> platform.resolve_path
-  |> mutant.normalize_path
   |> simplifile.resolve
   |> result.map_error(simplifile.describe_error)
 }
@@ -386,9 +396,7 @@ fn regular_directory(directory: String) -> Result(Nil, String) {
 
 fn owned_directory(directory: String) -> Result(Nil, String) {
   case simplifile.link_info(directory) {
-    Error(simplifile.Enoent) ->
-      simplifile.create_directory(directory)
-      |> result.map_error(simplifile.describe_error)
+    Error(simplifile.Enoent) -> platform.create_private_directory(directory)
     Error(error) -> Error(simplifile.describe_error(error))
     Ok(_) -> regular_directory(directory)
   }

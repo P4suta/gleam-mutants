@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod filesystem_entry;
 mod limits;
 mod supervisor;
 
@@ -11,43 +12,57 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SOURCE: &str = "src/gleam_mutants/core/limits.gleam";
+const ENTRY_SOURCE: &str = "src/gleam_mutants/core/filesystem_entry.gleam";
 const CONTRACT_SOURCE: &str = "verification/Contracts.lean";
 struct Contract {
     theorem: &'static str,
     predicate: &'static str,
     original: &'static str,
     broken: &'static str,
+    source: &'static str,
 }
-const CONTRACTS: [Contract; 5] = [
+const CONTRACTS: [Contract; 6] = [
     Contract {
         theorem: "jobs_contract",
         predicate: "valid_jobs",
         original: "maximum_jobs = 32",
         broken: "maximum_jobs = 33",
+        source: SOURCE,
     },
     Contract {
         theorem: "timeout_contract",
         predicate: "valid_timeout",
         original: "minimum_timeout_ms = 100",
         broken: "minimum_timeout_ms = 101",
+        source: SOURCE,
     },
     Contract {
         theorem: "interruption_contract",
         predicate: "interrupted",
         original: "interrupt_exit_code = 130",
         broken: "interrupt_exit_code = 131",
+        source: SOURCE,
     },
     Contract {
         theorem: "unshared_file_contract",
         predicate: "unshared_file",
         original: "unshared_file_link_count = 1",
         broken: "unshared_file_link_count = 2",
+        source: SOURCE,
     },
     Contract {
         theorem: "compiler_rejection_contract",
         predicate: "compiler_rejected",
         original: "compiler_rejection_exit_code = 1",
         broken: "compiler_rejection_exit_code = 2",
+        source: SOURCE,
+    },
+    Contract {
+        theorem: "filesystem_entry_contract",
+        predicate: "valid",
+        original: "value != \"..\"",
+        broken: "value != \".\"",
+        source: ENTRY_SOURCE,
     },
 ];
 const PROOF_TIMEOUT: Duration = Duration::from_secs(900);
@@ -73,10 +88,12 @@ fn text(result: &Output) -> String {
     )
 }
 
-fn model(directory: &Path, source: &str, contracts: &str) -> Result<(), String> {
+fn model(directory: &Path, source: &str, entry: &str, contracts: &str) -> Result<(), String> {
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    write(directory.join("Derived.lean"), &limits::derive(source)?)?;
+    let derived = limits::derive(source)? + &filesystem_entry::derive(entry)?;
+    write(directory.join("Derived.lean"), &derived)?;
     write(directory.join("source.gleam"), source)?;
+    write(directory.join("filesystem_entry.gleam"), entry)?;
     write(directory.join("Contracts.lean"), contracts)
 }
 
@@ -149,6 +166,7 @@ fn checked(image: &str, directory: &Path, args: &[&str]) -> Result<Output, Strin
 
 fn prove() -> Result<(), String> {
     let source = read(SOURCE)?;
+    let entry = read(ENTRY_SOURCE)?;
     let contracts = read(CONTRACT_SOURCE)?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -174,7 +192,7 @@ fn prove() -> Result<(), String> {
     let image = read(image_file)?;
     let image = image.trim();
     let positive = directory.join("positive");
-    model(&positive, &source, &contracts)?;
+    model(&positive, &source, &entry, &contracts)?;
     let version = checked(image, &positive, &["lean", "--version"])?;
     if !text(&version).contains("Lean (version 4.34.1,") {
         return Err(format!("unexpected verifier version: {}", text(&version)));
@@ -207,15 +225,24 @@ fn prove() -> Result<(), String> {
     }
     write(positive.join("replay.log"), &text(&replay))?;
     for contract in &CONTRACTS {
-        let broken = source.replace(contract.original, contract.broken);
-        if broken == source {
+        let original = match contract.source {
+            SOURCE => &source,
+            ENTRY_SOURCE => &entry,
+            other => return Err(format!("unknown contract source {other}")),
+        };
+        let broken = original.replace(contract.original, contract.broken);
+        if broken == *original {
             return Err(format!(
                 "negative control could not change {}",
                 contract.predicate
             ));
         }
         let negative = directory.join(contract.predicate);
-        model(&negative, &broken, &contracts)?;
+        match contract.source {
+            SOURCE => model(&negative, &broken, &entry, &contracts)?,
+            ENTRY_SOURCE => model(&negative, &source, &broken, &contracts)?,
+            other => return Err(format!("unknown contract source {other}")),
+        }
         checked(
             image,
             &negative,
@@ -239,7 +266,10 @@ fn prove() -> Result<(), String> {
         }
         write(negative.join("refusal.log"), &diagnostic)?;
     }
-    if read(SOURCE)? != source || read(CONTRACT_SOURCE)? != contracts {
+    if read(SOURCE)? != source
+        || read(ENTRY_SOURCE)? != entry
+        || read(CONTRACT_SOURCE)? != contracts
+    {
         return Err("production source or contracts changed during verification".into());
     }
     println!(
@@ -258,6 +288,7 @@ fn run() -> Result<(), String> {
         [command, directory] if command == "derive" => model(
             Path::new(directory),
             &read(SOURCE)?,
+            &read(ENTRY_SOURCE)?,
             &read(CONTRACT_SOURCE)?,
         ),
         [] => {

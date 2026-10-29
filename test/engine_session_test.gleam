@@ -313,7 +313,7 @@ pub fn kept_copies_are_bounded_by_how_recently_they_were_used_test() {
   place("middle", "2000")
   place("newest", "3000")
 
-  cache.collect_snapshots(root, 2)
+  let assert Ok(Nil) = cache.collect_snapshots(root, 2)
   assert held("newest")
   assert held("middle")
   assert !held("oldest")
@@ -324,13 +324,13 @@ pub fn kept_copies_are_bounded_by_how_recently_they_were_used_test() {
 
   // A copy with no marker at all reads as never used, and goes first.
   place("unmarked", "")
-  cache.collect_snapshots(root, 2)
+  let assert Ok(Nil) = cache.collect_snapshots(root, 2)
   assert held("newest")
   assert held("middle")
   assert !held("unmarked")
 
   // Nothing kept means nothing kept.
-  cache.collect_snapshots(root, 0)
+  let assert Ok(Nil) = cache.collect_snapshots(root, 0)
   assert !held("newest")
   assert !held("middle")
 

@@ -10,6 +10,7 @@ import gleam_mutants/config.{
   CacheWriteOnly,
 }
 import gleam_mutants/core/bytes
+import gleam_mutants/core/filesystem_entry
 import gleam_mutants/core/mutant.{type Mutant}
 import gleam_mutants/core/outcome.{
   type Outcome, type Runtime, type RuntimeOutcome,
@@ -71,7 +72,7 @@ pub fn workspace_id(workspace: String) -> String {
 fn normalize_workspace_identity(workspace: String) -> String {
   case platform.os_name() {
     "windows" -> workspace |> string.replace("\\", "/") |> string.lowercase
-    _ -> string.replace(workspace, "\\", "/")
+    _ -> workspace
   }
 }
 
@@ -107,25 +108,61 @@ pub fn mark_snapshot_used(workspace: String) -> Nil {
 /// file per workspace, where measuring one copy means walking every artefact
 /// in it, and a run should not pay a walk of every workspace to find out it is
 /// within its budget.
-pub fn collect_snapshots(root: String, keep: Int) -> Nil {
+pub fn collect_snapshots(root: String, keep: Int) -> Result(Nil, String) {
   let kept =
     simplifile.read_directory(root)
     |> result.unwrap([])
+    |> list.filter(filesystem_entry.valid)
     |> list.filter_map(fn(id) {
       let directory = path.join(root, id)
-      case simplifile.is_directory(path.join(directory, "snapshot")) {
-        Ok(True) ->
-          Ok(#(used_at(path.join(directory, "snapshot.used")), directory))
-        _ -> Error(Nil)
+      case
+        simplifile.link_info(directory),
+        platform.is_reparse_point(directory)
+      {
+        Ok(info), False ->
+          case
+            simplifile.file_info_type(info),
+            simplifile.is_directory(path.join(directory, "snapshot"))
+          {
+            simplifile.Directory, Ok(True) ->
+              Ok(#(used_at(path.join(directory, "snapshot.used")), directory))
+            _, _ -> Error(Nil)
+          }
+        _, _ -> Error(Nil)
       }
     })
     |> list.sort(fn(a, b) { int.compare(b.0, a.0) })
   kept
   |> list.drop(int.max(0, keep))
-  |> list.each(fn(entry) {
-    let _ = platform.delete_tree(path.join(entry.1, "snapshot"))
-    let _ = simplifile.delete(path.join(entry.1, "snapshot.used"))
-    Nil
+  |> list.try_each(fn(entry) {
+    let lock_path = path.join(entry.1, "run.lock")
+    let acquired =
+      platform.acquire_lock(
+        lock_path,
+        "snapshot-collection",
+        platform.now_milliseconds(),
+        0,
+      )
+    case string.starts_with(acquired, "ok:") {
+      False -> Ok(Nil)
+      True -> {
+        let removed = {
+          use _ <- result.try(
+            platform.delete_tree(path.join(entry.1, "snapshot")),
+          )
+          remove(path.join(entry.1, "snapshot.used"))
+        }
+        let released =
+          platform.release_lock(lock_path, string.drop_start(acquired, 3))
+        case removed, released {
+          Ok(Nil), "" -> Ok(Nil)
+          Error(error), "" -> Error(error)
+          Ok(Nil), error -> Error(error)
+          Error(error), cleanup ->
+            Error(error <> "; collection lock release failed: " <> cleanup)
+        }
+      }
+    }
   })
 }
 
@@ -135,16 +172,39 @@ pub fn snapshot_bytes(workspace: String) -> Int {
 }
 
 fn tree_bytes(target: String) -> Int {
-  case simplifile.read_directory(target) {
-    Error(_) ->
-      simplifile.file_info(target)
-      |> result.map(fn(info) { info.size })
-      |> result.unwrap(0)
-    Ok(names) ->
-      list.fold(names, 0, fn(total, name) {
-        total + tree_bytes(path.join(target, name))
-      })
+  case simplifile.link_info(target), platform.is_reparse_point(target) {
+    Ok(info), False ->
+      case simplifile.file_info_type(info) {
+        simplifile.File -> info.size
+        simplifile.Directory ->
+          simplifile.read_directory(target)
+          |> result.unwrap([])
+          |> list.filter(filesystem_entry.valid)
+          |> list.fold(0, fn(total, name) {
+            total + tree_bytes(path.join(target, name))
+          })
+        _ -> 0
+      }
+    _, _ -> 0
   }
+}
+
+pub fn prepare_workspace(workspace: String) -> Result(Nil, String) {
+  let base = platform.cache_directory()
+  use _ <- result.try(
+    simplifile.create_directory_all(base)
+    |> result.map_error(simplifile.describe_error),
+  )
+  list.try_fold(
+    ["gleam-mutants", "v1", "workspaces", workspace_id(workspace)],
+    base,
+    fn(parent, component) {
+      let directory = path.join(parent, component)
+      use _ <- result.try(platform.ensure_private_directory(directory))
+      Ok(directory)
+    },
+  )
+  |> result.replace(Nil)
 }
 
 fn used_at(marker: String) -> Int {
