@@ -8,12 +8,14 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 const HTTP_SUCCESS: u16 = 200;
 const HTTP_CREATED: u16 = 201;
 const HTTP_NOT_FOUND: u16 = 404;
 const HTTP_DEADLINE_SECONDS: &str = "60";
 const MAXIMUM_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
+const NPM_READBACK_INTERVAL: Duration = Duration::from_secs(30);
 
 pub enum Registry {
     Hex,
@@ -186,6 +188,18 @@ pub fn observe(
         Ok(Existing::Matching)
     } else {
         Ok(Existing::Conflicting)
+    }
+}
+
+pub fn verify_npm_publication(version: &Version, expected_digest: &str) -> Result<(), String> {
+    println!("npm publish returned success; verifying public availability without another upload");
+    match gleam_mutants_release_core::await_matching(
+        || observe(Registry::Npm, version, expected_digest),
+        || std::thread::sleep(NPM_READBACK_INTERVAL),
+    )? {
+        Existing::Matching => Ok(()),
+        Existing::Conflicting => Err("npm published archive conflicts with the verified candidate".into()),
+        Existing::Missing => Err("npm upload was accepted but the version is not yet publicly available; inspect the registry before another write".into()),
     }
 }
 

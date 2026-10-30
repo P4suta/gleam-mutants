@@ -784,15 +784,7 @@ pub fn execute(phase: Phase, directory: &Path, identity: &Identity) -> Result<()
                 WritePlan::Refuse => Err("npm version contains different bytes".into()),
                 WritePlan::Create => {
                     publish_npm(directory, &candidate)?;
-                    if registry::observe(
-                        registry::Registry::Npm,
-                        &identity.version,
-                        &artifact.sha256,
-                    )? != Existing::Matching
-                    {
-                        return Err("npm readback does not match the verified archive".into());
-                    }
-                    Ok(())
+                    registry::verify_npm_publication(&identity.version, &artifact.sha256)
                 }
             }
         }

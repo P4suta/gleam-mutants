@@ -171,6 +171,22 @@ pub enum Existing {
     Conflicting,
 }
 
+pub const PUBLICATION_READBACK_CHECKS: usize = 31;
+
+pub fn await_matching<E>(
+    mut read: impl FnMut() -> Result<Existing, E>,
+    mut wait: impl FnMut(),
+) -> Result<Existing, E> {
+    for _ in 1..PUBLICATION_READBACK_CHECKS {
+        let existing = read()?;
+        if existing != Existing::Missing {
+            return Ok(existing);
+        }
+        wait();
+    }
+    read()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WritePlan {
     Create,
@@ -272,6 +288,40 @@ pub fn conclusive_counts(m: RuntimeCounts) -> bool {
 #[cfg(kani)]
 mod proofs {
     use super::{Existing, WritePlan, can_finalize, plan_write};
+
+    #[kani::proof]
+    #[kani::unwind(33)]
+    fn publication_readback_stops_at_the_first_terminal_observation() {
+        let terminal: Result<Existing, u8> = kani::any();
+        let first_terminal: usize = kani::any();
+        kani::assume(first_terminal < super::PUBLICATION_READBACK_CHECKS);
+        let mut reads = 0;
+        let mut waits = 0;
+        let result = super::await_matching(
+            || {
+                let index = reads;
+                reads += 1;
+                if index < first_terminal {
+                    Ok(Existing::Missing)
+                } else {
+                    terminal
+                }
+            },
+            || waits += 1,
+        );
+        assert!(result == terminal);
+        if terminal == Ok(Existing::Missing) {
+            assert!(reads == super::PUBLICATION_READBACK_CHECKS);
+            assert!(waits == super::PUBLICATION_READBACK_CHECKS - 1);
+        } else {
+            assert!(reads == first_terminal + 1);
+            assert!(waits == first_terminal);
+        }
+        kani::cover!(result == Ok(Existing::Matching));
+        kani::cover!(result == Ok(Existing::Conflicting));
+        kani::cover!(result == Ok(Existing::Missing));
+        kani::cover!(result.is_err());
+    }
 
     #[kani::proof]
     fn release_acquisition_preserves_identity_without_repeated_discovery() {
@@ -451,6 +501,61 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::{Existing, WritePlan, can_finalize, plan_write};
+
+    #[test]
+    fn accepted_publication_waits_for_matching_bytes() {
+        const PENDING_CHECKS: usize = 2;
+        let mut reads = 0;
+        let mut waits = 0;
+        let result: Result<_, ()> = super::await_matching(
+            || {
+                reads += 1;
+                Ok(if reads <= PENDING_CHECKS {
+                    Existing::Missing
+                } else {
+                    Existing::Matching
+                })
+            },
+            || waits += 1,
+        );
+        assert_eq!(result, Ok(Existing::Matching));
+        assert_eq!(reads, PENDING_CHECKS + 1);
+        assert_eq!(waits, PENDING_CHECKS);
+    }
+
+    #[test]
+    fn absent_publication_exhausts_the_budget_without_a_final_wait() {
+        let mut reads = 0;
+        let mut waits = 0;
+        let result: Result<_, ()> = super::await_matching(
+            || {
+                reads += 1;
+                Ok(Existing::Missing)
+            },
+            || waits += 1,
+        );
+        assert_eq!(result, Ok(Existing::Missing));
+        assert_eq!(reads, super::PUBLICATION_READBACK_CHECKS);
+        assert_eq!(waits, super::PUBLICATION_READBACK_CHECKS - 1);
+    }
+
+    #[test]
+    fn matching_conflicting_and_failed_reads_stop_immediately() {
+        for observed in [Ok(Existing::Matching), Ok(Existing::Conflicting), Err(())] {
+            let mut reads = 0;
+            let mut waits = 0;
+            let result = super::await_matching(
+                || {
+                    reads += 1;
+                    observed
+                },
+                || waits += 1,
+            );
+            assert_eq!(result, observed);
+            assert_eq!(reads, 1);
+            assert_eq!(waits, 0);
+        }
+    }
 
     #[test]
     fn only_executed_or_pending_ci_prevents_a_dispatch() {

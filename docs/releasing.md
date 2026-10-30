@@ -130,6 +130,12 @@ The controller binaries are compiled and tested without publication privileges, 
 3. `release-npm` publishes or reuses the identical npm tarball with original provenance and verifies the downloaded registry archive.
 4. `release` finalizes the draft only after the tag, complete assets, and both registry archives match.
 
+The npm registry [scans new publications before making them installable](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/).
+After one successful npm publish, the controller checks the public archive up to 31 times with 30-second waits between missing reads.
+Only matching candidate bytes complete the phase.
+A conflicting archive or read error stops immediately.
+Exhausted checks report an accepted upload with unresolved public availability and perform no additional upload.
+
 Between draft preparation and the registry approvals, `registry-ready` runs both registry prerequisite checks with Contents read and Actions read permissions and no registry secrets.
 It verifies the successful draft producer in the same active controller run, candidate identity and provenance, matching tag, remote archive state, and required npm client and authentication mode.
 The production registry phases call the same preparation function before any upload.
@@ -151,6 +157,8 @@ No phase rebuilds candidate packages or overwrites a conflicting remote output.
 
 A transport failure leaves publication uncertain, even if a request may have reached the provider.
 Inspect remote state before retrying the affected phase.
+An accepted npm upload may also remain unavailable while the registry scans it.
+Wait for the original version and archive, then rerun the failed jobs to reuse matching bytes.
 Matching bytes may be reused; a missing output may be created; conflicting bytes stop the workflow before further writes.
 The draft remains unpublished if either registry phase fails.
 Do not delete a successful registry version, move a tag, clobber an asset, or automatically roll back a partial publication.
