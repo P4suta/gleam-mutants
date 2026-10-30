@@ -203,7 +203,7 @@ These checks cover that finite corpus and the native boundaries; symlink aliases
 
 Release automation has a separate pure Rust core in `tools/release-core`.
 `mise run prove-release` imports that implementation directly into pinned Kani 0.68.0.
-Seven harnesses check output reuse, finalization, conclusive runtime counts, release identity selection, draft acquisition, phase capabilities, and the distinction between suppressed and actual proposal CI.
+Eight harnesses check output reuse, finalization, conclusive runtime counts, release identity selection, draft acquisition, phase capabilities, bounded publication readback, and suppressed proposal CI.
 They cover every admitted Boolean or enum state and all `u64` count and release-ID combinations in those predicates.
 Release selection admits only nonzero IDs, preserves the first match, and refuses another match even when both IDs are equal.
 Its harness checks every selection transition and reachability of the missing, unique, and ambiguous states.
@@ -215,7 +215,12 @@ Both branches must be reachable, and each dispatch invokes exactly one reader.
 The acquisition harness calls the production generic dispatcher with arbitrary discovery and creation results.
 It checks exactly one discovery, no creation after an existing result or discovery error, one creation for a missing target, exact identity preservation, and error propagation without another discovery or write.
 The callback types permit only one invocation per operation.
-The gate requires seven successful harnesses and separately rejects eight deliberately broken implementations at the corresponding harness.
+The readback harness checks every first terminal position within the production loop's fixed budget of 31 reads.
+Matching bytes, conflicts, and read errors stop immediately without a later read or wait.
+Persistent absence consumes the full budget with 30 waits and returns missing rather than success.
+The adapter supplies registry reads and a 30-second sleep between attempts after one completed npm publish.
+The proof checks callback results and invocation counts, not provider availability or elapsed time.
+The gate requires eight successful harnesses and separately rejects nine deliberately broken implementations at the corresponding harness.
 Each negative control selects only its named harness and requires its exact failed-harness summary.
 Tool failure, an empty harness inventory, or a resource stop supplies no proof result.
 The pinned container uses the same bounded supervisor as the Gleam proof gate and records its actual source hash.
