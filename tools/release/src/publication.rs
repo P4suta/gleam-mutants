@@ -4,7 +4,9 @@
 use crate::candidate::{self, Artifact, Revision};
 use crate::evidence::{self, Candidate, Identity};
 use crate::{constants, github, registry, runner};
-use gleam_mutants_release_core::{Existing, WritePlan, can_finalize, plan_write};
+use gleam_mutants_release_core::{
+    Existing, ReleaseId, ReleaseSelection, WritePlan, can_finalize, plan_write,
+};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -145,9 +147,7 @@ pub fn plan(directory: &Path, identity: &Identity) -> Result<(), String> {
         return Err("release tag belongs to another source".into());
     }
     if let Some(release) = release(identity)? {
-        if release["draft"] != true {
-            return Err("target is already published; no publication plan exists".into());
-        }
+        let release = require_draft(release, &identity.version.tag())?;
         let mut store = store(directory, identity, &release)?;
         let inventory = store.inventory()?;
         for name in inventory {
@@ -260,11 +260,45 @@ fn tag(identity: &Identity) -> Result<Existing, String> {
 }
 
 fn release(identity: &Identity) -> Result<Option<Value>, String> {
-    github::get(&format!(
-        "repos/{}/releases/tags/{}",
-        candidate::REPOSITORY,
-        identity.version.tag()
-    ))
+    release_from(&identity.version.tag(), |path| github::list(path, None))
+}
+
+fn release_from(
+    tag: &str,
+    read: impl FnOnce(&str) -> Result<Vec<Value>, String>,
+) -> Result<Option<Value>, String> {
+    let mut selection = ReleaseSelection::Missing;
+    let mut found = None;
+    for release in read(&format!("repos/{}/releases", candidate::REPOSITORY))? {
+        let observed_tag = release["tag_name"]
+            .as_str()
+            .ok_or("release catalogue entry has no valid tag")?;
+        if observed_tag != tag {
+            continue;
+        }
+        let id = release["id"]
+            .as_u64()
+            .and_then(ReleaseId::new)
+            .ok_or("matching release has no valid ID")?;
+        selection = selection.include(id);
+        match selection {
+            ReleaseSelection::Unique(_) => found = Some(release),
+            ReleaseSelection::Ambiguous => {
+                return Err("release catalogue has duplicate matching tags".into());
+            }
+            ReleaseSelection::Missing => {
+                return Err("release selection lost a matching identity".into());
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn require_draft(release: Value, tag: &str) -> Result<Value, String> {
+    if release["draft"] != true || release["tag_name"] != tag {
+        return Err("target is published or has another release identity".into());
+    }
+    Ok(release)
 }
 
 fn draft(identity: &Identity) -> Result<Value, String> {
@@ -272,10 +306,7 @@ fn draft(identity: &Identity) -> Result<Value, String> {
         return Err("release tag does not identify the verified source".into());
     }
     let release = release(identity)?.ok_or("release draft is missing")?;
-    if release["draft"] != true || release["tag_name"] != identity.version.tag() {
-        return Err("target is published or has another release identity".into());
-    }
-    Ok(release)
+    require_draft(release, &identity.version.tag())
 }
 
 fn assets(directory: &Path, candidate: &Candidate) -> Result<Vec<Artifact>, String> {
@@ -595,10 +626,8 @@ fn create_draft(
     identity: &Identity,
     expected: &[Artifact],
 ) -> Result<(), String> {
-    if let Some(existing) = release(identity)?
-        && existing["draft"] != true
-    {
-        return Err("release is already published; use read-only verification".into());
+    if let Some(existing) = release(identity)? {
+        require_draft(existing, &identity.version.tag())?;
     }
     version_proposal(identity)?;
     match plan_write(true, tag(identity)?) {
@@ -773,6 +802,78 @@ fn minimum_client(observed: &str, minimum: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_draft_is_discovered_when_the_published_tag_endpoint_is_missing() {
+        let tag = "v0.1.0";
+        let draft = serde_json::json!({"id":1,"tag_name":tag,"draft":true});
+        let observed = release_from(tag, |path| {
+            if path == format!("repos/{}/releases", candidate::REPOSITORY) {
+                Ok(vec![draft.clone()])
+            } else if path == format!("repos/{}/releases/tags/{tag}", candidate::REPOSITORY) {
+                Ok(Vec::new())
+            } else {
+                Err("unexpected GitHub release route".into())
+            }
+        })
+        .unwrap();
+        assert_eq!(observed, Some(draft));
+    }
+
+    #[test]
+    fn release_discovery_preserves_exact_targets_after_unrelated_records() {
+        let tag = "v0.1.0";
+        let unrelated = serde_json::json!({"id":1,"tag_name":"v0.2.0","draft":true});
+        for is_draft in [false, true] {
+            let target = serde_json::json!({
+                "id":u64::MAX,"tag_name":tag,"draft":is_draft,"target_commitish":"main"
+            });
+            let records = vec![unrelated.clone(), target.clone()];
+            let found = release_from(tag, |_| Ok(records)).unwrap().unwrap();
+            assert_eq!(found, target);
+            assert_eq!(require_draft(found, tag).is_ok(), is_draft);
+        }
+        assert_eq!(release_from(tag, |_| Ok(vec![unrelated])).unwrap(), None);
+        assert_eq!(release_from(tag, |_| Ok(Vec::new())).unwrap(), None);
+    }
+
+    #[test]
+    fn release_discovery_rejects_duplicates_malformed_identity_and_transport_errors() {
+        const FRACTIONAL_RELEASE_ID: f64 = 1.5;
+        let tag = "v0.1.0";
+        let target = serde_json::json!({"id":1,"tag_name":tag,"draft":true});
+        for other_id in [1, 2] {
+            let duplicate = serde_json::json!({"id":other_id,"tag_name":tag,"draft":false});
+            let error = release_from(tag, |_| Ok(vec![target.clone(), duplicate])).unwrap_err();
+            assert_eq!(error, "release catalogue has duplicate matching tags");
+        }
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"tag_name":null}),
+            serde_json::json!({"tag_name":tag}),
+            serde_json::json!({"tag_name":tag,"id":0}),
+            serde_json::json!({"tag_name":tag,"id":-1}),
+            serde_json::json!({"tag_name":tag,"id":"1"}),
+            serde_json::json!({"tag_name":tag,"id":FRACTIONAL_RELEASE_ID}),
+        ] {
+            assert!(release_from(tag, |_| Ok(vec![invalid])).is_err());
+        }
+        let error = release_from(tag, |_| Err("fixture transport failure".into())).unwrap_err();
+        assert_eq!(error, "fixture transport failure");
+    }
+
+    #[test]
+    fn draft_admission_rejects_published_malformed_and_foreign_releases() {
+        let tag = "v0.1.0";
+        for invalid in [
+            serde_json::json!({"tag_name":tag,"draft":false}),
+            serde_json::json!({"tag_name":tag}),
+            serde_json::json!({"tag_name":tag,"draft":"true"}),
+            serde_json::json!({"tag_name":"v0.2.0","draft":true}),
+        ] {
+            assert!(require_draft(invalid, tag).is_err());
+        }
+    }
 
     #[derive(Default)]
     struct Store {
