@@ -67,6 +67,9 @@ fn exchange<T>(status: &str, response: &[u8], run: impl FnOnce(&str) -> T) -> (T
             }
         };
         socket
+            .set_nonblocking(false)
+            .map_err(|error| error.to_string())?;
+        socket
             .set_read_timeout(Some(IO_DEADLINE))
             .map_err(|error| error.to_string())?;
         socket
