@@ -1,0 +1,21 @@
+// SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+import gleam/option.{type Option, None, Some}
+import gleam_mutants/core/score.{type Score}
+pub type Context {
+  Context(ci: Bool, tty: Bool, strict: Option(Bool), minimum_score: Float)
+}
+pub fn strict(context: Context) -> Bool {
+  case context.strict {
+    Some(value) -> value
+    None -> __default
+  }
+}
+pub fn code(score: Score, context: Context) -> Int {
+  case score.errors __error_comparison 0, strict(context) __connective score.percent <. context.minimum_score {
+    True, _ -> __error_code
+    False, True -> __threshold_code
+    False, False -> __success_code
+  }
+}

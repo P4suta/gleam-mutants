@@ -1,10 +1,15 @@
 // SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+mod bridge;
+mod configuration;
+mod contracts;
 mod filesystem_entry;
 mod limits;
 mod supervisor;
 
+use gleam_mutants_verification::{fragment, outcome, paths, scoring, selection, span};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output};
@@ -13,7 +18,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SOURCE: &str = "src/gleam_mutants/core/limits.gleam";
 const ENTRY_SOURCE: &str = "src/gleam_mutants/core/filesystem_entry.gleam";
-const CONTRACT_SOURCE: &str = "verification/Contracts.lean";
 struct Contract {
     theorem: &'static str,
     predicate: &'static str,
@@ -88,16 +92,102 @@ fn text(result: &Output) -> String {
     )
 }
 
-fn model(directory: &Path, source: &str, entry: &str, contracts: &str) -> Result<(), String> {
+#[derive(Clone)]
+struct Snapshot {
+    sources: BTreeMap<&'static str, String>,
+    proofs: BTreeMap<String, String>,
+}
+
+impl Snapshot {
+    fn read() -> Result<Self, String> {
+        configuration::check()?;
+        Ok(Self {
+            sources: contracts::SOURCES
+                .iter()
+                .map(|path| Ok((*path, read(path)?)))
+                .collect::<Result<_, String>>()?,
+            proofs: contracts::SUITES
+                .iter()
+                .map(|suite| {
+                    let path = format!("verification/{}.lean", suite.module);
+                    Ok((path.clone(), read(path)?))
+                })
+                .collect::<Result<_, String>>()?,
+        })
+    }
+
+    fn source(&self, name: &str) -> Result<&str, String> {
+        self.sources
+            .iter()
+            .find(|(path, _)| Path::new(path).file_name().is_some_and(|file| file == name))
+            .map(|(_, text)| text.as_str())
+            .ok_or_else(|| format!("missing source {name}"))
+    }
+
+    fn changed(&self, name: &str, original: &str, broken: &str) -> Result<Self, String> {
+        let mut changed = self.clone();
+        let source = changed
+            .sources
+            .iter_mut()
+            .find(|(path, _)| {
+                **path == name || Path::new(path).file_name().is_some_and(|file| file == name)
+            })
+            .map(|(_, text)| text)
+            .ok_or_else(|| format!("unknown control source {name}"))?;
+        if source.matches(original).count() != 1 {
+            return Err(format!(
+                "control must change exactly one source fragment: {name}: {original:?}"
+            ));
+        }
+        *source = source.replacen(original, broken, 1);
+        Ok(changed)
+    }
+}
+
+fn model(directory: &Path, snapshot: &Snapshot) -> Result<(), String> {
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let derived = limits::derive(source)? + &filesystem_entry::derive(entry)?;
+    configuration::copy(directory)?;
+    fragment::validate_types(snapshot.source("types.gleam")?)?;
+    let derived = limits::derive(snapshot.source("limits.gleam")?)?
+        + &filesystem_entry::derive(snapshot.source("filesystem_entry.gleam")?)?
+        + &span::derive(snapshot.source("span.gleam")?)?
+        + &outcome::derive(snapshot.source("outcome.gleam")?)?;
+    let derived = derived
+        + &scoring::derive_score(snapshot.source("score.gleam")?)?
+        + &scoring::derive_policy(snapshot.source("exit_policy.gleam")?)?;
+    let derived = derived
+        + &selection::derive_operator(snapshot.source("operator.gleam")?)?
+        + &selection::derive_plan(snapshot.source("plan.gleam")?)?;
+    let derived = "import Lean.Elab.Tactic.Omega\n".to_owned()
+        + &derived
+        + &paths::derive_path(snapshot.source("path.gleam")?)?
+        + &paths::derive_glob(snapshot.source("glob.gleam")?)?;
     write(directory.join("Derived.lean"), &derived)?;
-    write(directory.join("source.gleam"), source)?;
-    write(directory.join("filesystem_entry.gleam"), entry)?;
-    write(directory.join("Contracts.lean"), contracts)
+    for (path, source) in snapshot
+        .sources
+        .iter()
+        .map(|(path, source)| (*path, source))
+        .chain(
+            snapshot
+                .proofs
+                .iter()
+                .map(|(path, source)| (path.as_str(), source)),
+        )
+    {
+        write(
+            directory.join(
+                Path::new(path)
+                    .file_name()
+                    .ok_or("source has no filename")?,
+            ),
+            source,
+        )?;
+    }
+    Ok(())
 }
 
 fn bounded(image: &str, directory: &Path, args: &[&str]) -> Result<Output, String> {
+    configuration::check()?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -165,9 +255,7 @@ fn checked(image: &str, directory: &Path, args: &[&str]) -> Result<Output, Strin
 }
 
 fn prove() -> Result<(), String> {
-    let source = read(SOURCE)?;
-    let entry = read(ENTRY_SOURCE)?;
-    let contracts = read(CONTRACT_SOURCE)?;
+    let snapshot = Snapshot::read()?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -178,6 +266,7 @@ fn prove() -> Result<(), String> {
     let directory = directory
         .canonicalize()
         .map_err(|error| error.to_string())?;
+    println!("Evidence: {}", directory.display());
     let image_file = directory.join("image-id");
     println!("Building the pinned Lean 4.34.1 proof environment");
     let built = Command::new("docker")
@@ -192,7 +281,7 @@ fn prove() -> Result<(), String> {
     let image = read(image_file)?;
     let image = image.trim();
     let positive = directory.join("positive");
-    model(&positive, &source, &entry, &contracts)?;
+    model(&positive, &snapshot)?;
     let version = checked(image, &positive, &["lean", "--version"])?;
     if !text(&version).contains("Lean (version 4.34.1,") {
         return Err(format!("unexpected verifier version: {}", text(&version)));
@@ -202,47 +291,82 @@ fn prove() -> Result<(), String> {
         &positive,
         &["lean", "-o", "Derived.olean", "Derived.lean"],
     )?;
-    let proof = checked(
+    for suite in contracts::SUITES {
+        let proof = checked(
+            image,
+            &positive,
+            &[
+                "lean",
+                "-o",
+                &format!("{}.olean", suite.module),
+                &format!("{}.lean", suite.module),
+            ],
+        )?;
+        let axioms = text(&proof);
+        contracts::check_axioms(suite, &axioms)?;
+        write(
+            positive.join(format!("{}-axioms.log", suite.module)),
+            &axioms,
+        )?;
+        println!(
+            "{}: {} named theorems and axiom inventories passed",
+            suite.module,
+            suite.theorems.len()
+        );
+    }
+    let imports: String = contracts::SUITES
+        .iter()
+        .map(|suite| format!("import {}\n", suite.module))
+        .collect();
+    write(positive.join("AllContracts.lean"), &imports)?;
+    checked(
         image,
         &positive,
-        &["lean", "-o", "Contracts.olean", "Contracts.lean"],
+        &["lean", "-o", "AllContracts.olean", "AllContracts.lean"],
     )?;
-    let axioms = text(&proof);
-    for contract in &CONTRACTS {
-        let theorem = contract.theorem;
-        if !axioms.contains(&format!("'{theorem}' does not depend on any axioms")) {
-            return Err(format!("missing axiom-free theorem {theorem}:\n{axioms}"));
-        }
-    }
-    write(positive.join("axioms.log"), &axioms)?;
     let replay = checked(
         image,
         &positive,
-        &["leanchecker", "--fresh", "--verbose", "Contracts"],
+        &["leanchecker", "--fresh", "--verbose", "AllContracts"],
     )?;
-    if !text(&replay).contains("replaying Contracts with --fresh") {
+    if !text(&replay).contains("replaying AllContracts with --fresh") {
         return Err(format!("missing fresh-kernel replay: {}", text(&replay)));
     }
     write(positive.join("replay.log"), &text(&replay))?;
+    write(positive.join("Bridge.lean"), include_str!("../Bridge.lean"))?;
+    let reference = checked(image, &positive, &["lean", "--run", "Bridge.lean"])?;
+    let reference = text(&reference);
+    bridge::records(&reference)?;
+    write(positive.join("bridge-model.log"), &reference)?;
+    for (target, runtime) in [
+        ("erlang", "erlang"),
+        ("javascript", "node"),
+        ("javascript", "deno"),
+        ("javascript", "bun"),
+    ] {
+        let mut command = Command::new("gleam");
+        command.args(["run", "-m", "proof_model_smoke", "--target", target]);
+        if target == "javascript" {
+            command.args(["--runtime", runtime]);
+        }
+        let result = command
+            .output()
+            .map_err(|error| format!("native bridge {runtime}: {error}"))?;
+        let actual = text(&result);
+        if !result.status.success() {
+            return Err(format!("native bridge {runtime} failed: {actual}"));
+        }
+        bridge::compare(&reference, &actual).map_err(|error| format!("{runtime}: {error}"))?;
+        write(positive.join(format!("bridge-{runtime}.log")), &actual)?;
+        println!(
+            "{runtime}: {} source-model records match production",
+            bridge::records(&actual)?.len()
+        );
+    }
     for contract in &CONTRACTS {
-        let original = match contract.source {
-            SOURCE => &source,
-            ENTRY_SOURCE => &entry,
-            other => return Err(format!("unknown contract source {other}")),
-        };
-        let broken = original.replace(contract.original, contract.broken);
-        if broken == *original {
-            return Err(format!(
-                "negative control could not change {}",
-                contract.predicate
-            ));
-        }
+        let broken = snapshot.changed(contract.source, contract.original, contract.broken)?;
         let negative = directory.join(contract.predicate);
-        match contract.source {
-            SOURCE => model(&negative, &broken, &entry, &contracts)?,
-            ENTRY_SOURCE => model(&negative, &source, &broken, &contracts)?,
-            other => return Err(format!("unknown contract source {other}")),
-        }
+        model(&negative, &broken)?;
         checked(
             image,
             &negative,
@@ -260,24 +384,72 @@ fn prove() -> Result<(), String> {
             || !diagnostic.contains("error:")
         {
             return Err(format!(
-                "negative control for {} did not produce the expected failed equality proof:\n{diagnostic}",
-                contract.predicate
+                "negative control for {} did not produce the expected failed equality proof for {}:\n{diagnostic}",
+                contract.predicate, contract.theorem
             ));
         }
         write(negative.join("refusal.log"), &diagnostic)?;
     }
-    if read(SOURCE)? != source
-        || read(ENTRY_SOURCE)? != entry
-        || read(CONTRACT_SOURCE)? != contracts
-    {
-        return Err("production source or contracts changed during verification".into());
+    for control in contracts::CONTROLS {
+        let proof = if control.source == "glob.gleam" {
+            "simp [GlobDerived.accepts, GlobDerived.afterDirectory, GlobDerived.included] <;> rfl"
+        } else {
+            "rfl"
+        };
+        let witness = format!(
+            "import Derived\ntheorem {} : {} := by {proof}\n",
+            control.name, control.claim
+        );
+        write(positive.join("Control.lean"), &witness)?;
+        checked(image, &positive, &["lean", "Control.lean"])?;
+        let negative = directory.join(control.name);
+        model(
+            &negative,
+            &snapshot.changed(control.source, control.original, control.broken)?,
+        )?;
+        write(negative.join("Control.lean"), &witness)?;
+        checked(
+            image,
+            &negative,
+            &["lean", "-o", "Derived.olean", "Derived.lean"],
+        )?;
+        let result = bounded(image, &negative, &["lean", "Control.lean"])?;
+        let diagnostic = text(&result);
+        if result.status.success()
+            || !diagnostic.contains("Tactic `rfl` failed")
+            || !diagnostic.contains("error:")
+        {
+            return Err(format!(
+                "{} did not reject the changed implementation with its equality failure:\n{diagnostic}",
+                control.name
+            ));
+        }
+        write(negative.join("refusal.log"), &diagnostic)?;
     }
+    for (path, source) in snapshot
+        .sources
+        .iter()
+        .map(|(path, source)| (*path, source))
+        .chain(
+            snapshot
+                .proofs
+                .iter()
+                .map(|(path, source)| (path.as_str(), source)),
+        )
+    {
+        if read(path)? != *source {
+            return Err(format!("source changed during verification: {path}"));
+        }
+    }
+    configuration::check()?;
     println!(
-        "{} source-derived contracts passed without axioms; fresh-kernel replay and all {} negative controls passed",
-        CONTRACTS.len(),
-        CONTRACTS.len()
+        "{} source-derived contracts passed with checked axiom inventories and fresh-kernel replay; all {} negative controls passed",
+        contracts::SUITES
+            .iter()
+            .map(|suite| suite.theorems.len())
+            .sum::<usize>(),
+        CONTRACTS.len() + contracts::CONTROLS.len()
     );
-    println!("Evidence: {}", directory.display());
     Ok(())
 }
 
@@ -285,12 +457,9 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [command] if command == "prove" => prove(),
-        [command, directory] if command == "derive" => model(
-            Path::new(directory),
-            &read(SOURCE)?,
-            &read(ENTRY_SOURCE)?,
-            &read(CONTRACT_SOURCE)?,
-        ),
+        [command, directory] if command == "derive" => {
+            model(Path::new(directory), &Snapshot::read()?)
+        }
         [] => {
             println!(
                 "usage: gleam-mutants-verification derive OUTPUT_DIRECTORY | prove\nRun from the repository root; prove needs Docker and uses offline 2-CPU, 2-GiB containers."

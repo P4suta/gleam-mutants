@@ -3,6 +3,53 @@
 
 import gleam_mutants/core/path
 
+pub fn parent_preserves_absolute_roots_test() {
+  assert path.parent("") == ""
+  assert path.parent("/child") == "/"
+  assert path.parent("/") == "/"
+  assert path.parent("C:/child") == "C:/"
+  assert path.parent("C:/") == "C:/"
+  assert path.parent("//server/share/child") == "//server/share/"
+  assert path.parent("//server/share/") == "//server/share/"
+  assert path.parent("/child/") == "/"
+  assert path.parent("C:/child/") == "C:/"
+  assert path.parent("//server/share/child/") == "//server/share/"
+  assert path.parent("src/child.gleam") == "src"
+  assert path.parent("child.gleam") == ""
+  assert path.parent("src/child.gleam/") == "src"
+}
+
+@target(javascript)
+pub fn absolute_parents_match_an_independent_node_reference_test() {
+  let values = components(4)
+  list.each(
+    [#("/", False), #("C:/", True), #("//server/share/", True)],
+    fn(root) {
+      list.each(values, fn(value) {
+        let source = reference(root.0 <> value, root.1)
+        let expected = reference(reference_parent(source, root.1), root.1)
+        assert path.parent(source) == expected
+      })
+    },
+  )
+}
+
+@target(javascript)
+fn reference_parent(value: String, windows: Bool) -> String {
+  case windows {
+    True -> reference_windows_parent(value)
+    False -> reference_posix_parent(value)
+  }
+}
+
+@target(javascript)
+@external(javascript, "node:path/posix", "dirname")
+fn reference_posix_parent(value: String) -> String
+
+@target(javascript)
+@external(javascript, "node:path/win32", "dirname")
+fn reference_windows_parent(value: String) -> String
+
 @target(javascript)
 import gleam/list
 
