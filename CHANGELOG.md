@@ -2,7 +2,6 @@
 
 ## [0.1.1](https://github.com/P4suta/gleam-mutants/compare/v0.1.0...v0.1.1) (2026-10-30)
 
-
 ### Bug Fixes
 
 * **release:** check npm provenance before publication ([#84](https://github.com/P4suta/gleam-mutants/issues/84)) ([65c58f6](https://github.com/P4suta/gleam-mutants/commit/65c58f64e9a5d7aeae0e2f5ad54eadd689eb6f2a))
