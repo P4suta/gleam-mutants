@@ -38,7 +38,8 @@ Cleanup has a separate ten-second deadline and preserves the primary failure whe
 Native fixtures cover zero-deadline termination, completed statuses, cleanup failure, missing cleanup commands, and a blocked cleanup command.
 These checks depend on ordinary OS process termination and Docker daemon behavior.
 An inability to terminate a client or remove its container remains a reported failure, never a proof result.
-The gate requires all six named theorems to have no axioms and replays their compiled module through a fresh kernel.
+The original six named theorems must have no axioms.
+The gate replays all compiled contract modules through a fresh kernel.
 It changes one production constant for each predicate and requires the corresponding equality-proof failure against the unchanged contracts.
 A successful broken proof or another kind of tool failure fails the gate.
 The original production source and independent contracts must still match their copies at completion.
@@ -66,6 +67,76 @@ A synchronized two-process fixture pauses directory creation while another parti
 The [filesystem boundary decision](adr/preserve-filesystem-entry-boundaries.md) records the compatibility and ownership limits.
 
 See Lean's [proof validation documentation](https://lean-lang.org/doc/reference/latest/ValidatingProofs/) for the distinction between elaboration and kernel replay.
+
+## Source-derived pure core
+
+The [pure core decision](adr/derive-pure-core-contracts-from-source.md) extends the same gate beyond input admission.
+The required sources, theorem names, permitted logical axioms, and rejecting controls are maintained in the [executable inventory](../verification/src/contracts.rs).
+Missing theorems, unapproved dependencies, source changes during a run, or successful broken controls fail the gate.
+All models and contracts are copied into a fresh evidence directory before checking.
+
+| Production module | Independent contracts | Model domain and boundary |
+| --- | --- | --- |
+| `core/span` | [SpanContracts](../verification/SpanContracts.lean) | Prioritized construction errors, accessors, length, equality, containment, overlap, strict containment, and total ordering over mathematical integers |
+| `core/outcome` | [OutcomeContracts](../verification/OutcomeContracts.lean) | Detection agreement, the first error and its complete payload, empty evidence, and survival/timeout priority over arbitrary finite lists |
+| `core/score` | [ScoringContracts](../verification/ScoringContracts.lean) | Nonnegative integer counts, partition, conservation, detected counts, zero denominator, and the symbolic percentage numerator and denominator |
+| `core/exit_policy` | [ScoringContracts](../verification/ScoringContracts.lean) | Every integer error count, optional strict override, and Boolean threshold-comparison result |
+| `core/operator` | [SelectionContracts](../verification/SelectionContracts.lean) | Complete and duplicate-free enum inventory, injective names, name parsing round trips, and the current operator version |
+| `core/plan` | [SelectionContracts](../verification/SelectionContracts.lean) | Full/changed preservation, exact one-match admission, missing and ambiguous refusal, prefix membership, and source order for arbitrary finite lists |
+| `core/path` | [PathContracts](../verification/PathContracts.lean) | Native separator conversion, component-stack invariants and idempotence, parent removal, joining, and POSIX, drive, and UNC root construction |
+| `core/glob` | [GlobContracts](../verification/GlobContracts.lean) | Terminating wildcard recursion, empty patterns, globstar directory boundaries, zero-directory matching, question marks, slash barriers, and exclusion priority over arbitrary finite grapheme-symbol lists |
+
+The span translator admits typed arithmetic, Boolean expressions, constructors, projections, calls among the admitted functions, and exhaustive Boolean cases.
+It checks the complete function inventory and rejects recursion, incompatible types, unknown calls, unsupported syntax, and excessive input depth or size.
+Other translators use complete [closed syntax rules](../verification/fragments) with explicitly captured values and operators.
+An unsupported declaration, reordered control structure, or changed relevant public type is refused rather than silently omitted.
+The preserved `core_source` cargo-fuzz corpus replays canonical source round trips in `check-verification`.
+The replay requires every named parser family; duplicated seeds cannot compensate for a missing family.
+
+These are theorems about source-derived models, conditional on the reviewed lowering rules and ordinary Gleam compiler and library semantics.
+They are not a direct verification of Gleam executables or the translators.
+Span arithmetic refines the JavaScript target when the input coordinates and results are exactly represented integers.
+Validated nonnegative endpoints within the JavaScript safe-integer range meet that requirement for subtraction.
+The BEAM target uses mathematical integer arithmetic for this fragment.
+List-count proofs apply while target list lengths and their sums are exactly represented.
+
+Containment is defined by endpoint inequalities, including zero-width spans.
+The nonempty-intersection theorem therefore requires both intervals to have positive length.
+It does not redefine zero-width spans as invalid or silently assume they cannot be constructed.
+`unsafe_new` models successful return or assertion failure; OS termination details remain native behavior.
+
+Outcome payloads and selector prefixes use lists of scalar values.
+Runtime metadata is projected away only where the complete source accesses the outcome alone.
+Path models represent ASCII separators, dot components, splitting, joining, and root construction explicitly.
+Glob symbols classify star, question mark, and slash separately from other complete graphemes.
+The glob theorem domain starts after the production path normalization and grapheme conversion.
+Unicode segmentation, UTF-8 encoding, string-prefix behavior, and library representations remain refinement assumptions with native checks.
+The path component idempotence theorem does not assert that every path spelling has one physical filesystem identity.
+The [parent contracts](../verification/ParentContracts.lean) additionally preserve POSIX, ASCII-drive, and nonempty UNC roots and establish decreasing component counts before reaching a root.
+The parent model and the production helper use the same root/component split as absolute normalization.
+An independent Node comparison checks 2,343 canonical absolute parents across POSIX, drive, and UNC roots.
+The [root preservation decision](adr/preserve-lexical-path-roots.md) records the affected callers and compatibility boundary.
+
+Percentage terms retain the actual conversion/division/multiplication order and scale, but do not evaluate binary floating-point rounding.
+The numerator is nonnegative and no larger than the positive denominator for a nonzero valid-mutant count.
+This mathematical result does not prove every rounded percentage or its display text.
+Exit-policy theorems quantify both possible results of the actual floating-point threshold comparison without assuming its truth.
+Native score, formatting, configuration-admission, and runtime tests remain required at those boundaries.
+
+The [native model comparison](../test/proof_model_smoke.gleam) checks selected models against production execution on Erlang, Node, Deno, and Bun.
+It includes interval endpoints at zero and the shared safe-integer limit, distinct ASCII and Unicode error payloads, all category sequences through length four, integer score fields, percentage boundary checks, and exit-policy cases.
+The gate checks each expected record category and compares ordered output with the source-derived Lean evaluator.
+Missing, empty, or mismatched records fail.
+This finite comparison supports the model link; the general theorems provide the unbounded model properties.
+The comparison also covers every operator, runtime name, detection variant, representative prefix selections, path operations, and 5,467 wildcard/grapheme cases.
+The directory-boundary regression rejects `**/app.gleam` matching `myapp.gleam`.
+The general contract requires `**/` to preserve the remaining pattern's result when the path contains no separator.
+Only a consumed directory separator permits the helper to retry that remaining pattern at another position.
+
+The verifier embeds its actual translator sources, syntax rules, inventories, independent contracts, proof image definition, dependency manifests, tool pins, and native comparison fixtures at compilation.
+It refuses a checkout that differs from those compiled inputs before deriving a model, before each proof child, and again before reporting a completed proof.
+The evidence directory retains these inputs alongside production sources, contracts, axiom reports, native outputs, replay results, and rejecting controls.
+An integration fixture runs a compiled verifier against changed configuration and requires the specific stale-source refusal.
 
 ## Native boundaries and checked alternatives
 
@@ -123,7 +194,7 @@ Tests cannot establish arbitrary test-program isolation or correctness.
 The dogfood runner compares report records and identity lists outside the translator's admitted fragment.
 Its negative controls exercise missing or duplicated candidates, unexpected compiler rejections, skipped work, wrong or cached runtimes, timeouts, execution errors, and inconsistent scores.
 These finite checks do not prove the runner or compiler correct for every possible report.
-Absolute path normalization uses string splitting, list reduction, and platform root conventions outside the closed translator.
+Source-derived absolute-path contracts cover lexical component reduction and root construction.
 Its fixed reference corpus covers every sequence of zero through five components from node, dot, parent, whitespace, and Unicode controls under three root forms.
 It also checks idempotence, root clamping, literal POSIX backslashes, and actual report-history reads through dot and parent aliases.
 These checks cover that finite corpus and the native boundaries; symlink aliases and arbitrary filesystem path semantics are not proven.

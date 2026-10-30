@@ -1,0 +1,33 @@
+// SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+import gleam/list
+import gleam/result
+import gleam_mutants/types.{BooleanConnective, BooleanLiteral, BooleanNegation, ComparisonBoundary, ConcatenationOperand, Equality, FloatArithmetic, FloatNeutral, IntegerArithmetic, IntegerNegation, IntegerNeutral, ListNeutral, OptionNeutral, PipelineStageDeletion, StringNeutral,}
+pub type Operator = types.Operator
+pub fn all() -> List(Operator) {
+  [__all_BooleanLiteral, __all_BooleanNegation, __all_BooleanConnective, __all_Equality, __all_ComparisonBoundary, __all_IntegerArithmetic, __all_FloatArithmetic, __all_IntegerNeutral, __all_FloatNeutral, __all_StringNeutral, __all_ListNeutral, __all_OptionNeutral, __all_PipelineStageDeletion, __all_ConcatenationOperand, __all_IntegerNegation,]
+}
+pub fn name(operator: Operator) -> String {
+  case operator {
+    BooleanLiteral -> __name_BooleanLiteral
+    BooleanNegation -> __name_BooleanNegation
+    BooleanConnective -> __name_BooleanConnective
+    Equality -> __name_Equality
+    ComparisonBoundary -> __name_ComparisonBoundary
+    IntegerArithmetic -> __name_IntegerArithmetic
+    FloatArithmetic -> __name_FloatArithmetic
+    IntegerNeutral -> __name_IntegerNeutral
+    FloatNeutral -> __name_FloatNeutral
+    StringNeutral -> __name_StringNeutral
+    ListNeutral -> __name_ListNeutral
+    OptionNeutral -> __name_OptionNeutral
+    PipelineStageDeletion -> __name_PipelineStageDeletion
+    ConcatenationOperand -> __name_ConcatenationOperand
+    IntegerNegation -> __name_IntegerNegation
+  }
+}
+pub fn version(_operator: Operator) -> Int { __version }
+pub fn from_name(value: String) -> Result(Operator, Nil) {
+  all() |> list.find(fn(operator) { name(operator) == value }) |> result.replace_error(Nil)
+}

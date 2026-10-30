@@ -107,8 +107,13 @@ name = "gleam-mutants-release-fuzz"
 version = "0.0.0"
 dependencies = [
  "gleam-mutants-release",
+ "gleam-mutants-verification",
  "libfuzzer-sys",
 ]
+
+[[package]]
+name = "gleam-mutants-verification"
+version = "0.0.0"
 
 [[package]]
 name = "hybrid-array"

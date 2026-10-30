@@ -17,11 +17,7 @@ fn do_match(pattern: List(String), path: List(String)) -> Bool {
     [], [] -> True
     [], _ -> False
     ["*", "*", "/", ..rest], _ ->
-      do_match(rest, path)
-      || case path {
-        [] -> False
-        [_, ..path_rest] -> do_match(pattern, path_rest)
-      }
+      do_match(rest, path) || match_directories(rest, path)
     ["*", "*", ..rest], _ ->
       do_match(rest, path)
       || case path {
@@ -39,6 +35,18 @@ fn do_match(pattern: List(String), path: List(String)) -> Bool {
     [expected, ..pattern_rest], [actual, ..path_rest] if expected == actual ->
       do_match(pattern_rest, path_rest)
     _, _ -> False
+  }
+}
+
+fn match_directories(pattern: List(String), path: List(String)) -> Bool {
+  case path {
+    [] -> False
+    [segment, ..path_rest] ->
+      case segment == "/" {
+        True ->
+          do_match(pattern, path_rest) || match_directories(pattern, path_rest)
+        False -> match_directories(pattern, path_rest)
+      }
   }
 }
 

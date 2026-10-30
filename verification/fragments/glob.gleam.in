@@ -1,0 +1,39 @@
+// SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+import gleam/list
+import gleam/string
+import gleam_mutants/core/mutant
+pub fn matches(pattern: String, path: String) -> Bool {
+  do_match(string.to_graphemes(mutant.normalize_path(pattern)), string.to_graphemes(mutant.normalize_path(path)),)
+}
+fn do_match(pattern: List(String), path: List(String)) -> Bool {
+  case pattern, path {
+    [], [] -> __empty
+    [], _ -> __missing_pattern
+    ["*", "*", "/", ..rest], _ -> do_match(rest, path) || match_directories(rest, path)
+    ["*", "*", ..rest], _ -> do_match(rest, path) || case path {
+      [] -> __globstar_empty
+      [_, ..path_rest] -> do_match(pattern, path_rest)
+    }
+    ["*", ..rest], _ -> do_match(rest, path) || case path {
+      [segment, ..path_rest] if segment __star_guard "/" -> do_match(pattern, path_rest)
+      _ -> __star_failure
+    }
+    ["?", ..rest], [segment, ..path_rest] if segment __question_guard "/" -> do_match(rest, path_rest)
+    [expected, ..pattern_rest], [actual, ..path_rest] if expected == actual -> do_match(pattern_rest, path_rest)
+    _, _ -> __unmatched
+  }
+}
+fn match_directories(pattern: List(String), path: List(String)) -> Bool {
+  case path {
+    [] -> __directory_empty
+    [segment, ..path_rest] -> case segment __directory_guard "/" {
+      True -> do_match(pattern, path_rest) || match_directories(pattern, path_rest)
+      False -> match_directories(pattern, path_rest)
+    }
+  }
+}
+pub fn included(path: String, includes: List(String), excludes: List(String),) -> Bool {
+  list.any(includes, matches(_, path)) __connective !list.any(excludes, matches(_, path))
+}

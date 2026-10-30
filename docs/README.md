@@ -21,5 +21,7 @@ Its supported product is a mutation-testing library and CLI.
 - [Package boundary decision](adr/mutation-testing-package-boundary.md)
 - [Verified candidate publication decision](adr/publish-verified-candidate-artifacts.md)
 - [Draft verification before registry publication](adr/verify-drafts-before-registry-publication.md)
+- [Source-derived pure core contracts](adr/derive-pure-core-contracts-from-source.md)
+- [Lexical path root preservation](adr/preserve-lexical-path-roots.md)
 
 See the [third-party notices](../THIRD_PARTY_NOTICES.md) for embedded dependencies.

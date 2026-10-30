@@ -1,0 +1,50 @@
+// SPDX-FileCopyrightText: 2026 gleam_mutants contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+import gleam/list
+import gleam_mutants/types.{Bun, Deno, Erlang, Killed, Node, Survived, TestError, TimedOut,}
+pub type Runtime = types.Runtime
+pub type Outcome = types.Outcome
+pub type RuntimeOutcome = types.RuntimeOutcome
+pub fn runtime_name(runtime: Runtime) -> String {
+  case runtime {
+    Erlang -> __erlang
+    Node -> __node
+    Deno -> __deno
+    Bun -> __bun
+  }
+}
+pub fn detected(value: Outcome) -> Bool {
+  case value {
+    Killed | TimedOut -> __detected
+    Survived | TestError(_) -> __undetected
+  }
+}
+pub fn aggregate(outcomes: List(RuntimeOutcome)) -> Outcome {
+  case outcomes {
+    [] -> TestError(__empty)
+    _ -> aggregate_nonempty(outcomes)
+  }
+}
+fn aggregate_nonempty(outcomes: List(RuntimeOutcome)) -> Outcome {
+  case list.find(outcomes, fn(item) {
+    case item.outcome {
+      TestError(_) -> __error
+      _ -> __nonerror
+    }
+  }) {
+    Ok(item) -> item.outcome
+    Error(_) ->
+      case list.any(outcomes, fn(item) { item.outcome == __first_search }) {
+        True -> __first_result
+        False ->
+          case list.any(outcomes, fn(item) { item.outcome == __second_search }) {
+            True -> __second_result
+            False -> __fallback
+          }
+      }
+  }
+}
+pub fn is_detected(outcome: Outcome) -> Bool {
+  outcome == __left __connective outcome == __right
+}
