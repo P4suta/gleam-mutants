@@ -3,6 +3,7 @@
 
 use gleam_mutants_release::candidate::Revision;
 use gleam_mutants_release::publication::{ControllerIdentity, Phase};
+use gleam_mutants_release_core::{ReleaseId, acquire_release};
 
 pub fn check(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
@@ -32,6 +33,22 @@ pub fn check(data: &[u8]) {
             Ok(identity)
         );
     }
+    let existing = ReleaseId::parse(run);
+    let created = ReleaseId::parse(attempt);
+    if let Some(id) = existing {
+        assert_eq!(ReleaseId::parse(&id.get().to_string()), Some(id));
+        assert!(id.get() > 0);
+    }
+    let mut creations = 0;
+    let observed = acquire_release(
+        || Ok(existing),
+        || {
+            creations += 1;
+            created.ok_or(())
+        },
+    );
+    assert_eq!(creations, usize::from(existing.is_none()));
+    assert_eq!(observed, existing.or(created).ok_or(()));
     const REVISION_BYTES: usize = 40;
     let revision = Revision::try_from(text.to_owned());
     assert_eq!(

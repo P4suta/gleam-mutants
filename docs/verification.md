@@ -203,7 +203,7 @@ These checks cover that finite corpus and the native boundaries; symlink aliases
 
 Release automation has a separate pure Rust core in `tools/release-core`.
 `mise run prove-release` imports that implementation directly into pinned Kani 0.68.0.
-Six harnesses check output reuse, finalization, conclusive runtime counts, release identity selection, phase capabilities, and the distinction between suppressed and actual proposal CI.
+Seven harnesses check output reuse, finalization, conclusive runtime counts, release identity selection, draft acquisition, phase capabilities, and the distinction between suppressed and actual proposal CI.
 They cover every admitted Boolean or enum state and all `u64` count and release-ID combinations in those predicates.
 Release selection admits only nonzero IDs, preserves the first match, and refuses another match even when both IDs are equal.
 Its harness checks every selection transition and reachability of the missing, unique, and ambiguous states.
@@ -212,7 +212,10 @@ The production constructor stores the checked values as `NonZeroU64` and `NonZer
 The phase harness quantifies over all four publication phases and checks the production callback dispatcher.
 Hex and npm invoke only the completed-preparation reader; draft and finalization select the GitHub release reader.
 Both branches must be reachable, and each dispatch invokes exactly one reader.
-The gate requires six successful harnesses and separately rejects seven deliberately broken implementations at the corresponding harness.
+The acquisition harness calls the production generic dispatcher with arbitrary discovery and creation results.
+It checks exactly one discovery, no creation after an existing result or discovery error, one creation for a missing target, exact identity preservation, and error propagation without another discovery or write.
+The callback types permit only one invocation per operation.
+The gate requires seven successful harnesses and separately rejects eight deliberately broken implementations at the corresponding harness.
 Each negative control selects only its named harness and requires its exact failed-harness summary.
 Tool failure, an empty harness inventory, or a resource stop supplies no proof result.
 The pinned container uses the same bounded supervisor as the Gleam proof gate and records its actual source hash.
@@ -223,6 +226,13 @@ The cargo-fuzz target is `fuzz/fuzz_targets/publication_phase.rs`.
 Native regressions cover sealed candidate tampering, missing evidence, source and attempt mismatches, latest-job invalidation, artifact selection, denied local publication, conflicting assets, and recovery after partial uploads.
 Draft discovery uses the complete paginated [GitHub release catalogue](https://docs.github.com/en/rest/releases/releases#list-releases), since the release-by-tag endpoint returns published releases.
 Native protocol regressions cover a missing published-tag response with an existing draft, exact selection after unrelated records, malformed or duplicated identities, transport failures, and refusal of published targets.
+Draft acquisition retains the validated creation response, including when a collection read would omit the new entry.
+An optional explicit draft ID supports recovery without collection discovery and must pass a canonical ID read and candidate-tag validation.
+Asset uploads and final publication address that ID directly, and the draft job exports it only after complete asset readback.
+Workflow regressions reject a substituted or overridden draft ID at the final job.
+Native HTTP fixtures run the actual pinned `gh` client with isolated authentication state against a loopback server.
+They check JSON creation and response handling, binary upload bytes, query escaping, denied requests, and malformed successful responses.
+These fixtures cover the client protocol and controlled responses, not production permissions, TLS, provider visibility, or cross-provider atomicity.
 The tag reference remains authoritative for the candidate source; a draft's `target_commitish` may name a branch.
 GitHub hides draft releases from tokens without push authority.
 Registry phases instead read the successful draft job from their active controller run through Actions read permission.

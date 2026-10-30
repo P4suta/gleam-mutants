@@ -12,7 +12,7 @@ const DEADLINE: Duration = Duration::from_secs(900);
 const CLEANUP_DEADLINE: Duration = Duration::from_secs(10);
 const RESOURCE_KILL: i32 = 137;
 const VERSION: &str = "Kani Rust Verifier 0.68.0";
-const POSITIVE_SUMMARY: &str = "6 successfully verified harnesses, 0 failures, 6 total";
+const POSITIVE_SUMMARY: &str = "7 successfully verified harnesses, 0 failures, 7 total";
 const NEGATIVE_SUMMARY: &str = "0 successfully verified harnesses, 1 failures, 1 total";
 
 fn counterexample(success: bool, diagnostics: &str, harness: &str) -> bool {
@@ -119,6 +119,12 @@ pub fn prove() -> Result<(), String> {
     }
     let controls = [
         (
+            "draft-acquisition",
+            "Some(release) => Ok(release),",
+            "Some(_release) => create(),",
+            "release_acquisition_preserves_identity_without_repeated_discovery",
+        ),
+        (
             "controller-identity",
             "attempt: NonZeroU32::new(attempt)?,",
             "attempt: NonZeroU32::new(1)?,",
@@ -187,7 +193,7 @@ pub fn prove() -> Result<(), String> {
         }
     }
     println!(
-        "Source-bound Kani policy proofs passed with seven rejected broken implementations; source SHA256 {}",
+        "Source-bound Kani policy proofs passed with eight rejected broken implementations; source SHA256 {}",
         candidate::digest(source.as_bytes())
     );
     Ok(())

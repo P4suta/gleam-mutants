@@ -107,6 +107,7 @@ name = "gleam-mutants-release-fuzz"
 version = "0.0.0"
 dependencies = [
  "gleam-mutants-release",
+ "gleam-mutants-release-core",
  "gleam-mutants-verification",
  "libfuzzer-sys",
 ]

@@ -14,6 +14,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4.13"
 gleam-mutants-release = { path = "../tools/release" }
+gleam-mutants-release-core = { path = "../tools/release-core" }
 gleam-mutants-verification = { path = "../verification" }
 
 [[bin]]

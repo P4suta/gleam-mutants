@@ -42,6 +42,15 @@ fn validate(workflow: &Value) -> Result<(), String> {
         .as_object()
         .ok_or("publication jobs are missing")?;
     for (name, job) in jobs {
+        if !job["env"]["DRAFT_RELEASE_ID"].is_null()
+            || job["steps"].as_array().is_some_and(|steps| {
+                steps
+                    .iter()
+                    .any(|step| !step["env"]["DRAFT_RELEASE_ID"].is_null())
+            })
+        {
+            return Err("requested draft ID cannot differ between phases or steps".into());
+        }
         if !job["if"].is_null()
             || (!job["continue-on-error"].is_null() && job["continue-on-error"] != false)
             || !job["strategy"].is_null()
@@ -82,7 +91,21 @@ fn validate(workflow: &Value) -> Result<(), String> {
             "./controller/release-publish execute {} build/candidate \"$SOURCE\" \"$VERSION\" \"$RUN\" \"$ATTEMPT\"",
             phase.job()
         );
-        require_command(job, &expected_command)?;
+        let step = require_command(job, &expected_command)?;
+        if phase == PublicationPhase::Draft
+            && (step["id"] != "draft"
+                || job["outputs"]["release_id"] != "${{ steps.draft.outputs.release_id }}")
+        {
+            return Err("draft must export its verified release ID".into());
+        }
+        if phase == PublicationPhase::Finalize
+            && (job["env"]["RELEASE_ID"] != "${{ needs.draft.outputs.release_id }}"
+                || !step["env"]["RELEASE_ID"].is_null())
+        {
+            return Err(
+                "finalization must consume the verified draft ID without an override".into(),
+            );
+        }
     }
     let expected_jobs = BTreeSet::from([
         "preflight",
@@ -104,6 +127,7 @@ fn validate(workflow: &Value) -> Result<(), String> {
         ("VERSION", "${{ inputs.version }}"),
         ("RUN", "${{ inputs.candidate_run }}"),
         ("ATTEMPT", "${{ inputs.candidate_attempt }}"),
+        ("DRAFT_RELEASE_ID", "${{ inputs.draft_release_id }}"),
     ] {
         if workflow["env"][name] != expected {
             return Err(format!("publication candidate binding changed: {name}"));
@@ -197,7 +221,7 @@ fn node_version(job: &Value) -> Result<&str, String> {
         .ok_or("registry Node version is missing".into())
 }
 
-fn require_command(job: &Value, expected: &str) -> Result<(), String> {
+fn require_command<'a>(job: &'a Value, expected: &str) -> Result<&'a Value, String> {
     let steps = job["steps"]
         .as_array()
         .ok_or("publication steps are missing")?;
@@ -220,7 +244,7 @@ fn require_command(job: &Value, expected: &str) -> Result<(), String> {
     {
         return Err("publication prerequisite can be skipped or its failure ignored".into());
     }
-    Ok(())
+    Ok(step)
 }
 
 #[test]
@@ -257,10 +281,24 @@ fn authority_readiness_and_candidate_binding_drift_are_rejected() {
         ("/jobs/registry-ready/steps", serde_json::json!([])),
         ("/env/SOURCE", serde_json::json!("${{ github.sha }}")),
         ("/jobs/draft/name", serde_json::json!("another producer")),
+        (
+            "/jobs/draft/outputs/release_id",
+            serde_json::json!("${{ inputs.draft_release_id }}"),
+        ),
+        (
+            "/jobs/finalize/env/RELEASE_ID",
+            serde_json::json!("${{ inputs.draft_release_id }}"),
+        ),
+        ("/env/DRAFT_RELEASE_ID", serde_json::json!("42")),
     ] {
         let mut broken = workflow.clone();
         *broken.pointer_mut(pointer).unwrap() = replacement;
         assert!(validate(&broken).is_err(), "{pointer}");
+    }
+    for name in ["preflight", "draft", "finalize"] {
+        let mut broken = workflow.clone();
+        broken["jobs"][name]["env"]["DRAFT_RELEASE_ID"] = serde_json::json!("42");
+        assert!(validate(&broken).is_err(), "{name}");
     }
     for name in ["preflight", "attest-controller", "registry-ready"] {
         let mut broken = workflow.clone();

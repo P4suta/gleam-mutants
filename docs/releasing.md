@@ -117,6 +117,8 @@ Its `.release-please-manifest.json`, `VERSION`, package metadata, CLI version, a
 Do not merge a release proposal merely to rehearse preparation.
 
 The manual `Publish verified release` workflow selects a source commit, version, successful candidate run and completion attempt, and explicit npm authentication mode.
+For a matching partial draft, its optional `draft_release_id` input selects the exact existing release for approved inspection and recovery.
+The preflight includes that requested ID in the publication plan; the approved draft phase must read it by ID and validate its tag and unpublished state before any upload.
 The read-only preflight checks protected-main ancestry, the merged version proposal, the complete successful run and latest job producers, artifact bytes, retained and online attestations, remote tag, visible releases, and registry archives.
 GitHub hides draft releases from tokens without push authority, so this preflight can't establish the current draft inventory.
 The plan names the approved draft phase as the owner of that check.
@@ -135,6 +137,10 @@ Their draft handoff depends on GitHub's truthful job outcomes and execution of t
 The [draft verification decision](adr/verify-drafts-before-registry-publication.md) records this boundary.
 
 The final inventory includes the three archives, three SBOMs, four receipts, candidate manifest, two candidate checksum files, two attestation bundles, and `RELEASE-SHA256SUMS` covering the other fifteen files.
+Draft acquisition preserves the validated creation response or selected existing ID.
+Uploads address that release ID directly, and the successful draft job exports it to finalization.
+Finalization reads and publishes the same ID and requires an immutable published response and complete asset readback.
+The [release identity decision](adr/preserve-confirmed-release-identities.md) records this boundary.
 GitHub's immutable-release setting and protected version tags prevent later replacement after publication.
 No phase rebuilds candidate packages or overwrites a conflicting remote output.
 
