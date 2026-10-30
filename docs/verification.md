@@ -132,9 +132,11 @@ These checks cover that finite corpus and the native boundaries; symlink aliases
 
 Release automation has a separate pure Rust core in `tools/release-core`.
 `mise run prove-release` imports that implementation directly into pinned Kani 0.68.0.
-Four harnesses check output reuse, finalization, conclusive runtime counts, and the distinction between suppressed and actual proposal CI.
-They cover every admitted Boolean or enum state and all `u64` count combinations in those predicates.
-The gate requires the exact four successful harness names and separately rejects four deliberately broken implementations at the corresponding harness.
+Five harnesses check output reuse, finalization, conclusive runtime counts, release identity selection, and the distinction between suppressed and actual proposal CI.
+They cover every admitted Boolean or enum state and all `u64` count and release-ID combinations in those predicates.
+Release selection admits only nonzero IDs, preserves the first match, and refuses another match even when both IDs are equal.
+Its harness checks every selection transition and reachability of the missing, unique, and ambiguous states.
+The gate requires five successful harnesses and separately rejects five deliberately broken implementations at the corresponding harness.
 Each negative control selects only its named harness and requires its exact failed-harness summary.
 Tool failure, an empty harness inventory, or a resource stop supplies no proof result.
 The pinned container uses the same bounded supervisor as the Gleam proof gate and records its actual source hash.
@@ -143,6 +145,9 @@ These proofs establish the core predicates under Kani's Rust model; they do not 
 `mise run check-release` runs strict Rust formatting, Clippy, unit and CLI tests, and the preserved publication-phase fuzz corpus with round-trip properties.
 The cargo-fuzz target is `fuzz/fuzz_targets/publication_phase.rs`.
 Native regressions cover sealed candidate tampering, missing evidence, source and attempt mismatches, latest-job invalidation, artifact selection, denied local publication, conflicting assets, and recovery after partial uploads.
+Draft discovery uses the complete paginated [GitHub release catalogue](https://docs.github.com/en/rest/releases/releases#list-releases), since the release-by-tag endpoint returns published releases.
+Native protocol regressions cover a missing published-tag response with an existing draft, exact selection after unrelated records, malformed or duplicated identities, transport failures, and refusal of published targets.
+The tag reference remains authoritative for the candidate source; a draft's `target_commitish` may name a branch.
 The pinned GitHub CLI checks the attestation adapter's arguments for SHA-256 and SHA-512 with online and retained-bundle modes.
 A malformed custom trust root must fail with the expected parsing error after argument admission.
 The test uses isolated configuration and a placeholder token without network access.

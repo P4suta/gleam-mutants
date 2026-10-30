@@ -20,6 +20,31 @@ pub enum WritePlan {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReleaseId(u64);
+
+impl ReleaseId {
+    pub fn new(value: u64) -> Option<Self> {
+        if value == 0 { None } else { Some(Self(value)) }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReleaseSelection {
+    Missing,
+    Unique(ReleaseId),
+    Ambiguous,
+}
+
+impl ReleaseSelection {
+    pub fn include(self, id: ReleaseId) -> Self {
+        match self {
+            Self::Missing => Self::Unique(id),
+            Self::Unique(_) | Self::Ambiguous => Self::Ambiguous,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum CiRecord {
     Missing,
@@ -80,6 +105,37 @@ pub fn conclusive_counts(m: RuntimeCounts) -> bool {
 #[cfg(kani)]
 mod proofs {
     use super::{Existing, WritePlan, can_finalize, plan_write};
+
+    #[kani::proof]
+    fn release_selection_requires_one_valid_identity() {
+        let raw: u64 = kani::any();
+        let id = super::ReleaseId::new(raw);
+        assert!(id.is_some() == (raw != 0));
+        if let Some(id) = id {
+            assert!(id.0 == raw);
+            let previous: u64 = kani::any();
+            let state = if kani::any() {
+                super::ReleaseSelection::Ambiguous
+            } else {
+                match super::ReleaseId::new(previous) {
+                    None => super::ReleaseSelection::Missing,
+                    Some(id) => super::ReleaseSelection::Unique(id),
+                }
+            };
+            let result = state.include(id);
+            match state {
+                super::ReleaseSelection::Missing => {
+                    assert!(result == super::ReleaseSelection::Unique(id));
+                }
+                super::ReleaseSelection::Unique(_) | super::ReleaseSelection::Ambiguous => {
+                    assert!(result == super::ReleaseSelection::Ambiguous);
+                }
+            }
+            kani::cover!(state == super::ReleaseSelection::Missing);
+            kani::cover!(matches!(state, super::ReleaseSelection::Unique(_)));
+            kani::cover!(state == super::ReleaseSelection::Ambiguous);
+        }
+    }
 
     #[kani::proof]
     fn proposal_ci_distinguishes_suppression_from_execution() {
