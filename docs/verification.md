@@ -136,16 +136,18 @@ Six harnesses check output reuse, finalization, conclusive runtime counts, relea
 They cover every admitted Boolean or enum state and all `u64` count and release-ID combinations in those predicates.
 Release selection admits only nonzero IDs, preserves the first match, and refuses another match even when both IDs are equal.
 Its harness checks every selection transition and reachability of the missing, unique, and ambiguous states.
+The same identity harness checks every `u64` controller run and `u32` attempt, requiring both to be nonzero and preserving both fields.
+The production constructor stores the checked values as `NonZeroU64` and `NonZeroU32`.
 The phase harness quantifies over all four publication phases and checks the production callback dispatcher.
 Hex and npm invoke only the completed-preparation reader; draft and finalization select the GitHub release reader.
 Both branches must be reachable, and each dispatch invokes exactly one reader.
-The gate requires six successful harnesses and separately rejects six deliberately broken implementations at the corresponding harness.
+The gate requires six successful harnesses and separately rejects seven deliberately broken implementations at the corresponding harness.
 Each negative control selects only its named harness and requires its exact failed-harness summary.
 Tool failure, an empty harness inventory, or a resource stop supplies no proof result.
 The pinned container uses the same bounded supervisor as the Gleam proof gate and records its actual source hash.
 These proofs establish the core predicates under Kani's Rust model; they do not verify external I/O or provider semantics.
 
-`mise run check-release` runs strict Rust formatting, Clippy, unit and CLI tests, and the preserved publication-phase fuzz corpus with round-trip properties.
+`mise run check-release` runs strict Rust formatting, Clippy, unit and CLI tests, and the preserved publication-phase and controller-identity fuzz corpus with round-trip properties.
 The cargo-fuzz target is `fuzz/fuzz_targets/publication_phase.rs`.
 Native regressions cover sealed candidate tampering, missing evidence, source and attempt mismatches, latest-job invalidation, artifact selection, denied local publication, conflicting assets, and recovery after partial uploads.
 Draft discovery uses the complete paginated [GitHub release catalogue](https://docs.github.com/en/rest/releases/releases#list-releases), since the release-by-tag endpoint returns published releases.

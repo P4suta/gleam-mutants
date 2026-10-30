@@ -119,6 +119,12 @@ pub fn prove() -> Result<(), String> {
     }
     let controls = [
         (
+            "controller-identity",
+            "attempt: NonZeroU32::new(attempt)?,",
+            "attempt: NonZeroU32::new(1)?,",
+            "release_selection_requires_one_valid_identity",
+        ),
+        (
             "phase-capabilities",
             "Self::Hex | Self::Npm => DraftEvidenceSource::CompletedPreparation,",
             "Self::Hex | Self::Npm => DraftEvidenceSource::ReleaseApi,",
@@ -181,7 +187,7 @@ pub fn prove() -> Result<(), String> {
         }
     }
     println!(
-        "Source-bound Kani policy proofs passed with six rejected broken implementations; source SHA256 {}",
+        "Source-bound Kani policy proofs passed with seven rejected broken implementations; source SHA256 {}",
         candidate::digest(source.as_bytes())
     );
     Ok(())

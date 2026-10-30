@@ -25,6 +25,7 @@ Local decision proofs omit that incompatibility unless their model includes phas
 Keep draft creation and complete asset readback in the approved GitHub write phase.
 Registry phases verify that preparation through the successful named draft job in their own active protected controller run.
 Bind the handoff to repository and owner IDs, workflow, event, controller source, run, and producer attempt.
+Parse controller run and attempt through one pure boundary that returns nonzero identity types.
 Reject foreign, missing, ambiguous, incomplete, or later failed producers.
 An earlier successful producer remains usable for a partial rerun of the same controller source.
 

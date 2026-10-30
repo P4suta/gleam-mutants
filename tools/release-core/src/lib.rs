@@ -4,6 +4,90 @@
 #![no_std]
 #![deny(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
+use core::num::{NonZeroU32, NonZeroU64};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControllerIdentity {
+    run: NonZeroU64,
+    attempt: NonZeroU32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerIdentityError {
+    InvalidRun,
+    InvalidAttempt,
+    Empty,
+}
+
+impl ControllerIdentityError {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::InvalidRun => "invalid controller run",
+            Self::InvalidAttempt => "invalid controller attempt",
+            Self::Empty => "controller identity is empty",
+        }
+    }
+}
+
+impl ControllerIdentity {
+    pub fn new(run: u64, attempt: u32) -> Option<Self> {
+        Some(Self {
+            run: NonZeroU64::new(run)?,
+            attempt: NonZeroU32::new(attempt)?,
+        })
+    }
+    pub fn parse(run: &str, attempt: &str) -> Result<Self, ControllerIdentityError> {
+        let run = run
+            .parse()
+            .map_err(|_| ControllerIdentityError::InvalidRun)?;
+        let attempt = attempt
+            .parse()
+            .map_err(|_| ControllerIdentityError::InvalidAttempt)?;
+        Self::new(run, attempt).ok_or(ControllerIdentityError::Empty)
+    }
+    pub fn run(self) -> u64 {
+        self.run.get()
+    }
+    pub fn attempt(self) -> u32 {
+        self.attempt.get()
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::{ControllerIdentity, ControllerIdentityError};
+
+    #[test]
+    fn accepts_and_preserves_positive_identity_boundaries() -> Result<(), &'static str> {
+        for (run, attempt) in [(1, 1), (u64::MAX, u32::MAX)] {
+            let identity = ControllerIdentity::new(run, attempt).ok_or("nonzero identity")?;
+            assert_eq!((identity.run(), identity.attempt()), (run, attempt));
+        }
+        assert!(ControllerIdentity::new(0, 1).is_none());
+        assert!(ControllerIdentity::new(1, 0).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn refuses_malformed_overflowing_and_zero_fields_with_causal_errors() {
+        assert!(ControllerIdentity::parse("1", "1").is_ok());
+        for (run, attempt, error) in [
+            ("x", "1", ControllerIdentityError::InvalidRun),
+            ("1", "x", ControllerIdentityError::InvalidAttempt),
+            (
+                "18446744073709551616",
+                "1",
+                ControllerIdentityError::InvalidRun,
+            ),
+            ("1", "4294967296", ControllerIdentityError::InvalidAttempt),
+            ("0", "1", ControllerIdentityError::Empty),
+            ("1", "0", ControllerIdentityError::Empty),
+        ] {
+            assert_eq!(ControllerIdentity::parse(run, attempt), Err(error));
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum PublicationPhase {
@@ -203,6 +287,15 @@ mod proofs {
 
     #[kani::proof]
     fn release_selection_requires_one_valid_identity() {
+        let run: u64 = kani::any();
+        let attempt: u32 = kani::any();
+        let controller = super::ControllerIdentity::new(run, attempt);
+        assert!(controller.is_some() == (run != 0 && attempt != 0));
+        if let Some(identity) = controller {
+            assert!(identity.run() == run && identity.attempt() == attempt);
+        }
+        kani::cover!(controller.is_some());
+        kani::cover!(controller.is_none());
         let raw: u64 = kani::any();
         let id = super::ReleaseId::new(raw);
         assert!(id.is_some() == (raw != 0));

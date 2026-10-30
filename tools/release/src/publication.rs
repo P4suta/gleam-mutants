@@ -4,7 +4,7 @@
 use crate::candidate::{self, Artifact, Revision};
 use crate::evidence::{self, Candidate, Identity};
 use crate::{constants, github, registry, runner};
-pub use gleam_mutants_release_core::PublicationPhase as Phase;
+pub use gleam_mutants_release_core::{ControllerIdentity, PublicationPhase as Phase};
 use gleam_mutants_release_core::{
     Existing, ReleaseId, ReleaseSelection, WritePlan, can_finalize, plan_write, with_draft_evidence,
 };
@@ -29,19 +29,15 @@ struct ControllerRun {
 impl ControllerRun {
     fn from_environment() -> Result<Self, String> {
         let source = Revision::try_from(runner::environment("GITHUB_SHA")?)?;
-        let run = runner::environment("GITHUB_RUN_ID")?
-            .parse()
-            .map_err(|_| "invalid controller run")?;
-        let attempt = runner::environment("GITHUB_RUN_ATTEMPT")?
-            .parse()
-            .map_err(|_| "invalid controller attempt")?;
-        if run == 0 || attempt == 0 {
-            return Err("controller identity is empty".into());
-        }
+        let identity = ControllerIdentity::parse(
+            &runner::environment("GITHUB_RUN_ID")?,
+            &runner::environment("GITHUB_RUN_ATTEMPT")?,
+        )
+        .map_err(|error| error.message())?;
         Ok(Self {
             source,
-            run,
-            attempt,
+            run: identity.run(),
+            attempt: identity.attempt(),
         })
     }
 
