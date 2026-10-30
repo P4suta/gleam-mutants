@@ -132,11 +132,14 @@ These checks cover that finite corpus and the native boundaries; symlink aliases
 
 Release automation has a separate pure Rust core in `tools/release-core`.
 `mise run prove-release` imports that implementation directly into pinned Kani 0.68.0.
-Five harnesses check output reuse, finalization, conclusive runtime counts, release identity selection, and the distinction between suppressed and actual proposal CI.
+Six harnesses check output reuse, finalization, conclusive runtime counts, release identity selection, phase capabilities, and the distinction between suppressed and actual proposal CI.
 They cover every admitted Boolean or enum state and all `u64` count and release-ID combinations in those predicates.
 Release selection admits only nonzero IDs, preserves the first match, and refuses another match even when both IDs are equal.
 Its harness checks every selection transition and reachability of the missing, unique, and ambiguous states.
-The gate requires five successful harnesses and separately rejects five deliberately broken implementations at the corresponding harness.
+The phase harness quantifies over all four publication phases and checks the production callback dispatcher.
+Hex and npm invoke only the completed-preparation reader; draft and finalization select the GitHub release reader.
+Both branches must be reachable, and each dispatch invokes exactly one reader.
+The gate requires six successful harnesses and separately rejects six deliberately broken implementations at the corresponding harness.
 Each negative control selects only its named harness and requires its exact failed-harness summary.
 Tool failure, an empty harness inventory, or a resource stop supplies no proof result.
 The pinned container uses the same bounded supervisor as the Gleam proof gate and records its actual source hash.
@@ -148,6 +151,19 @@ Native regressions cover sealed candidate tampering, missing evidence, source an
 Draft discovery uses the complete paginated [GitHub release catalogue](https://docs.github.com/en/rest/releases/releases#list-releases), since the release-by-tag endpoint returns published releases.
 Native protocol regressions cover a missing published-tag response with an existing draft, exact selection after unrelated records, malformed or duplicated identities, transport failures, and refusal of published targets.
 The tag reference remains authoritative for the candidate source; a draft's `target_commitish` may name a branch.
+GitHub hides draft releases from tokens without push authority.
+Registry phases instead read the successful draft job from their active controller run through Actions read permission.
+Native handoff regressions reject foreign controller fields, absent or ambiguous producers, transport failure, and later failed or skipped producers.
+A producer from an earlier attempt is reusable only while it remains the latest successful named job in the same controller source and run.
+This is evidence about completed preparation, not a claim that a read-only token can inspect the current draft.
+Finalization reads the complete current draft and both registry archives again before publication.
+
+The fast release check parses the actual publication YAML with pinned YAML 1.2 tooling and compares its phase permissions with the production evidence routes.
+It also checks the complete job inventory, protected environments, candidate argument bindings, readiness dependencies, and failure propagation.
+Negative controls reject authority drift, skipped or ignored prerequisites, removal of readiness, secret references in evidence jobs, and changed candidate or producer identities.
+The hosted read-only `registry-ready` job executes the same registry planning function as publication without registry credentials before either registry approval becomes available.
+GitHub's execution, token permissions, truthful job metadata, YAML interpretation, and external provider availability remain trust assumptions.
+These checks do not prove an external service or an atomic transaction across registries.
 The pinned GitHub CLI checks the attestation adapter's arguments for SHA-256 and SHA-512 with online and retained-bundle modes.
 A malformed custom trust root must fail with the expected parsing error after argument admission.
 The test uses isolated configuration and a placeholder token without network access.

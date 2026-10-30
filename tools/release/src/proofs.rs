@@ -12,7 +12,7 @@ const DEADLINE: Duration = Duration::from_secs(900);
 const CLEANUP_DEADLINE: Duration = Duration::from_secs(10);
 const RESOURCE_KILL: i32 = 137;
 const VERSION: &str = "Kani Rust Verifier 0.68.0";
-const POSITIVE_SUMMARY: &str = "5 successfully verified harnesses, 0 failures, 5 total";
+const POSITIVE_SUMMARY: &str = "6 successfully verified harnesses, 0 failures, 6 total";
 const NEGATIVE_SUMMARY: &str = "0 successfully verified harnesses, 1 failures, 1 total";
 
 fn counterexample(success: bool, diagnostics: &str, harness: &str) -> bool {
@@ -119,6 +119,12 @@ pub fn prove() -> Result<(), String> {
     }
     let controls = [
         (
+            "phase-capabilities",
+            "Self::Hex | Self::Npm => DraftEvidenceSource::CompletedPreparation,",
+            "Self::Hex | Self::Npm => DraftEvidenceSource::ReleaseApi,",
+            "registry_phases_need_no_github_release_authority",
+        ),
+        (
             "release-selection",
             "Self::Unique(_) | Self::Ambiguous => Self::Ambiguous,",
             "Self::Unique(_) | Self::Ambiguous => Self::Unique(id),",
@@ -175,7 +181,7 @@ pub fn prove() -> Result<(), String> {
         }
     }
     println!(
-        "Source-bound Kani policy proofs passed with five rejected broken implementations; source SHA256 {}",
+        "Source-bound Kani policy proofs passed with six rejected broken implementations; source SHA256 {}",
         candidate::digest(source.as_bytes())
     );
     Ok(())

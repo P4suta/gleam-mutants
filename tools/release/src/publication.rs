@@ -4,8 +4,9 @@
 use crate::candidate::{self, Artifact, Revision};
 use crate::evidence::{self, Candidate, Identity};
 use crate::{constants, github, registry, runner};
+pub use gleam_mutants_release_core::PublicationPhase as Phase;
 use gleam_mutants_release_core::{
-    Existing, ReleaseId, ReleaseSelection, WritePlan, can_finalize, plan_write,
+    Existing, ReleaseId, ReleaseSelection, WritePlan, can_finalize, plan_write, with_draft_evidence,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -16,41 +17,103 @@ use std::process::{Command, Stdio};
 
 const WORKFLOW: &str = ".github/workflows/release-publish.yml";
 const TAG_CHAIN_BOUND: usize = 8;
+pub(crate) const DRAFT_JOB: &str = "Prepare immutable tag and complete draft";
+pub(crate) const READINESS_JOB: &str = "registry-ready";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Phase {
-    Draft,
-    Hex,
-    Npm,
-    Finalize,
+struct ControllerRun {
+    source: Revision,
+    run: u64,
+    attempt: u32,
 }
 
-impl Phase {
-    pub fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "draft" => Ok(Self::Draft),
-            "hex" => Ok(Self::Hex),
-            "npm" => Ok(Self::Npm),
-            "finalize" => Ok(Self::Finalize),
-            _ => Err("unknown publication phase".into()),
+impl ControllerRun {
+    fn from_environment() -> Result<Self, String> {
+        let source = Revision::try_from(runner::environment("GITHUB_SHA")?)?;
+        let run = runner::environment("GITHUB_RUN_ID")?
+            .parse()
+            .map_err(|_| "invalid controller run")?;
+        let attempt = runner::environment("GITHUB_RUN_ATTEMPT")?
+            .parse()
+            .map_err(|_| "invalid controller attempt")?;
+        if run == 0 || attempt == 0 {
+            return Err("controller identity is empty".into());
         }
+        Ok(Self {
+            source,
+            run,
+            attempt,
+        })
     }
-    pub fn job(self) -> &'static str {
-        match self {
-            Self::Draft => "draft",
-            Self::Hex => "hex",
-            Self::Npm => "npm",
-            Self::Finalize => "finalize",
+
+    fn validate(&self, run: &Value) -> Result<(), String> {
+        for (pointer, expected) in [
+            ("/id", serde_json::json!(self.run)),
+            ("/run_attempt", serde_json::json!(self.attempt)),
+            ("/head_sha", serde_json::json!(self.source.as_str())),
+            ("/head_branch", serde_json::json!("main")),
+            ("/path", serde_json::json!(WORKFLOW)),
+            ("/event", serde_json::json!("workflow_dispatch")),
+            (
+                "/repository/id",
+                serde_json::json!(candidate::REPOSITORY_ID),
+            ),
+            (
+                "/repository/owner/id",
+                serde_json::json!(candidate::OWNER_ID),
+            ),
+            (
+                "/head_repository/id",
+                serde_json::json!(candidate::REPOSITORY_ID),
+            ),
+            ("/status", serde_json::json!("in_progress")),
+            ("/conclusion", Value::Null),
+        ] {
+            if run.pointer(pointer) != Some(&expected) {
+                return Err(format!(
+                    "draft preparation controller binding differs: {pointer}"
+                ));
+            }
         }
+        Ok(())
     }
-    pub fn environment(self) -> &'static str {
-        match self {
-            Self::Draft => "release-github",
-            Self::Hex => "release-hex",
-            Self::Npm => "release-npm",
-            Self::Finalize => "release",
-        }
-    }
+}
+
+struct PreparedDraft {
+    producer_attempt: u32,
+}
+
+fn prepared_draft_from(
+    controller: &ControllerRun,
+    read: impl FnOnce(&str) -> Result<Value, String>,
+    jobs: impl FnOnce(&str) -> Result<Vec<Value>, String>,
+) -> Result<PreparedDraft, String> {
+    let root = format!(
+        "repos/{}/actions/runs/{}",
+        candidate::REPOSITORY,
+        controller.run
+    );
+    controller.validate(&read(&root)?)?;
+    let jobs = jobs(&format!("{root}/jobs?filter=all"))?;
+    let producer_attempt = github::latest_success_for(
+        &jobs,
+        DRAFT_JOB,
+        &controller.source,
+        controller.run,
+        controller.attempt,
+    )?;
+    Ok(PreparedDraft { producer_attempt })
+}
+
+fn completed_preparation() -> Result<PreparedDraft, String> {
+    let controller = ControllerRun::from_environment()?;
+    let proof = prepared_draft_from(&controller, github::required, |path| {
+        github::list(path, Some("jobs"))
+    })?;
+    println!(
+        "Verified draft preparation in controller {} at producer attempt {}",
+        controller.run, proof.producer_attempt
+    );
+    Ok(proof)
 }
 
 #[derive(Clone)]
@@ -111,16 +174,11 @@ pub fn controller_context() -> Result<(), String> {
 
 pub fn controller_outputs() -> Result<(), String> {
     controller_context()?;
-    let source = Revision::try_from(runner::environment("GITHUB_SHA")?)?;
-    let run: u64 = runner::environment("GITHUB_RUN_ID")?
-        .parse()
-        .map_err(|_| "invalid controller run")?;
-    let attempt: u32 = runner::environment("GITHUB_RUN_ATTEMPT")?
-        .parse()
-        .map_err(|_| "invalid controller attempt")?;
-    if run == 0 || attempt == 0 {
-        return Err("controller identity is empty".into());
-    }
+    let ControllerRun {
+        source,
+        run,
+        attempt,
+    } = ControllerRun::from_environment()?;
     let mut output = fs::OpenOptions::new()
         .append(true)
         .open(runner::environment("GITHUB_OUTPUT")?)
@@ -172,7 +230,8 @@ pub fn plan(directory: &Path, identity: &Identity) -> Result<(), String> {
         return Err("a registry version belongs to another archive".into());
     }
     let plan = serde_json::json!({"source":identity.source,"version":identity.version,"build":identity.origin,
-        "assets":expected,"phases":["draft","hex","npm","finalize"],"publication_performed":false});
+        "assets":expected,"phases":["draft","hex","npm","finalize"],
+        "draft_assets":"checked_in_approved_draft_phase","publication_performed":false});
     evidence::write_new(Path::new("release-plan.json"), &plan)?;
     println!(
         "{}",
@@ -496,6 +555,89 @@ fn registry_artifact<'a>(candidate: &'a Candidate, prefix: &str) -> Result<&'a A
         .ok_or("registry archive is missing".into())
 }
 
+enum DraftEvidence {
+    Live(Value),
+    Completed,
+}
+
+impl DraftEvidence {
+    fn live(self) -> Result<Value, String> {
+        match self {
+            Self::Live(release) => Ok(release),
+            Self::Completed => Err("GitHub publication requires current draft inspection".into()),
+        }
+    }
+}
+
+fn draft_evidence(phase: Phase, identity: &Identity) -> Result<DraftEvidence, String> {
+    with_draft_evidence(
+        phase,
+        || draft(identity).map(DraftEvidence::Live),
+        || completed_preparation().map(|_| DraftEvidence::Completed),
+    )
+}
+
+fn registry_plan(
+    phase: Phase,
+    identity: &Identity,
+    candidate: &Candidate,
+) -> Result<WritePlan, String> {
+    let (registry, artifact) = match phase {
+        Phase::Hex => (
+            registry::Registry::Hex,
+            registry_artifact(candidate, "gleam_mutants-")?,
+        ),
+        Phase::Npm => {
+            npm_client()?;
+            match runner::environment("NPM_PUBLISH_AUTH")?.as_str() {
+                "trusted" | "bootstrap" => {}
+                _ => return Err("npm authentication must be trusted or bootstrap".into()),
+            }
+            (registry::Registry::Npm, candidate.npm()?)
+        }
+        Phase::Draft | Phase::Finalize => {
+            return Err("registry preparation requires hex or npm".into());
+        }
+    };
+    if tag(identity)? != Existing::Matching {
+        return Err("registry preparation requires the matching version tag".into());
+    }
+    match draft_evidence(phase, identity)? {
+        DraftEvidence::Completed => {}
+        DraftEvidence::Live(_) => {
+            return Err("registry phase requires completed draft preparation".into());
+        }
+    }
+    let plan = plan_write(
+        true,
+        registry::observe(registry, &identity.version, &artifact.sha256)?,
+    );
+    match plan {
+        WritePlan::Create | WritePlan::Reuse => Ok(plan),
+        WritePlan::Refuse => {
+            Err("registry version contains different verified archive bytes".into())
+        }
+    }
+}
+
+pub fn registry_ready(phase: Phase, directory: &Path, identity: &Identity) -> Result<(), String> {
+    controller_context()?;
+    if runner::environment("GITHUB_JOB")? != READINESS_JOB {
+        return Err("registry readiness requires its read-only hosted job".into());
+    }
+    github::repository()?;
+    github::verify_source(identity)?;
+    let candidate = Candidate::load(directory)?;
+    candidate.verify(directory, identity)?;
+    github::attestations(directory, identity)?;
+    let plan = registry_plan(phase, identity, &candidate)?;
+    println!(
+        "Registry {} prerequisites verified without publication: {plan:?}",
+        phase.job()
+    );
+    Ok(())
+}
+
 pub fn execute(phase: Phase, directory: &Path, identity: &Identity) -> Result<(), String> {
     approval(phase)?;
     github::repository()?;
@@ -503,17 +645,11 @@ pub fn execute(phase: Phase, directory: &Path, identity: &Identity) -> Result<()
     let candidate = Candidate::load(directory)?;
     candidate.verify(directory, identity)?;
     github::attestations(directory, identity)?;
-    let expected = assets(directory, &candidate)?;
     match phase {
-        Phase::Draft => create_draft(directory, identity, &expected),
+        Phase::Draft => create_draft(directory, identity, &assets(directory, &candidate)?),
         Phase::Hex => {
-            let release = draft(identity)?;
-            reconcile(&mut store(directory, identity, &release)?, &expected, false)?;
             let artifact = registry_artifact(&candidate, "gleam_mutants-")?;
-            match plan_write(
-                true,
-                registry::observe(registry::Registry::Hex, &identity.version, &artifact.sha256)?,
-            ) {
+            match registry_plan(phase, identity, &candidate)? {
                 WritePlan::Reuse => Ok(()),
                 WritePlan::Refuse => Err("Hex version contains different bytes".into()),
                 WritePlan::Create => {
@@ -534,13 +670,8 @@ pub fn execute(phase: Phase, directory: &Path, identity: &Identity) -> Result<()
             }
         }
         Phase::Npm => {
-            let release = draft(identity)?;
-            reconcile(&mut store(directory, identity, &release)?, &expected, false)?;
             let artifact = candidate.npm()?;
-            match plan_write(
-                true,
-                registry::observe(registry::Registry::Npm, &identity.version, &artifact.sha256)?,
-            ) {
+            match registry_plan(phase, identity, &candidate)? {
                 WritePlan::Reuse => Ok(()),
                 WritePlan::Refuse => Err("npm version contains different bytes".into()),
                 WritePlan::Create => {
@@ -558,7 +689,8 @@ pub fn execute(phase: Phase, directory: &Path, identity: &Identity) -> Result<()
             }
         }
         Phase::Finalize => {
-            let release = draft(identity)?;
+            let expected = assets(directory, &candidate)?;
+            let release = draft_evidence(phase, identity)?.live()?;
             reconcile(&mut store(directory, identity, &release)?, &expected, false)?;
             let hex = registry_artifact(&candidate, "gleam_mutants-")?;
             let npm = candidate.npm()?;
@@ -680,17 +812,22 @@ fn create_draft(
                 .arg(&path),
         )?;
     }
-    let release = draft(identity)?;
+    let release = draft_evidence(Phase::Draft, identity)?.live()?;
     let mut store = store(directory, identity, &release)?;
     reconcile(&mut store, expected, true)?;
     reconcile(&mut store, expected, false)
 }
 
-fn publish_npm(directory: &Path, candidate: &Candidate) -> Result<(), String> {
+fn npm_client() -> Result<(), String> {
     for (tool, minimum) in [("node", "22.14.0"), ("npm", "11.5.1")] {
         let observed = runner::output(Command::new(tool).arg("--version"))?;
         minimum_client(&String::from_utf8_lossy(&observed.stdout), minimum)?;
     }
+    Ok(())
+}
+
+fn publish_npm(directory: &Path, candidate: &Candidate) -> Result<(), String> {
+    npm_client()?;
     let mode = runner::environment("NPM_PUBLISH_AUTH")?;
     let bootstrap = match mode.as_str() {
         "trusted" => None,
@@ -802,6 +939,143 @@ fn minimum_client(observed: &str, minimum: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn controller_fixture() -> (ControllerRun, Value, Value) {
+        let controller = ControllerRun {
+            source: Revision::try_from("a".repeat(40)).unwrap(),
+            run: 1,
+            attempt: 2,
+        };
+        let metadata = serde_json::json!({
+            "id":controller.run,"run_attempt":controller.attempt,"head_sha":controller.source.as_str(),
+            "head_branch":"main","path":WORKFLOW,"event":"workflow_dispatch",
+            "repository":{"id":candidate::REPOSITORY_ID,"owner":{"id":candidate::OWNER_ID}},
+            "head_repository":{"id":candidate::REPOSITORY_ID},"status":"in_progress","conclusion":null
+        });
+        let job = serde_json::json!({
+            "name":DRAFT_JOB,"run_attempt":1,"run_id":controller.run,"head_sha":controller.source.as_str(),
+            "status":"completed","conclusion":"success"
+        });
+        (controller, metadata, job)
+    }
+
+    #[test]
+    fn draft_handoff_uses_only_the_bound_controller_and_actions_job_reads() {
+        let (controller, metadata, job) = controller_fixture();
+        let proof = prepared_draft_from(
+            &controller,
+            |path| {
+                assert_eq!(path, "repos/P4suta/gleam-mutants/actions/runs/1");
+                Ok(metadata)
+            },
+            |path| {
+                assert_eq!(
+                    path,
+                    "repos/P4suta/gleam-mutants/actions/runs/1/jobs?filter=all"
+                );
+                Ok(vec![job])
+            },
+        )
+        .unwrap();
+        assert_eq!(proof.producer_attempt, 1);
+        for phase in [Phase::Hex, Phase::Npm] {
+            let evidence = with_draft_evidence(
+                phase,
+                || Err("draft lookup is unavailable to a read-only token"),
+                || Ok(proof.producer_attempt),
+            );
+            assert_eq!(evidence, Ok(1));
+        }
+    }
+
+    #[test]
+    fn draft_handoff_rejects_every_foreign_controller_binding() {
+        let (controller, metadata, _) = controller_fixture();
+        for (pointer, invalid) in [
+            ("/id", serde_json::json!(2)),
+            ("/run_attempt", serde_json::json!(1)),
+            ("/head_sha", serde_json::json!("b".repeat(40))),
+            ("/head_branch", serde_json::json!("feature")),
+            ("/path", serde_json::json!(candidate::CANDIDATE_WORKFLOW)),
+            ("/event", serde_json::json!("pull_request")),
+            ("/repository/id", serde_json::json!(0)),
+            ("/repository/owner/id", serde_json::json!(0)),
+            ("/head_repository/id", serde_json::json!(0)),
+            ("/status", serde_json::json!("completed")),
+            ("/conclusion", serde_json::json!("success")),
+        ] {
+            let mut foreign = metadata.clone();
+            *foreign.pointer_mut(pointer).unwrap() = invalid;
+            assert!(
+                prepared_draft_from(
+                    &controller,
+                    |_| Ok(foreign),
+                    |_| { panic!("jobs must not be read for an invalid controller") }
+                )
+                .is_err(),
+                "{pointer}"
+            );
+        }
+        let mut missing = metadata.clone();
+        missing.as_object_mut().unwrap().remove("conclusion");
+        assert!(controller.validate(&missing).is_err());
+        assert!(
+            prepared_draft_from(
+                &controller,
+                |_| Err("fixture transport failure".into()),
+                |_| { panic!("jobs must not be read after a transport failure") }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn missing_ambiguous_failed_or_newer_failed_draft_producers_supply_no_handoff() {
+        let (controller, metadata, job) = controller_fixture();
+        let mut failed = job.clone();
+        failed["run_attempt"] = serde_json::json!(2);
+        for conclusion in ["failure", "skipped", "cancelled", "timed_out"] {
+            failed["conclusion"] = serde_json::json!(conclusion);
+            assert!(
+                prepared_draft_from(
+                    &controller,
+                    |_| Ok(metadata.clone()),
+                    |_| Ok(vec![job.clone(), failed.clone()])
+                )
+                .is_err()
+            );
+        }
+        for jobs in [vec![], vec![job.clone(), job.clone()]] {
+            assert!(
+                prepared_draft_from(&controller, |_| Ok(metadata.clone()), |_| Ok(jobs)).is_err()
+            );
+        }
+        for (field, invalid) in [
+            ("run_id", serde_json::json!(2)),
+            ("head_sha", serde_json::json!("b".repeat(40))),
+            ("run_attempt", serde_json::json!(0)),
+            ("run_attempt", serde_json::json!("1")),
+            ("status", serde_json::json!("in_progress")),
+            ("conclusion", Value::Null),
+            ("name", serde_json::json!("another job")),
+        ] {
+            let mut foreign = job.clone();
+            foreign[field] = invalid;
+            assert!(
+                prepared_draft_from(&controller, |_| Ok(metadata.clone()), |_| Ok(vec![foreign]))
+                    .is_err(),
+                "{field}"
+            );
+        }
+        assert!(
+            prepared_draft_from(
+                &controller,
+                |_| Ok(metadata),
+                |_| Err("fixture transport failure".into())
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn a_draft_is_discovered_when_the_published_tag_endpoint_is_missing() {

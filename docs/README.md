@@ -20,5 +20,6 @@ Its supported product is a mutation-testing library and CLI.
 - [Release preparation and publication](releasing.md)
 - [Package boundary decision](adr/mutation-testing-package-boundary.md)
 - [Verified candidate publication decision](adr/publish-verified-candidate-artifacts.md)
+- [Draft verification before registry publication](adr/verify-drafts-before-registry-publication.md)
 
 See the [third-party notices](../THIRD_PARTY_NOTICES.md) for embedded dependencies.

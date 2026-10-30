@@ -117,7 +117,9 @@ Its `.release-please-manifest.json`, `VERSION`, package metadata, CLI version, a
 Do not merge a release proposal merely to rehearse preparation.
 
 The manual `Publish verified release` workflow selects a source commit, version, successful candidate run and completion attempt, and explicit npm authentication mode.
-The read-only preflight checks protected-main ancestry, the merged version proposal, the complete successful run and latest job producers, artifact bytes, retained and online attestations, remote tag, draft assets, and registry archives.
+The read-only preflight checks protected-main ancestry, the merged version proposal, the complete successful run and latest job producers, artifact bytes, retained and online attestations, remote tag, visible releases, and registry archives.
+GitHub hides draft releases from tokens without push authority, so this preflight can't establish the current draft inventory.
+The plan names the approved draft phase as the owner of that check.
 It emits a concrete `release-plan.json` before any production approval.
 The controller binaries are compiled and tested without publication privileges, attested in a fresh job, and verified before each approved phase executes them.
 
@@ -125,6 +127,12 @@ The controller binaries are compiled and tested without publication privileges, 
 2. `release-hex` publishes or reuses the identical Hex tarball and verifies the downloaded registry archive.
 3. `release-npm` publishes or reuses the identical npm tarball with original provenance and verifies the downloaded registry archive.
 4. `release` finalizes the draft only after the tag, complete assets, and both registry archives match.
+
+Between draft preparation and the registry approvals, `registry-ready` runs both registry prerequisite checks with Contents read and Actions read permissions and no registry secrets.
+It verifies the successful draft producer in the same active controller run, candidate identity and provenance, matching tag, remote archive state, and required npm client and authentication mode.
+The production registry phases call the same preparation function before any upload.
+Their draft handoff depends on GitHub's truthful job outcomes and execution of the checked controller and workflow.
+The [draft verification decision](adr/verify-drafts-before-registry-publication.md) records this boundary.
 
 The final inventory includes the three archives, three SBOMs, four receipts, candidate manifest, two candidate checksum files, two attestation bundles, and `RELEASE-SHA256SUMS` covering the other fifteen files.
 GitHub's immutable-release setting and protected version tags prevent later replacement after publication.

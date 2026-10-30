@@ -126,6 +126,16 @@ pub fn latest_success(jobs: &[Value], name: &str, identity: &Identity) -> Result
     let Origin::GitHub { run, attempt, .. } = identity.origin else {
         return Err("hosted job identity required".into());
     };
+    latest_success_for(jobs, name, &identity.source, run, attempt)
+}
+
+pub(crate) fn latest_success_for(
+    jobs: &[Value],
+    name: &str,
+    source: &Revision,
+    run: u64,
+    attempt: u32,
+) -> Result<u32, String> {
     let mut selected = std::collections::BTreeMap::new();
     for job in jobs.iter().filter(|job| job["name"] == name) {
         let producer = job["run_attempt"]
@@ -136,7 +146,7 @@ pub fn latest_success(jobs: &[Value], name: &str, identity: &Identity) -> Result
         if producer > attempt {
             continue;
         }
-        if job["run_id"] != run || job["head_sha"] != identity.source.as_str() {
+        if job["run_id"] != run || job["head_sha"] != source.as_str() {
             return Err("job belongs to another source or run".into());
         }
         if selected.insert(producer, job).is_some() {
