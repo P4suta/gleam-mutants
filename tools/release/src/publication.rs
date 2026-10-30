@@ -365,8 +365,8 @@ fn require_draft(release: Value, tag: &str) -> Result<Value, String> {
     release_id(&release)?;
     if release["draft"] != true
         || release["tag_name"] != tag
-        || release["immutable"] == true
-        || !release["published_at"].is_null()
+        || release["immutable"] != false
+        || release.get("published_at") != Some(&Value::Null)
     {
         return Err("target is published or has another release identity".into());
     }
@@ -1062,7 +1062,7 @@ mod tests {
     fn confirmed_creation_survives_an_unavailable_collection_entry() {
         const RELEASE_ID: u64 = 42;
         let tag = "v0.1.0";
-        let created = serde_json::json!({"id":RELEASE_ID,"tag_name":tag,"draft":true});
+        let created = serde_json::json!({"id":RELEASE_ID,"tag_name":tag,"draft":true,"immutable":false,"published_at":null});
         let mut discoveries = 0;
         let mut creations = 0;
         let observed = acquire_draft_from(
@@ -1084,7 +1084,7 @@ mod tests {
     fn draft_acquisition_preserves_existing_identity_and_never_retries_errors() {
         const RELEASE_ID: u64 = 42;
         let tag = "v0.1.0";
-        let existing = serde_json::json!({"id":RELEASE_ID,"tag_name":tag,"draft":true});
+        let existing = serde_json::json!({"id":RELEASE_ID,"tag_name":tag,"draft":true,"immutable":false,"published_at":null});
         assert_eq!(
             acquire_draft_from(
                 tag,
@@ -1362,7 +1362,7 @@ mod tests {
     #[test]
     fn a_draft_is_discovered_when_the_published_tag_endpoint_is_missing() {
         let tag = "v0.1.0";
-        let draft = serde_json::json!({"id":1,"tag_name":tag,"draft":true});
+        let draft = serde_json::json!({"id":1,"tag_name":tag,"draft":true,"immutable":false,"published_at":null});
         let observed = release_from(tag, |path| {
             if path == format!("repos/{}/releases", candidate::REPOSITORY) {
                 Ok(vec![draft.clone()])
@@ -1382,7 +1382,7 @@ mod tests {
         let unrelated = serde_json::json!({"id":1,"tag_name":"v0.2.0","draft":true});
         for is_draft in [false, true] {
             let target = serde_json::json!({
-                "id":u64::MAX,"tag_name":tag,"draft":is_draft,"target_commitish":"main"
+                "id":u64::MAX,"tag_name":tag,"draft":is_draft,"target_commitish":"main","immutable":false,"published_at":null
             });
             let records = vec![unrelated.clone(), target.clone()];
             let found = release_from(tag, |_| Ok(records)).unwrap().unwrap();
@@ -1421,15 +1421,25 @@ mod tests {
     #[test]
     fn draft_admission_rejects_published_malformed_and_foreign_releases() {
         let tag = "v0.1.0";
-        for invalid in [
-            serde_json::json!({"id":1,"tag_name":tag,"draft":false}),
-            serde_json::json!({"id":1,"tag_name":tag}),
-            serde_json::json!({"id":1,"tag_name":tag,"draft":"true"}),
-            serde_json::json!({"id":1,"tag_name":"v0.2.0","draft":true}),
-            serde_json::json!({"id":1,"tag_name":tag,"draft":true,"immutable":true}),
-            serde_json::json!({"id":1,"tag_name":tag,"draft":true,"published_at":"2026-10-30T00:00:00Z"}),
+        let valid = serde_json::json!({"id":1,"tag_name":tag,"draft":true,"immutable":false,"published_at":null});
+        assert!(require_draft(valid.clone(), tag).is_ok());
+        for (field, value) in [
+            ("draft", serde_json::json!(false)),
+            ("draft", serde_json::json!("true")),
+            ("tag_name", serde_json::json!("v0.2.0")),
+            ("immutable", serde_json::json!(true)),
+            ("immutable", serde_json::json!("false")),
+            ("immutable", Value::Null),
+            ("published_at", serde_json::json!("2026-10-30T00:00:00Z")),
         ] {
-            assert!(require_draft(invalid, tag).is_err());
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            assert!(require_draft(invalid, tag).is_err(), "{field}");
+        }
+        for field in ["id", "tag_name", "draft", "immutable", "published_at"] {
+            let mut missing = valid.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(require_draft(missing, tag).is_err(), "missing {field}");
         }
     }
 

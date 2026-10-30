@@ -119,7 +119,7 @@ fn exchange<T>(status: &str, response: &[u8], run: impl FnOnce(&str) -> T) -> (T
 fn native_creation_keeps_response_identity_without_another_lookup() {
     let directory = workspace("create");
     let tag = "v0.1.0";
-    let created = serde_json::json!({"id":RELEASE_ID,"tag_name":tag,"draft":true});
+    let created = serde_json::json!({"id":RELEASE_ID,"tag_name":tag,"draft":true,"immutable":false,"published_at":null});
     let notes = serde_json::json!({"tag_name":tag,"draft":true,"body":"Notes with \"quotes\".\nAnother line."});
     let mut discoveries = 0;
     let (result, request) = exchange(
