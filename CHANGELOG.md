@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/P4suta/gleam-mutants/compare/v0.1.0...v0.1.1) (2026-10-30)
+
+### Bug Fixes
+
+* **release:** check npm provenance before publication ([#84](https://github.com/P4suta/gleam-mutants/issues/84)) ([65c58f6](https://github.com/P4suta/gleam-mutants/commit/65c58f64e9a5d7aeae0e2f5ad54eadd689eb6f2a))
+* **release:** keep confirmed draft identities ([#82](https://github.com/P4suta/gleam-mutants/issues/82)) ([2843822](https://github.com/P4suta/gleam-mutants/commit/284382218daff19e12ad2f2a54c36c5edb9fcd3c))
+* **release:** wait for npm publication availability ([#86](https://github.com/P4suta/gleam-mutants/issues/86)) ([7501fcd](https://github.com/P4suta/gleam-mutants/commit/7501fcd061b023cf290dfd6ccf3c5f818e64d01f))
+
 ## 0.1.0 (2026-10-29)
 
 ### ⚠ BREAKING CHANGES
