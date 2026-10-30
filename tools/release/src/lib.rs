@@ -14,5 +14,8 @@ pub mod registry;
 pub mod runner;
 pub mod runtime;
 
+#[cfg(test)]
+mod workflow_contract;
+
 #[path = "../../../verification/src/supervisor.rs"]
 mod supervisor;

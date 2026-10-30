@@ -36,6 +36,27 @@ fn publication_has_no_local_authority() {
 }
 
 #[test]
+fn registry_readiness_requires_the_read_only_hosted_controller() {
+    for phase in ["hex", "npm", "draft", "finalize"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_release-publish"))
+            .args([
+                "check-registry",
+                phase,
+                "absent-candidate",
+                &"a".repeat(40),
+                "0.1.0",
+                "1",
+                "1",
+            ])
+            .env_remove("GITHUB_ACTIONS")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("GITHUB_ACTIONS"));
+    }
+}
+
+#[test]
 fn credential_transport_has_no_local_or_publication_command() {
     for registry in ["hex", "npm", "publish", "sign", "tag"] {
         let output = Command::new(env!("CARGO_BIN_EXE_release-credentials"))

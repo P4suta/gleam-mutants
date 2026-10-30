@@ -186,9 +186,69 @@ jobs:
           ./controller/release-publish execute draft build/candidate
           "$SOURCE" "$VERSION" "$RUN" "$ATTEMPT"
 
+  registry-ready:
+    name: Verify registry prerequisites without publication
+    needs: [draft, attest-controller]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read  # Read source identity without draft authority.
+      actions: read  # Verify the completed draft producer.
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: ${{ needs.attest-controller.outputs.artifact }}
+          path: controller
+      - name: Verify the protected controller before execution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh attestation verify controller/gleam-mutants-release
+          --repo P4suta/gleam-mutants --deny-self-hosted-runners
+          --signer-workflow
+          P4suta/gleam-mutants/.github/workflows/release-publish.yml
+          --source-ref refs/heads/main --source-digest "$GITHUB_SHA"
+          --signer-digest "$GITHUB_SHA"
+      - name: Verify the publication adapter before execution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh attestation verify controller/release-publish
+          --repo P4suta/gleam-mutants --deny-self-hosted-runners
+          --signer-workflow
+          P4suta/gleam-mutants/.github/workflows/release-publish.yml
+          --source-ref refs/heads/main --source-digest "$GITHUB_SHA"
+          --signer-digest "$GITHUB_SHA"
+      - run: >-
+          chmod u+x controller/gleam-mutants-release
+          controller/release-publish
+      - name: Verify the original candidate again
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          ./controller/gleam-mutants-release fetch build/candidate
+          "$SOURCE" "$VERSION" "$RUN" "$ATTEMPT"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.22.2
+          package-manager-cache: false
+      - name: Check Hex prerequisites with read-only GitHub authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          ./controller/release-publish check-registry hex build/candidate
+          "$SOURCE" "$VERSION" "$RUN" "$ATTEMPT"
+      - name: Check npm prerequisites with read-only GitHub authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NPM_PUBLISH_AUTH: ${{ inputs.npm_auth }}
+        run: >-
+          ./controller/release-publish check-registry npm build/candidate
+          "$SOURCE" "$VERSION" "$RUN" "$ATTEMPT"
+
   hex:
     name: Publish verified Hex archive
-    needs: [draft, attest-controller]
+    needs: [registry-ready, attest-controller]
     environment: release-hex
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -242,7 +302,7 @@ jobs:
 
   npm:
     name: Publish verified npm archive
-    needs: [draft, attest-controller]
+    needs: [registry-ready, attest-controller]
     environment: release-npm
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -289,7 +349,7 @@ jobs:
           "$SOURCE" "$VERSION" "$RUN" "$ATTEMPT"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 24.19.0
+          node-version: 24.22.2
           package-manager-cache: false
       - name: Execute the approved npm phase
         env:
