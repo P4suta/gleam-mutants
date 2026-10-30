@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 gleam_mutants contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+pub const GITHUB_UPLOADS_ORIGIN: &str = "https://uploads.github.com";
+
 pub const GITHUB_ORIGIN: &str = "https://github.com";
 pub const RUSTSEC_REPOSITORY: &str = "https://github.com/RustSec/advisory-db.git";
 pub const HEX_API: &str = "https://hex.pm/api";

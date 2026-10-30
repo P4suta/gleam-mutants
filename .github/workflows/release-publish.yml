@@ -23,6 +23,10 @@ name: Publish verified release
         description: Exact successful candidate run attempt
         required: true
         type: string
+      draft_release_id:
+        description: Existing draft ID to verify and resume
+        required: false
+        type: string
       npm_auth:
         description: Explicit npm authentication method
         required: true
@@ -41,6 +45,7 @@ env:
   VERSION: ${{ inputs.version }}
   RUN: ${{ inputs.candidate_run }}
   ATTEMPT: ${{ inputs.candidate_attempt }}
+  DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
 
 jobs:
   preflight:
@@ -139,6 +144,8 @@ jobs:
     environment: release-github
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      release_id: ${{ steps.draft.outputs.release_id }}
     # Keep this phase's authority separate from builds and other registries.
     permissions:
       contents: write  # Maintain the approved GitHub release.
@@ -180,6 +187,7 @@ jobs:
           ./controller/gleam-mutants-release fetch build/candidate
           "$SOURCE" "$VERSION" "$RUN" "$ATTEMPT"
       - name: Execute the approved draft phase
+        id: draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
@@ -374,6 +382,7 @@ jobs:
       actions: read  # Download the exact candidate and controller.
     env:
       RELEASE_ENVIRONMENT: release
+      RELEASE_ID: ${{ needs.draft.outputs.release_id }}
     steps:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:

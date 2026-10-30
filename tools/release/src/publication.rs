@@ -6,7 +6,8 @@ use crate::evidence::{self, Candidate, Identity};
 use crate::{constants, github, registry, runner};
 pub use gleam_mutants_release_core::{ControllerIdentity, PublicationPhase as Phase};
 use gleam_mutants_release_core::{
-    Existing, ReleaseId, ReleaseSelection, WritePlan, can_finalize, plan_write, with_draft_evidence,
+    Existing, ReleaseId, ReleaseSelection, WritePlan, acquire_release, can_finalize, plan_write,
+    with_draft_evidence,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -202,7 +203,7 @@ pub fn plan(directory: &Path, identity: &Identity) -> Result<(), String> {
     }
     if let Some(release) = release(identity)? {
         let release = require_draft(release, &identity.version.tag())?;
-        let mut store = store(directory, identity, &release)?;
+        let mut store = store(directory, &release)?;
         let inventory = store.inventory()?;
         for name in inventory {
             let asset = expected
@@ -225,8 +226,10 @@ pub fn plan(directory: &Path, identity: &Identity) -> Result<(), String> {
     {
         return Err("a registry version belongs to another archive".into());
     }
+    let requested = requested_draft(&runner::environment("DRAFT_RELEASE_ID")?)?;
     let plan = serde_json::json!({"source":identity.source,"version":identity.version,"build":identity.origin,
         "assets":expected,"phases":["draft","hex","npm","finalize"],
+        "requested_draft_id":requested.map(ReleaseId::get),
         "draft_assets":"checked_in_approved_draft_phase","publication_performed":false});
     evidence::write_new(Path::new("release-plan.json"), &plan)?;
     println!(
@@ -236,23 +239,30 @@ pub fn plan(directory: &Path, identity: &Identity) -> Result<(), String> {
     Ok(())
 }
 
-fn mutate(args: &[&str], body: Option<&Value>) -> Result<(), String> {
+fn mutate(args: &[&str], body: &Value) -> Result<Value, String> {
     let mut command = Command::new("gh");
     command.args(args);
-    if body.is_none() {
-        runner::output(&mut command)?;
-        return Ok(());
-    }
+    mutate_command(&mut command, body)
+        .map_err(|error| format!("GitHub {}: {error}", args.join(" ")))
+}
+
+fn mutate_command(command: &mut Command, body: &Value) -> Result<Value, String> {
+    let input = serde_json::to_vec(body).map_err(|e| e.to_string())?;
     command
-        .args(["--input", "-"])
+        .args([
+            "--input",
+            "-",
+            "--header",
+            "Content-Type: application/json",
+            "--header",
+            &format!("Content-Length: {}", input.len()),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .map_err(|e| format!("start GitHub mutation: {e}"))?;
-    let input =
-        serde_json::to_vec(body.ok_or("missing mutation body")?).map_err(|e| e.to_string())?;
     let written = match child.stdin.take() {
         Some(mut stdin) => stdin.write_all(&input),
         None => Err(std::io::Error::other("missing GitHub input")),
@@ -273,7 +283,9 @@ fn mutate(args: &[&str], body: Option<&Value>) -> Result<(), String> {
             output.status
         ));
     }
-    Ok(())
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!("GitHub mutation returned invalid JSON; inspect remote state before retry: {error}")
+    })
 }
 
 fn tag(identity: &Identity) -> Result<Existing, String> {
@@ -350,18 +362,87 @@ fn release_from(
 }
 
 fn require_draft(release: Value, tag: &str) -> Result<Value, String> {
-    if release["draft"] != true || release["tag_name"] != tag {
+    release_id(&release)?;
+    if release["draft"] != true
+        || release["tag_name"] != tag
+        || release["immutable"] == true
+        || !release["published_at"].is_null()
+    {
         return Err("target is published or has another release identity".into());
     }
     Ok(release)
+}
+
+fn release_id(release: &Value) -> Result<ReleaseId, String> {
+    release["id"]
+        .as_u64()
+        .and_then(ReleaseId::new)
+        .ok_or("release has no valid ID".into())
+}
+
+fn requested_draft(text: &str) -> Result<Option<ReleaseId>, String> {
+    if text.is_empty() {
+        return Ok(None);
+    }
+    ReleaseId::parse(text)
+        .map(Some)
+        .ok_or("requested draft release ID must be a positive integer".into())
+}
+
+fn acquire_draft_from(
+    tag: &str,
+    discover: impl FnOnce() -> Result<Option<Value>, String>,
+    create: impl FnOnce() -> Result<Value, String>,
+) -> Result<Value, String> {
+    acquire_release(
+        || {
+            discover()?
+                .map(|value| require_draft(value, tag))
+                .transpose()
+        },
+        || require_draft(create()?, tag),
+    )
 }
 
 fn draft(identity: &Identity) -> Result<Value, String> {
     if tag(identity)? != Existing::Matching {
         return Err("release tag does not identify the verified source".into());
     }
-    let release = release(identity)?.ok_or("release draft is missing")?;
+    let id = ReleaseId::parse(&runner::environment("RELEASE_ID")?)
+        .ok_or("finalization requires the verified nonzero draft ID")?;
+    let release = release_by_id(id)?;
     require_draft(release, &identity.version.tag())
+}
+
+fn release_by_id(id: ReleaseId) -> Result<Value, String> {
+    release_by_id_from(id, github::required)
+}
+
+fn release_by_id_from(
+    id: ReleaseId,
+    read: impl FnOnce(&str) -> Result<Value, String>,
+) -> Result<Value, String> {
+    let release = read(&format!(
+        "repos/{}/releases/{}",
+        candidate::REPOSITORY,
+        id.get()
+    ))?;
+    if release_id(&release)? != id {
+        return Err("GitHub release read returned another ID".into());
+    }
+    Ok(release)
+}
+
+fn require_published(release: &Value, id: ReleaseId, tag: &str) -> Result<(), String> {
+    if release_id(release)? != id
+        || release["tag_name"] != tag
+        || release["draft"] != false
+        || release["immutable"] != true
+        || release["published_at"].as_str().is_none_or(str::is_empty)
+    {
+        return Err("publication did not confirm the selected immutable release; inspect remote state before retry".into());
+    }
+    Ok(())
 }
 
 fn assets(directory: &Path, candidate: &Candidate) -> Result<Vec<Artifact>, String> {
@@ -453,8 +534,7 @@ pub fn reconcile(
 
 struct GitHubAssets<'a> {
     directory: &'a Path,
-    identity: &'a Identity,
-    release_id: u64,
+    release_id: ReleaseId,
     inventory: BTreeMap<String, (u64, u64)>,
 }
 
@@ -464,7 +544,7 @@ impl AssetStore for GitHubAssets<'_> {
             &format!(
                 "repos/{}/releases/{}/assets",
                 candidate::REPOSITORY,
-                self.release_id
+                self.release_id.get()
             ),
             None,
         )?;
@@ -511,36 +591,66 @@ impl AssetStore for GitHubAssets<'_> {
         if candidate::artifact(self.directory, &artifact.path)? != *artifact {
             return Err("local asset changed before upload".into());
         }
-        runner::output(
-            Command::new("gh")
-                .args([
-                    "release",
-                    "upload",
-                    &self.identity.version.tag(),
-                    "--repo",
-                    candidate::REPOSITORY,
-                ])
-                .arg(self.directory.join(&artifact.path)),
-        )?;
-        Ok(())
+        let result = runner::output(&mut upload_command(
+            self.directory,
+            self.release_id,
+            artifact,
+        ))?;
+        let uploaded: Value = serde_json::from_slice(&result.stdout).map_err(|error| {
+            format!(
+                "asset upload returned invalid JSON; inspect remote state before retry: {error}"
+            )
+        })?;
+        require_uploaded(&uploaded, artifact)
     }
 }
 
-fn store<'a>(
-    directory: &'a Path,
-    identity: &'a Identity,
-    release: &Value,
-) -> Result<GitHubAssets<'a>, String> {
-    let release_id = release["id"]
-        .as_u64()
-        .filter(|id| *id != 0)
-        .ok_or("release has no valid ID")?;
+fn require_uploaded(uploaded: &Value, artifact: &Artifact) -> Result<(), String> {
+    if uploaded["name"] != artifact.path
+        || uploaded["size"] != artifact.bytes
+        || uploaded["state"] != "uploaded"
+        || uploaded["id"].as_u64().filter(|id| *id != 0).is_none()
+    {
+        return Err(
+            "asset upload did not confirm the expected identity; inspect remote state before retry"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn store<'a>(directory: &'a Path, release: &Value) -> Result<GitHubAssets<'a>, String> {
+    let release_id = release_id(release)?;
     Ok(GitHubAssets {
         directory,
-        identity,
         release_id,
         inventory: BTreeMap::new(),
     })
+}
+
+fn upload_command(directory: &Path, release: ReleaseId, artifact: &Artifact) -> Command {
+    let mut command = Command::new("gh");
+    command
+        .args([
+            "api",
+            "--method",
+            "POST",
+            "--header",
+            "Content-Type: application/octet-stream",
+            "--header",
+            &format!("Content-Length: {}", artifact.bytes),
+            &format!(
+                "{}/repos/{}/releases/{}/assets",
+                constants::GITHUB_UPLOADS_ORIGIN,
+                candidate::REPOSITORY,
+                release.get()
+            ),
+            "--raw-field",
+            &format!("name={}", artifact.path),
+            "--input",
+        ])
+        .arg(directory.join(&artifact.path));
+    command
 }
 
 fn registry_artifact<'a>(candidate: &'a Candidate, prefix: &str) -> Result<&'a Artifact, String> {
@@ -687,7 +797,7 @@ pub fn execute(phase: Phase, directory: &Path, identity: &Identity) -> Result<()
         Phase::Finalize => {
             let expected = assets(directory, &candidate)?;
             let release = draft_evidence(phase, identity)?.live()?;
-            reconcile(&mut store(directory, identity, &release)?, &expected, false)?;
+            reconcile(&mut store(directory, &release)?, &expected, false)?;
             let hex = registry_artifact(&candidate, "gleam_mutants-")?;
             let npm = candidate.npm()?;
             let allowed = can_finalize(
@@ -704,26 +814,23 @@ pub fn execute(phase: Phase, directory: &Path, identity: &Identity) -> Result<()
                     "final publication lacks a matching tag, assets, or registry output".into(),
                 );
             }
-            mutate(
+            let id = release_id(&release)?;
+            let response = mutate(
                 &[
-                    "release",
-                    "edit",
-                    &identity.version.tag(),
-                    "--repo",
-                    candidate::REPOSITORY,
-                    "--draft=false",
+                    "api",
+                    "--method",
+                    "PATCH",
+                    &format!("repos/{}/releases/{}", candidate::REPOSITORY, id.get()),
                 ],
-                None,
+                &serde_json::json!({"draft":false}),
             )?;
-            let observed = self::release(identity)?.ok_or("published release disappeared")?;
-            if observed["draft"] != false || tag(identity)? != Existing::Matching {
+            require_published(&response, id, &identity.version.tag())?;
+            let observed = release_by_id(id)?;
+            require_published(&observed, id, &identity.version.tag())?;
+            if tag(identity)? != Existing::Matching {
                 return Err("final publication did not confirm its target".into());
             }
-            reconcile(
-                &mut store(directory, identity, &observed)?,
-                &expected,
-                false,
-            )?;
+            reconcile(&mut store(directory, &observed)?, &expected, false)?;
             Ok(())
         }
     }
@@ -754,64 +861,75 @@ fn create_draft(
     identity: &Identity,
     expected: &[Artifact],
 ) -> Result<(), String> {
-    if let Some(existing) = release(identity)? {
-        require_draft(existing, &identity.version.tag())?;
-    }
+    let selected = match requested_draft(&runner::environment("DRAFT_RELEASE_ID")?)? {
+        Some(id) => Some(release_by_id(id)?),
+        None => release(identity)?,
+    };
+    let existing = selected
+        .map(|release| require_draft(release, &identity.version.tag()))
+        .transpose()?;
     version_proposal(identity)?;
     match plan_write(true, tag(identity)?) {
         WritePlan::Reuse => {}
         WritePlan::Refuse => return Err("existing release tag identifies another source".into()),
-        WritePlan::Create => mutate(
-            &[
-                "api",
-                "--method",
-                "POST",
-                &format!("repos/{}/git/refs", candidate::REPOSITORY),
-            ],
-            Some(
+        WritePlan::Create => {
+            mutate(
+                &[
+                    "api",
+                    "--method",
+                    "POST",
+                    &format!("repos/{}/git/refs", candidate::REPOSITORY),
+                ],
                 &serde_json::json!({"ref":format!("refs/tags/{}", identity.version.tag()),"sha":identity.source.as_str()}),
-            ),
-        )?,
+            )?;
+        }
     }
     if tag(identity)? != Existing::Matching {
         return Err("release tag creation did not confirm the source".into());
     }
-    if release(identity)?.is_none() {
-        let notes = runner::output(Command::new("gh").args([
-            "api",
-            "--method",
-            "GET",
-            "--header",
-            "Accept: application/vnd.github.raw+json",
-            &format!(
-                "repos/{}/contents/CHANGELOG.md?ref={}",
-                candidate::REPOSITORY,
-                identity.source.as_str()
-            ),
-        ]))?;
-        let path = PathBuf::from(format!("release-notes-{}.md", identity.source.as_str()));
-        evidence::write_bytes_new(&path, &notes.stdout)?;
-        runner::output(
-            Command::new("gh")
-                .args([
-                    "release",
-                    "create",
-                    &identity.version.tag(),
-                    "--repo",
+    let release = acquire_draft_from(
+        &identity.version.tag(),
+        || Ok(existing),
+        || {
+            let notes = runner::output(Command::new("gh").args([
+                "api",
+                "--method",
+                "GET",
+                "--header",
+                "Accept: application/vnd.github.raw+json",
+                &format!(
+                    "repos/{}/contents/CHANGELOG.md?ref={}",
                     candidate::REPOSITORY,
-                    "--draft",
-                    "--verify-tag",
-                    "--title",
-                    &identity.version.tag(),
-                    "--notes-file",
-                ])
-                .arg(&path),
-        )?;
+                    identity.source.as_str()
+                ),
+            ]))?;
+            let notes = String::from_utf8(notes.stdout)
+                .map_err(|error| format!("release notes are not UTF-8: {error}"))?;
+            mutate(
+                &[
+                    "api",
+                    "--method",
+                    "POST",
+                    &format!("repos/{}/releases", candidate::REPOSITORY),
+                ],
+                &serde_json::json!({"tag_name":identity.version.tag(),"target_commitish":identity.source.as_str(),
+                "name":identity.version.tag(),"body":notes,"draft":true}),
+            )
+        },
+    )?;
+    if tag(identity)? != Existing::Matching {
+        return Err("release tag does not identify the verified source".into());
     }
-    let release = draft_evidence(Phase::Draft, identity)?.live()?;
-    let mut store = store(directory, identity, &release)?;
+    let mut store = store(directory, &release)?;
     reconcile(&mut store, expected, true)?;
-    reconcile(&mut store, expected, false)
+    reconcile(&mut store, expected, false)?;
+    let id = release_id(&release)?;
+    let mut output = fs::OpenOptions::new()
+        .append(true)
+        .open(runner::environment("GITHUB_OUTPUT")?)
+        .map_err(|error| format!("open draft output: {error}"))?;
+    writeln!(output, "release_id={}", id.get())
+        .map_err(|error| format!("record verified draft ID: {error}"))
 }
 
 fn npm_client() -> Result<(), String> {
@@ -933,8 +1051,176 @@ fn minimum_client(observed: &str, minimum: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[path = "publication_transport_tests.rs"]
+mod transport_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmed_creation_survives_an_unavailable_collection_entry() {
+        const RELEASE_ID: u64 = 42;
+        let tag = "v0.1.0";
+        let created = serde_json::json!({"id":RELEASE_ID,"tag_name":tag,"draft":true});
+        let mut discoveries = 0;
+        let mut creations = 0;
+        let observed = acquire_draft_from(
+            tag,
+            || {
+                discoveries += 1;
+                Ok(None)
+            },
+            || {
+                creations += 1;
+                Ok(created.clone())
+            },
+        );
+        assert_eq!(observed, Ok(created));
+        assert_eq!((discoveries, creations), (1, 1));
+    }
+
+    #[test]
+    fn draft_acquisition_preserves_existing_identity_and_never_retries_errors() {
+        const RELEASE_ID: u64 = 42;
+        let tag = "v0.1.0";
+        let existing = serde_json::json!({"id":RELEASE_ID,"tag_name":tag,"draft":true});
+        assert_eq!(
+            acquire_draft_from(
+                tag,
+                || Ok(Some(existing.clone())),
+                || panic!("an existing draft must not be created again")
+            )
+            .unwrap(),
+            existing
+        );
+        assert_eq!(
+            acquire_draft_from(
+                tag,
+                || Err("discovery failed".into()),
+                || panic!("a failed discovery cannot authorize creation")
+            ),
+            Err("discovery failed".into())
+        );
+        let mut creations = 0;
+        let result = acquire_draft_from(
+            tag,
+            || Ok(None),
+            || {
+                creations += 1;
+                Err("uncertain creation".into())
+            },
+        );
+        assert_eq!(result, Err("uncertain creation".into()));
+        assert_eq!(creations, 1);
+        let mut published = existing.clone();
+        published["draft"] = serde_json::json!(false);
+        assert!(
+            acquire_draft_from(
+                tag,
+                || Ok(Some(published)),
+                || panic!("a published target must never be replaced")
+            )
+            .is_err()
+        );
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"id":0,"draft":true,"tag_name":tag}),
+            serde_json::json!({"id":RELEASE_ID,"draft":false,"tag_name":tag}),
+            serde_json::json!({"id":RELEASE_ID,"draft":true,"tag_name":"v0.2.0"}),
+        ] {
+            assert!(acquire_draft_from(tag, || Ok(None), || Ok(invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_draft_ids_are_validated_and_reads_cannot_change_the_identity() {
+        const RELEASE_ID: u64 = 42;
+        let id = ReleaseId::new(RELEASE_ID).unwrap();
+        assert_eq!(requested_draft(""), Ok(None));
+        assert_eq!(requested_draft(&RELEASE_ID.to_string()), Ok(Some(id)));
+        assert_eq!(
+            requested_draft(&u64::MAX.to_string()),
+            Ok(ReleaseId::new(u64::MAX))
+        );
+        for invalid in [
+            "0",
+            "-1",
+            "1.5",
+            " ",
+            "1\n",
+            "18446744073709551616",
+            "../releases/1",
+        ] {
+            assert!(requested_draft(invalid).is_err(), "{invalid}");
+        }
+        let release = serde_json::json!({"id":RELEASE_ID,"tag_name":"v0.1.0","draft":true});
+        assert_eq!(
+            release_by_id_from(id, |path| {
+                assert_eq!(
+                    path,
+                    format!("repos/P4suta/gleam-mutants/releases/{RELEASE_ID}")
+                );
+                Ok(release.clone())
+            })
+            .unwrap(),
+            release
+        );
+        for invalid in [
+            serde_json::json!({"id":1}),
+            serde_json::json!({"id":0}),
+            serde_json::json!({"id":"42"}),
+        ] {
+            assert!(release_by_id_from(id, |_| Ok(invalid)).is_err());
+        }
+        assert_eq!(
+            release_by_id_from(id, |_| Err("read failed".into())),
+            Err("read failed".into())
+        );
+    }
+
+    #[test]
+    fn publication_confirmation_requires_the_same_immutable_published_identity() {
+        const RELEASE_ID: u64 = 42;
+        let id = ReleaseId::new(RELEASE_ID).unwrap();
+        let tag = "v0.1.0";
+        let published = serde_json::json!({"id":RELEASE_ID,"tag_name":tag,"draft":false,"immutable":true,"published_at":"2026-10-30T00:00:00Z"});
+        assert!(require_published(&published, id, tag).is_ok());
+        for (field, value) in [
+            ("id", serde_json::json!(1)),
+            ("id", serde_json::json!(0)),
+            ("tag_name", serde_json::json!("v0.2.0")),
+            ("draft", serde_json::json!(true)),
+            ("draft", serde_json::json!("false")),
+            ("immutable", serde_json::json!(false)),
+            ("immutable", Value::Null),
+            ("published_at", Value::Null),
+            ("published_at", serde_json::json!("")),
+        ] {
+            let mut invalid = published.clone();
+            invalid[field] = value;
+            assert!(require_published(&invalid, id, tag).is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn upload_confirmation_requires_the_expected_complete_asset() {
+        const ASSET_ID: u64 = 42;
+        let expected = asset("package.tgz");
+        let uploaded = serde_json::json!({"id":ASSET_ID,"name":expected.path,"size":expected.bytes,"state":"uploaded"});
+        assert!(require_uploaded(&uploaded, &expected).is_ok());
+        for (field, value) in [
+            ("id", serde_json::json!(0)),
+            ("id", serde_json::json!("42")),
+            ("name", serde_json::json!("another.tgz")),
+            ("size", serde_json::json!(0)),
+            ("state", serde_json::json!("starter")),
+        ] {
+            let mut invalid = uploaded.clone();
+            invalid[field] = value;
+            assert!(require_uploaded(&invalid, &expected).is_err(), "{field}");
+        }
+    }
 
     fn controller_fixture() -> (ControllerRun, Value, Value) {
         let controller = ControllerRun {
@@ -1136,10 +1422,12 @@ mod tests {
     fn draft_admission_rejects_published_malformed_and_foreign_releases() {
         let tag = "v0.1.0";
         for invalid in [
-            serde_json::json!({"tag_name":tag,"draft":false}),
-            serde_json::json!({"tag_name":tag}),
-            serde_json::json!({"tag_name":tag,"draft":"true"}),
-            serde_json::json!({"tag_name":"v0.2.0","draft":true}),
+            serde_json::json!({"id":1,"tag_name":tag,"draft":false}),
+            serde_json::json!({"id":1,"tag_name":tag}),
+            serde_json::json!({"id":1,"tag_name":tag,"draft":"true"}),
+            serde_json::json!({"id":1,"tag_name":"v0.2.0","draft":true}),
+            serde_json::json!({"id":1,"tag_name":tag,"draft":true,"immutable":true}),
+            serde_json::json!({"id":1,"tag_name":tag,"draft":true,"published_at":"2026-10-30T00:00:00Z"}),
         ] {
             assert!(require_draft(invalid, tag).is_err());
         }

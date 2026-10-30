@@ -153,6 +153,16 @@ pub fn with_draft_evidence<T>(
     }
 }
 
+pub fn acquire_release<T, E>(
+    discover: impl FnOnce() -> Result<Option<T>, E>,
+    create: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    match discover()? {
+        Some(release) => Ok(release),
+        None => create(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum Existing {
@@ -174,6 +184,14 @@ pub struct ReleaseId(u64);
 impl ReleaseId {
     pub fn new(value: u64) -> Option<Self> {
         if value == 0 { None } else { Some(Self(value)) }
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::new(text.parse().ok()?)
     }
 }
 
@@ -256,6 +274,60 @@ mod proofs {
     use super::{Existing, WritePlan, can_finalize, plan_write};
 
     #[kani::proof]
+    fn release_acquisition_preserves_identity_without_repeated_discovery() {
+        let existing: Option<u64> = kani::any();
+        let created: u64 = kani::any();
+        let discovery_fails: bool = kani::any();
+        let creation_fails: bool = kani::any();
+        let mut discoveries = 0_u8;
+        let mut creations = 0_u8;
+        let result = super::acquire_release(
+            || {
+                discoveries += 1;
+                if discovery_fails {
+                    Err(false)
+                } else {
+                    Ok(existing)
+                }
+            },
+            || {
+                creations += 1;
+                if creation_fails {
+                    Err(true)
+                } else {
+                    Ok(created)
+                }
+            },
+        );
+        assert!(discoveries == 1);
+        match (discovery_fails, existing) {
+            (true, _) => {
+                assert!(result == Err(false));
+                assert!(creations == 0);
+            }
+            (false, Some(id)) => {
+                assert!(result == Ok(id));
+                assert!(creations == 0);
+            }
+            (false, None) => {
+                assert!(creations == 1);
+                assert!(
+                    result
+                        == if creation_fails {
+                            Err(true)
+                        } else {
+                            Ok(created)
+                        }
+                );
+            }
+        }
+        kani::cover!(result == Ok(created) && creations == 1);
+        kani::cover!(creations == 0);
+        kani::cover!(result == Err(true));
+        kani::cover!(result == Err(false));
+    }
+
+    #[kani::proof]
     fn registry_phases_need_no_github_release_authority() {
         let phase: super::PublicationPhase = kani::any();
         let mut release_calls = 0_u8;
@@ -300,7 +372,7 @@ mod proofs {
         let id = super::ReleaseId::new(raw);
         assert!(id.is_some() == (raw != 0));
         if let Some(id) = id {
-            assert!(id.0 == raw);
+            assert!(id.0 == raw && id.get() == raw);
             let previous: u64 = kani::any();
             let state = if kani::any() {
                 super::ReleaseSelection::Ambiguous

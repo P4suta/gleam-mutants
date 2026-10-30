@@ -318,9 +318,9 @@ pub fn get(path: &str) -> Result<Option<Value>, String> {
     let output = Command::new("gh")
         .args(["api", "--method", "GET", path])
         .output()
-        .map_err(|e| format!("GitHub read: {e}"))?;
+        .map_err(|e| format!("GitHub read {path}: {e}"))?;
     let value: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| format!("GitHub read returned no JSON: {}", output.status))?;
+        .map_err(|_| format!("GitHub read {path} returned no JSON: {}", output.status))?;
     if output.status.success() {
         return Ok(Some(value));
     }
@@ -329,7 +329,7 @@ pub fn get(path: &str) -> Result<Option<Value>, String> {
     {
         return Ok(None);
     }
-    Err(format!("GitHub read refused: {}", output.status))
+    Err(format!("GitHub read {path} refused: {}", output.status))
 }
 
 pub fn required(path: &str) -> Result<Value, String> {
