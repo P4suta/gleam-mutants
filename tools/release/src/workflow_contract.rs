@@ -132,6 +132,9 @@ fn validate(workflow: &Value) -> Result<(), String> {
             "registry readiness must remain read-only and require no protected approval".into(),
         );
     }
+    if node_version(readiness)? != node_version(&jobs["npm"])? {
+        return Err("npm readiness and publication must use the same Node runtime".into());
+    }
     for phase in [PublicationPhase::Hex, PublicationPhase::Npm] {
         require_command(
             readiness,
@@ -172,6 +175,26 @@ fn needs(job: &Value) -> Result<BTreeSet<&str>, String> {
         }
         _ => Err("publication prerequisites are missing".into()),
     }
+}
+
+fn node_version(job: &Value) -> Result<&str, String> {
+    let steps = job["steps"]
+        .as_array()
+        .ok_or("runtime setup steps are missing")?;
+    let setup: Vec<_> = steps
+        .iter()
+        .filter(|step| {
+            step["uses"]
+                .as_str()
+                .is_some_and(|action| action.starts_with("actions/setup-node@"))
+        })
+        .collect();
+    let [setup] = setup.as_slice() else {
+        return Err("registry phase requires one pinned Node setup".into());
+    };
+    setup["with"]["node-version"]
+        .as_str()
+        .ok_or("registry Node version is missing".into())
 }
 
 fn require_command(job: &Value, expected: &str) -> Result<(), String> {
@@ -258,6 +281,19 @@ fn authority_readiness_and_candidate_binding_drift_are_rejected() {
         .unwrap()
         .remove("registry-ready");
     assert!(validate(&missing).is_err());
+    let mut runtime_mismatch = workflow.clone();
+    let setup = runtime_mismatch["jobs"]["npm"]["steps"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|step| {
+            step["uses"]
+                .as_str()
+                .is_some_and(|action| action.starts_with("actions/setup-node@"))
+        })
+        .unwrap();
+    setup["with"]["node-version"] = serde_json::json!("another runtime");
+    assert!(validate(&runtime_mismatch).is_err());
     for phase in PublicationPhase::ALL {
         let mut broken = workflow.clone();
         broken["jobs"][phase.job()]["continue-on-error"] = serde_json::json!(true);

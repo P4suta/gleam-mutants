@@ -230,7 +230,7 @@ jobs:
           "$SOURCE" "$VERSION" "$RUN" "$ATTEMPT"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 24.19.0
+          node-version: 24.22.2
           package-manager-cache: false
       - name: Check Hex prerequisites with read-only GitHub authority
         env:
@@ -349,7 +349,7 @@ jobs:
           "$SOURCE" "$VERSION" "$RUN" "$ATTEMPT"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 24.19.0
+          node-version: 24.22.2
           package-manager-cache: false
       - name: Execute the approved npm phase
         env:
