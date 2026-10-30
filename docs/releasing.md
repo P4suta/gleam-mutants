@@ -134,6 +134,9 @@ Between draft preparation and the registry approvals, `registry-ready` runs both
 It verifies the successful draft producer in the same active controller run, candidate identity and provenance, matching tag, remote archive state, and required npm client and authentication mode.
 The production registry phases call the same preparation function before any upload.
 Their draft handoff depends on GitHub's truthful job outcomes and execution of the checked controller and workflow.
+The npm prerequisite check also resolves the actual publication options through an offline configuration query using the same command builder.
+It selects the retained provenance bundle without supplying the mutually exclusive automatic-provenance option, including an explicit false value.
+The probe uses empty isolated configuration and no registry credentials.
 The [draft verification decision](adr/verify-drafts-before-registry-publication.md) records this boundary.
 
 The final inventory includes the three archives, three SBOMs, four receipts, candidate manifest, two candidate checksum files, two attestation bundles, and `RELEASE-SHA256SUMS` covering the other fifteen files.

@@ -233,6 +233,13 @@ Workflow regressions reject a substituted or overridden draft ID at the final jo
 Native HTTP fixtures run the actual pinned `gh` client with isolated authentication state against a loopback server.
 They check JSON creation and response handling, binary upload bytes, query escaping, denied requests, and malformed successful responses.
 These fixtures cover the client protocol and controlled responses, not production permissions, TLS, provider visibility, or cross-provider atomicity.
+The npm configuration control invokes the actual client with the publication option builder and `config get provenance-file --offline`.
+It verifies selection of the retained bundle and rejects an explicit conflicting `--provenance=false` option.
+The readiness and production registry plan both require this check before authorizing an npm write.
+The probe clears inherited environment and configuration, uses an isolated prefix, and receives no registry credential.
+This is a required native alternative for the external npm JavaScript configuration semantics and `std::process::Command`, which the `no_std` Kani core doesn't model.
+The unchanged phase, acquisition, reuse, and finalization predicates retain their source-bound proofs.
+Reassess this boundary if option selection gains another provenance mode or a supported verifier covers the upstream client's configuration implementation.
 The tag reference remains authoritative for the candidate source; a draft's `target_commitish` may name a branch.
 GitHub hides draft releases from tokens without push authority.
 Registry phases instead read the successful draft job from their active controller run through Actions read permission.

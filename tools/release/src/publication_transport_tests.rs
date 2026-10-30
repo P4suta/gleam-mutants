@@ -4,6 +4,7 @@
 use super::*;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -242,5 +243,73 @@ fn native_mutation_refuses_a_denial_or_an_invalid_success_response() {
         );
         assert!(request.headers.starts_with("POST "));
         fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn native_npm_configuration_uses_the_retained_bundle() {
+    let root = workspace("npm-provenance");
+    fs::write(root.join("userconfig"), b"").unwrap();
+    fs::write(root.join("globalconfig"), b"").unwrap();
+    let bundle = root.join("retained.sigstore.json");
+    let archive = root.join("package.tgz");
+    let mut command = npm_command(
+        NpmOperation::InspectProvenance,
+        &archive,
+        &bundle,
+        "latest",
+        &root,
+    );
+    let result = runner::output(&mut command);
+    let output = result.unwrap();
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        bundle.to_str().unwrap()
+    );
+    let mut broken = npm_command(
+        NpmOperation::InspectProvenance,
+        &archive,
+        &bundle,
+        "latest",
+        &root,
+    );
+    broken.arg("--provenance=false");
+    let error = runner::output(&mut broken).unwrap_err();
+    assert!(
+        [
+            "--provenance-file cannot be provided when using --provenance",
+            "--provenance cannot be provided when using --provenance-file",
+        ]
+        .iter()
+        .any(|expected| error.contains(expected)),
+        "{error}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn npm_configuration_cleanup_preserves_the_operation_outcome() {
+    for fail in [false, true] {
+        let mut observed = None;
+        let result = with_npm_configuration("npm-configuration-fixture", "", |root| {
+            observed = Some(root.to_owned());
+            assert_eq!(fs::read(root.join("userconfig")).unwrap(), b"");
+            assert_eq!(fs::read(root.join("globalconfig")).unwrap(), b"");
+            if fail {
+                Err("fixture operation failed".into())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(
+            result,
+            if fail {
+                Err("fixture operation failed".into())
+            } else {
+                Ok(())
+            }
+        );
+        let error = fs::metadata(observed.unwrap()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 }

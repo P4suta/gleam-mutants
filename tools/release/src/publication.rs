@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 const WORKFLOW: &str = ".github/workflows/release-publish.yml";
@@ -685,6 +685,7 @@ fn draft_evidence(phase: Phase, identity: &Identity) -> Result<DraftEvidence, St
 
 fn registry_plan(
     phase: Phase,
+    directory: &Path,
     identity: &Identity,
     candidate: &Candidate,
 ) -> Result<WritePlan, String> {
@@ -699,6 +700,7 @@ fn registry_plan(
                 "trusted" | "bootstrap" => {}
                 _ => return Err("npm authentication must be trusted or bootstrap".into()),
             }
+            check_npm_configuration(directory, candidate)?;
             (registry::Registry::Npm, candidate.npm()?)
         }
         Phase::Draft | Phase::Finalize => {
@@ -736,7 +738,7 @@ pub fn registry_ready(phase: Phase, directory: &Path, identity: &Identity) -> Re
     let candidate = Candidate::load(directory)?;
     candidate.verify(directory, identity)?;
     github::attestations(directory, identity)?;
-    let plan = registry_plan(phase, identity, &candidate)?;
+    let plan = registry_plan(phase, directory, identity, &candidate)?;
     println!(
         "Registry {} prerequisites verified without publication: {plan:?}",
         phase.job()
@@ -755,7 +757,7 @@ pub fn execute(phase: Phase, directory: &Path, identity: &Identity) -> Result<()
         Phase::Draft => create_draft(directory, identity, &assets(directory, &candidate)?),
         Phase::Hex => {
             let artifact = registry_artifact(&candidate, "gleam_mutants-")?;
-            match registry_plan(phase, identity, &candidate)? {
+            match registry_plan(phase, directory, identity, &candidate)? {
                 WritePlan::Reuse => Ok(()),
                 WritePlan::Refuse => Err("Hex version contains different bytes".into()),
                 WritePlan::Create => {
@@ -777,7 +779,7 @@ pub fn execute(phase: Phase, directory: &Path, identity: &Identity) -> Result<()
         }
         Phase::Npm => {
             let artifact = candidate.npm()?;
-            match registry_plan(phase, identity, &candidate)? {
+            match registry_plan(phase, directory, identity, &candidate)? {
                 WritePlan::Reuse => Ok(()),
                 WritePlan::Refuse => Err("npm version contains different bytes".into()),
                 WritePlan::Create => {
@@ -940,6 +942,103 @@ fn npm_client() -> Result<(), String> {
     Ok(())
 }
 
+enum NpmOperation {
+    Publish,
+    InspectProvenance,
+}
+
+fn npm_command(
+    operation: NpmOperation,
+    archive: &Path,
+    bundle: &Path,
+    tag: &str,
+    root: &Path,
+) -> Command {
+    let mut command = Command::new("npm");
+    command.env_clear();
+    for name in ["PATH", "HOME"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    match operation {
+        NpmOperation::Publish => {
+            command.arg("publish").arg(archive);
+        }
+        NpmOperation::InspectProvenance => {
+            command.args(["config", "get", "provenance-file", "--offline"]);
+        }
+    }
+    command
+        .args([
+            "--ignore-scripts",
+            "--access",
+            "public",
+            "--registry",
+            constants::NPM_REGISTRY,
+            "--tag",
+            tag,
+            "--provenance-file",
+        ])
+        .arg(bundle)
+        .arg("--userconfig")
+        .arg(root.join("userconfig"))
+        .arg("--globalconfig")
+        .arg(root.join("globalconfig"))
+        .arg("--cache")
+        .arg(root.join("cache"));
+    command.arg("--prefix").arg(root).current_dir(root);
+    command
+}
+
+fn with_npm_configuration<T>(
+    label: &str,
+    config: &str,
+    run: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let root = std::env::current_dir()
+        .map_err(|error| error.to_string())?
+        .join(format!("{label}-{}", std::process::id()));
+    fs::create_dir(&root).map_err(|error| format!("create npm configuration: {error}"))?;
+    let result = (|| {
+        evidence::write_bytes_new(&root.join("userconfig"), config.as_bytes())?;
+        evidence::write_bytes_new(&root.join("globalconfig"), b"")?;
+        run(&root)
+    })();
+    let cleanup =
+        fs::remove_dir_all(&root).map_err(|error| format!("npm configuration cleanup: {error}"));
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(format!("{primary}; {cleanup}")),
+    }
+}
+
+fn check_npm_configuration(directory: &Path, candidate: &Candidate) -> Result<(), String> {
+    let directory = directory
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let archive = directory.join(&candidate.npm()?.path);
+    let bundle = directory.join(github::NPM_BUNDLE);
+    with_npm_configuration("npm-readiness", "", |root| {
+        let mut command = npm_command(
+            NpmOperation::InspectProvenance,
+            &archive,
+            &bundle,
+            candidate.identity.version.npm_tag(),
+            root,
+        );
+        let output = runner::output(&mut command)?;
+        let selected = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
+        if Path::new(selected.trim()) != bundle {
+            return Err(
+                "npm configuration does not select the retained candidate provenance".into(),
+            );
+        }
+        Ok(())
+    })
+}
+
 fn publish_npm(directory: &Path, candidate: &Candidate) -> Result<(), String> {
     npm_client()?;
     let mode = runner::environment("NPM_PUBLISH_AUTH")?;
@@ -966,75 +1065,49 @@ fn publish_npm(directory: &Path, candidate: &Candidate) -> Result<(), String> {
             ));
         }
     }
-    let root = PathBuf::from(format!("npm-publication-{}", std::process::id()));
-    fs::create_dir(&root).map_err(|e| e.to_string())?;
-    let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let userconfig = root.join("userconfig");
-    let globalconfig = root.join("globalconfig");
+    let directory = directory
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
     let config = if bootstrap.is_some() {
         constants::NPM_BOOTSTRAP_CONFIG
     } else {
         ""
     };
-    evidence::write_bytes_new(&userconfig, config.as_bytes())?;
-    evidence::write_bytes_new(&globalconfig, b"")?;
     let npm = candidate.npm()?;
-    let mut command = Command::new("npm");
-    command.env_clear();
-    for name in [
-        "PATH",
-        "HOME",
-        "CI",
-        "GITHUB_ACTIONS",
-        "GITHUB_SERVER_URL",
-        "GITHUB_REPOSITORY",
-        "GITHUB_REPOSITORY_ID",
-        "GITHUB_REPOSITORY_OWNER_ID",
-        "GITHUB_WORKFLOW_REF",
-        "GITHUB_SHA",
-        "GITHUB_REF",
-        "GITHUB_RUN_ID",
-        "GITHUB_RUN_ATTEMPT",
-        "GITHUB_EVENT_NAME",
-        "RUNNER_ENVIRONMENT",
-        "ACTIONS_ID_TOKEN_REQUEST_URL",
-        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-    ] {
-        if let Ok(value) = std::env::var(name) {
-            command.env(name, value);
-        }
-    }
-    if let Some(key) = bootstrap {
-        command.env("NPM_BOOTSTRAP_TOKEN", key);
-    }
-    command
-        .args(["publish"])
-        .arg(directory.join(&npm.path))
-        .args([
-            "--ignore-scripts",
-            "--access",
-            "public",
-            "--registry",
-            constants::NPM_REGISTRY,
-            "--tag",
+    with_npm_configuration("npm-publication", config, |root| {
+        let mut command = npm_command(
+            NpmOperation::Publish,
+            &directory.join(&npm.path),
+            &directory.join(github::NPM_BUNDLE),
             candidate.identity.version.npm_tag(),
-            "--provenance=false",
-            "--provenance-file",
-        ])
-        .arg(directory.join(github::NPM_BUNDLE))
-        .arg("--userconfig")
-        .arg(userconfig)
-        .arg("--globalconfig")
-        .arg(globalconfig)
-        .arg("--cache")
-        .arg(root.join("cache"));
-    let published = runner::output(&mut command).map(|_| ());
-    let cleanup = fs::remove_dir_all(&root).map_err(|e| format!("npm configuration cleanup: {e}"));
-    match (published, cleanup) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(primary), Err(cleanup)) => Err(format!("{primary}; {cleanup}")),
-    }
+            root,
+        );
+        for name in [
+            "CI",
+            "GITHUB_ACTIONS",
+            "GITHUB_SERVER_URL",
+            "GITHUB_REPOSITORY",
+            "GITHUB_REPOSITORY_ID",
+            "GITHUB_REPOSITORY_OWNER_ID",
+            "GITHUB_WORKFLOW_REF",
+            "GITHUB_SHA",
+            "GITHUB_REF",
+            "GITHUB_RUN_ID",
+            "GITHUB_RUN_ATTEMPT",
+            "GITHUB_EVENT_NAME",
+            "RUNNER_ENVIRONMENT",
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        ] {
+            if let Ok(value) = std::env::var(name) {
+                command.env(name, value);
+            }
+        }
+        if let Some(key) = bootstrap {
+            command.env("NPM_BOOTSTRAP_TOKEN", key);
+        }
+        runner::output(&mut command).map(|_| ())
+    })
 }
 
 fn minimum_client(observed: &str, minimum: &str) -> Result<(), String> {
