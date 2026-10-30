@@ -3,7 +3,7 @@
 
 name = "gleam_mutants"
 # x-release-please-start-version
-version = "0.1.0"
+version = "0.1.1"
 # x-release-please-end
 gleam = ">= 1.17.0 and < 2.0.0"
 internal_modules = [
